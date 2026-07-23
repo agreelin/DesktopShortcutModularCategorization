@@ -1,0 +1,300 @@
+# Folder Session Lock 任务状态
+
+## 阶段 0：可行性分析与架构决策
+
+- [x] 读取用户附件、总控规则和技能说明。
+- [x] 检查 `.codegraph/`、现有文件、README、代码、测试和 git diff。
+- [x] 调用只读 planner 完成阶段 0 规划。
+- [x] 定义 ACL 能力与限制。
+- [x] 定义 Account SID 与 Logon SID 差异和会话绑定。
+- [x] 定义精确 ACE 添加、验证、移除和回滚。
+- [x] 定义最小恢复记录和严格零持久化冲突。
+- [x] 定义 Broker、Named Pipe、身份验证和权限边界。
+- [x] 定义路径、reparse、TOCTOU、重复和父子目录策略。
+- [x] 定义访问警告能力边界和阶段 6 批准门。
+- [x] 定义 v1 非目标。
+- [x] 定义阶段 1–7 checkpoint 和客观验收标准。
+- [x] 创建根 `AGENTS.md` 和 `FolderSessionLock/AGENTS.md`。
+- [x] 创建 `FolderSessionLock/docs/REQUIREMENTS.md`。
+- [x] 创建 `FolderSessionLock/docs/ARCHITECTURE.md`。
+- [x] 创建 `FolderSessionLock/docs/SECURITY.md`。
+- [x] 创建 `FolderSessionLock/docs/DECISIONS.md`。
+- [x] 创建 `FolderSessionLock/PLAN.md`。
+- [x] 创建 `FolderSessionLock/TASKS.md`。
+- [x] 创建 `FolderSessionLock/ACCEPTANCE.md`。
+- [x] 创建 `FolderSessionLock/DEVLOG.md`。
+- [x] 第一轮阶段 0 文档验证：九份文件存在且非空；关键主题覆盖；无禁止术语；无尾随空白。
+- [x] reviewer 第一轮独立审查：`FAIL`；无 `BLOCKER`，4 个 `HIGH`。
+- [x] 修复第一轮 4 个 `HIGH`：重启清理保证、ACE 来源限制、同句柄 ACL 事务、UAC 跨账户模型。
+- [x] 重新运行阶段 0 文档验证：修复内容覆盖且文档一致。
+- [x] reviewer 复审输出 `PASS`；无 `BLOCKER`、无 `HIGH`。
+- [x] 用户确认 `D-002` 至 `D-019` 的高影响决定。
+
+## 阶段 0：决策确认更新
+
+- [x] 读取十项确认决定、根 `AGENTS.md`、八份目标文档和 git 状态。
+- [x] 调用只读 planner 映射架构约束、需求、测试、验收和发布阻断。
+- [x] 将 `D-002` 至 `D-019` 更新为 `已决定`。
+- [x] 固化 `FolderSessionLock/` 产品根、最小恢复记录、UI/Broker 生命周期和路径范围。
+- [x] 固化最小 Deny 权限矩阵、DACL 稳定性边界和同句柄 ACL 事务。
+- [x] 固化生产 Broker 签名/安装/IPC 发布阻断及同账户 consent elevation。
+- [x] 固化 Broker 恢复专用模式只清理、不恢复旧任务的规则。
+- [x] 固化阶段 6 审计独立批准门。
+- [x] 新增并确认 `D-020`：八份项目文档全部迁入 `FolderSessionLock/`，根目录不保留同名副本。
+- [x] 运行决策确认后的首轮文档一致性验证。
+- [x] reviewer 首轮结论：`FAIL`；无 `BLOCKER`，3 个 `HIGH`。
+- [x] 修复 3 个 `HIGH`：统一 Broker ACL 主体、明确登录前 LocalSystem 恢复模式与机器范围记录、修正 ACE 来源证明表述。
+- [x] 重新运行文档一致性验证：唯一 ACL 主体、登录前恢复、机器范围记录和 ACE 来源边界一致。
+- [x] reviewer 复审输出 `PASS`；无 `BLOCKER`、无 `HIGH`，1 个 `MEDIUM`。
+- [x] 用户确认 `D-020`。
+
+## 阶段 0：文档位置统一
+
+- [x] 检查八份根目录文档存在性和 git 跟踪状态。
+- [x] 将八份文档移动到 `FolderSessionLock/` 最终路径，旧路径全部消失。
+- [x] 创建 `FolderSessionLock/AGENTS.md` 项目级规则。
+- [x] 将根 `AGENTS.md` 精简为仓库级规则并指向项目规则。
+- [x] 根 `README.md` 仅增加 Folder Session Lock 导航。
+- [x] 修复八份文档中的权威路径和交叉引用。
+- [x] 将 `D-020` 更新为 `已决定`并记录唯一权威来源规则。
+- [x] 验证无根目录副本、无符号链接、内部链接有效、两种启动位置均能找到规则和文档。
+- [x] reviewer 首轮结论：`FAIL`；无 `BLOCKER`，1 个 `HIGH`。
+- [x] 修复 D-016 根 README 规则，使其与 D-020 的导航例外一致。
+- [x] reviewer 复审确认 D-016 与 D-020 不再冲突并输出 `PASS`；无任何级别问题。
+- [x] 阶段 1 文档与设计前置条件全部满足；等待用户明确启动阶段 1。
+
+## 阶段 1：解决方案骨架与测试基础
+
+- [x] 用户明确启动阶段 1；读取两级 `AGENTS.md`、八份权威文档、目录状态和 git diff。
+- [x] planner 完成阶段 1 只读规划。
+- [x] 创建 `FolderSessionLock.sln`、四个产品项目和三个 xUnit 测试项目。
+- [x] 固化 `App -> Core`、`Windows -> Core`、`Broker -> Core + Windows` 和测试项目引用方向。
+- [x] 创建 `Directory.Build.props`、`.editorconfig` 和 `.gitignore`。
+- [x] 创建六个 Core 接口、统一 `Result`/`Result<T>`/`Error`/`ErrorCategory` 与分类测试。
+- [x] 创建 Windows 安全失败占位实现；未读取目标路径、未写 ACL、未修改系统设置。
+- [x] 创建普通 Broker 进程骨架；无提升、IPC、ACL 或命令分派。
+- [x] 创建仅生成 `%TEMP%\FolderSessionLock.Tests\<Guid>` 的临时目录工具与清理测试。
+- [x] 创建最小 WPF/MVVM、依赖注入、Debug logging 和 ViewModel 测试。
+- [x] 创建 `FolderSessionLock/README.md`，并修正阶段文档中的七项目结构。
+- [x] `dotnet restore` 成功。
+- [x] `dotnet build -c Release` 成功；0 warning，0 error。
+- [x] `dotnet test -c Release --no-restore` 成功；22/22 通过，0 skipped。
+- [x] `dotnet format --verify-no-changes` 首次报告行尾与模板格式问题；按规则运行一次 `dotnet format` 后复验成功。
+- [x] 受控启动 Release WPF 应用，确认主窗口创建并正常关闭；退出码为 0 且无残留进程。
+- [x] 测试结束后 `%TEMP%\FolderSessionLock.Tests` 子目录数量为 0。
+- [x] reviewer 阶段 1 只读审查输出 `PASS`；无 `BLOCKER`、`HIGH` 或 `MEDIUM`。
+- [x] 记录 reviewer 非阻断项：测试依赖扫描 1 项 `LOW`；4 个占位或清理失败分支缺少直接测试。
+- [x] 阶段 1 全部完成门满足；保持阶段 2 未开始。
+
+## 阶段 2：领域模型、任务状态与倒计时调度
+
+- [x] 用户明确启动阶段 2；读取附件、两级 `AGENTS.md`、八份权威文档、现有源码、测试和 git 状态。
+- [x] planner 完成阶段 2 只读规划并固化六个 checkpoint、状态表、单调时间、解除意图和测试矩阵。
+- [x] 实现 `FolderLockTaskId`、`FolderPath`、显式 `LockDurationPolicy`、`LockDuration` 与边界验证。
+- [x] 实现八状态集中状态机；同状态 `NoChange`；表外转换 `ValidationFailed`；终态无出站。
+- [x] 实现不可变 `FolderLockTask`、`IFolderPathRelationService` 和单同步门 `LockTaskManager`。
+- [x] 实现重复 ID、Same、Ancestor、Descendant 冲突拒绝和并发同路径仅一项成功。
+- [x] 实现 `LockTaskCoordinator` 激活、错误传播和并发 exactly-once Apply。
+- [x] 将解除意图固化为 `Expiration`、`Recovery`、`TestCleanup`、`AdministrativeCleanup`；移除无意图接口。
+- [x] 扩展 `IClock.DelayAsync`；生产 `SystemClock` 使用 `TimeProvider.System`；测试时钟可独立推进墙钟与单调时间。
+- [x] 实现单调剩余时间、原子 `Active -> Unlocking` 所有权和 exactly-once 到期解除。
+- [x] 将 `ILockTaskScheduler` 固化为 `ProcessDueTasksAsync` 与 `RunAsync`；覆盖多任务、失败隔离和取消。
+- [x] 验证 App、MainWindow、MainViewModel 不拥有 scheduler 或解除生命周期；未新增提前解除入口。
+- [x] Windows 创建和四种解除意图占位均返回 `windows.acl.not_implemented`；未访问路径或写 ACL。
+- [x] Core 相关 checkpoint tests 最终 89/89 通过；无 `Thread.Sleep`。
+- [x] `dotnet restore` 成功。
+- [x] `dotnet build -c Release` 成功；0 warning，0 error。
+- [x] `dotnet test -c Release --no-restore` 成功；107/107 通过，0 skipped。
+- [x] `dotnet format --verify-no-changes` 首次报告新增/修改文件 LF 与 `.editorconfig` CRLF 规则不一致；按规则运行一次 `dotnet format` 后复验成功。
+- [x] 更新 `D-021`、需求、架构、安全、计划、验收和 README。
+- [x] reviewer 阶段 2 首轮只读审查输出 `FAIL`；无 `BLOCKER`，1 个 `HIGH`。
+- [x] 仅修复 `HIGH`：超大显式时长导致预计到期 UTC 溢出时，平台 Apply 成功后的任务进入 `RecoveryRequired`，错误可观察且不抛异常。
+- [x] 修复后 Release build、107/107 tests 和 format 复验通过。
+- [x] reviewer 复审输出 `PASS`；无 `BLOCKER`、`HIGH` 或 `MEDIUM`。
+- [x] 记录 reviewer 保留项：2 个 `LOW`，5 个非阻断测试缺口。
+- [x] 上一轮阶段 2 reviewer 完成门检查已记录；保持阶段 3 未开始。
+- [x] 本轮 stage_director 返回 `BLOCKED`：`PLAN.md` 阶段 2 标题与用户原始启动文本不一致，`docs/REQUIREMENTS.md` 的 reviewer 待执行表述与 `TASKS.md`、`DEVLOG.md` 的最终 `PASS` 记录冲突。
+- [x] 根主线程重新运行完整验证：`dotnet restore` 成功；Release build 0 warning、0 error；107/107 tests 通过、0 skipped；`dotnet format --verify-no-changes` 通过；`%TEMP%\FolderSessionLock.Tests` 临时测试目录残留 0。
+- [x] 本轮 reviewer 输出 `FAIL`：无 `BLOCKER`、无运行时 `HIGH`，唯一 `HIGH` 为上述权威文档冲突。
+- [x] 仅修复该 `HIGH`：将 `PLAN.md` 阶段 2 标题统一为“阶段 2：领域模型、任务状态与倒计时调度”，同步修正 reviewer 历史状态与当前 gate 记录。
+- [x] 最终 reviewer 复审输出 `PASS`；无 `BLOCKER` 或 `HIGH`；阶段 2 完成门重新满足。
+- [x] stage_director 重新核验输出 `READY`；阶段 2 gate 通过。
+
+## 阶段 3：Logon SID 与 ACL 锁定引擎
+
+- [x] 自动阶段转换 1/8：根主线程已读取并接受 `NEXT_STAGE_GOAL_PAYLOAD`，阶段 3 开始。
+- [x] planner 输出 `PROCEED`，完成阶段 3 六个 checkpoint、同句柄 ACL API 可行性和 coder 精确交接。
+- [x] checkpoint 1：实现当前令牌 Account SID、唯一 Logon SID 和 Windows Session ID 读取；focused tests 5/5 通过。
+- [x] checkpoint 2：实现路径、固定 NTFS、reparse、最终路径和稳定目录身份验证；focused tests 20/20 通过，临时目录残留 0。
+- [x] checkpoint 3：实现同句柄 DACL 快照、最小 Deny 掩码、添加、后置验证与精确移除；focused tests 5/5 通过，ACL 恢复且残留 0。
+- [x] checkpoint 4：实现 Lock、Unlock、幂等、精确移除、rollback 与 `RecoveryRequired` 映射；focused tests 30/30 通过，ACL 恢复且残留 0。
+- [x] checkpoint 5：完成最小 Deny 权限矩阵真实临时目录集成测试；Category test 1/1、完整 tests 150/150 通过，0 skipped，ACL 恢复且残留 0。
+- [x] checkpoint 6：完成恢复权限、ACL 不变量、TOCTOU、清理与文档证据；Windows tests 60/60、solution tests 158/158、TOCTOU 3/3、不变量 1/1 通过，0 skipped，残留 0。
+- [x] coder 按六个 checkpoint 完成阶段 3 实现与真实验证。
+- [x] 根主线程最终验证：restore 成功；Release build 0 warning、0 error；Windows tests 60/60、solution tests 158/158 通过，0 skipped；format、diff、安全扫描通过；临时卷 Fixed/NTFS/Healthy，残留 0。
+- [x] reviewer 阶段 3 首轮输出 `FAIL`；无 `BLOCKER`，2 个 `HIGH`。
+- [x] 修复轮次 1/6：仅修复重复 task ID 请求一致性与临时目录清理安全停止门两个 `HIGH`；Windows 66/66、solution 164/164 通过，0 skipped，残留 0。
+- [x] reviewer 最终复审输出 `PASS`；无 `BLOCKER` 或 `HIGH`。
+- [x] 记录 reviewer 保留项：1 个 `MEDIUM`、2 个 `LOW` 与非阻断测试缺口。
+- [x] 阶段 3 完成门满足；阶段 4 保持未开始。
+- [x] stage_director 接受阶段 3 完成证据并返回 `BLOCKED`；未生成阶段 4 payload。
+- [x] 用户确认恢复记录的精确存储路径、格式、字段、版本、原子提交、机器范围保护 API 和访问 ACL；已记录为 `D-022`、`D-023`。
+- [x] 用户批准阶段 4 测试环境与系统操作范围：仅 `FSL-STAGE4-VM`；服务、LocalSystem、自动启动、登录前执行、UAC、注销/重启、保护安装目录和签名；已记录为 `D-025`。
+- [x] 用户确认服务名、恢复模式入口、项目/安装标识符和启动参数；禁止 planner 静默改名；已记录为 `D-024`。
+- [x] 用户确认重启/登录、首次访问、UAC 跨账户拒绝、签名验证的人工执行与结果采集方案；已记录为 `D-026`。
+- [x] 同步更新 `docs/DECISIONS.md`、`docs/ARCHITECTURE.md`、`docs/SECURITY.md`、`docs/REQUIREMENTS.md`、`PLAN.md`、`ACCEPTANCE.md`、`TASKS.md`、`DEVLOG.md`。
+- [x] 确认当前机器名为 `AGREELIN`，不是获准 VM `FSL-STAGE4-VM`；本轮未执行服务、LocalSystem、UAC、注销、重启、Program Files/ProgramData ACL 或签名系统操作。
+- [x] 八份权威文档一致性验证通过：精确路径、字段、服务名、参数、环境门、Markdown 围栏、尾随空白、禁止术语和 `git diff --check` 均通过；根主线程准备调用只读 `stage_director`。
+
+## 后续阶段
+
+- [ ] 阶段 4：提升 Broker、IPC 与恢复生命周期。
+  - [x] `stage_director` 重新核验返回 `READY`；阶段 3 → 阶段 4 自动转换 2/8。
+  - [x] 根主线程已读取并接受完整 `NEXT_STAGE_GOAL_PAYLOAD`；阶段 4 开始。
+  - [x] planner 输出 `PROCEED`，完成十个 checkpoint、环境分类、验收、测试矩阵和 coder 精确交接。
+  - [x] checkpoint 1：UI/Broker 进程边界；Broker 唯一组合根；App 无 Windows/ACL 写引用；focused 11/11、solution 168/168、Release build 与 format 通过，残留 0。
+  - [x] checkpoint 2：强类型协议和 `ValidatePath`、`CreateLock`、`RemoveLock`、`GetStatus` 四命令白名单；协议 focused 45/45、App 边界 focused 8/8、solution 213/213、Release build 与 format 通过，残留 0。
+    - [x] 用户确认 Windows Named Pipe、byte-mode 分帧、严格 UTF-8 JSON、版本、envelope、成功/失败结构、严格字段处理和精确错误码。
+    - [x] 用户确认 `ValidatePath` 请求/响应字段、限制和错误映射。
+    - [x] 用户确认 `CreateLock` 协议字段、领域映射、响应、幂等和冲突语义。
+    - [x] 用户确认 `RemoveLock` 调用主体、服务端 `LockRemovalIntent` 映射、请求、响应和失败码。
+    - [x] 用户确认 `GetStatus` 查询范围、任务集合、响应字段、剩余时间和错误脱敏结构。
+    - [x] 用户确认命令权限矩阵、禁止输入和最低恶意输入验收矩阵。
+    - [x] 八份权威文档协议同步与一致性验证通过：request fields 6/6、通用错误码 12/12、命令字段 26/26、文件 8/8；根主线程准备调用只读 `stage_director`。
+    - [x] `stage_director` 返回 `READY`；D-027 完整解除 CP2 协议阻塞，阶段 4 从 CP2 继续，自动转换保持 2/8。
+    - [x] planner 输出 `PROCEED`：协议放入 Core 的独立 `FolderSessionLock.Protocol` 命名空间，不新增项目或改变引用；完成 CP2 精确文件、46 错误码、测试矩阵和 CP3–CP10 交接。
+    - [x] coder 完成 D-027 传输无关合同：请求/响应 envelope、46 个错误码、四命令 DTO、严格 JSON/schema、领域映射和纯服务端权限策略；未进入 CP3。
+    - [x] 根主线程独立复验：协议 45/45、App 边界 8/8、完整测试 213/213，0 failed、0 skipped；Release build 0 warning、0 error；format、`git diff --check`、CP3+ 越界扫描通过；`%TEMP%\FolderSessionLock.Tests` 残留目录 0、文件 0。
+  - [x] checkpoint 3：固定 Named Pipe、byte framing、严格 UTF-8、单请求/响应连接和受保护最小 DACL；transport focused 19/19、App 30/30、solution 232/232，0 failed、0 skipped；残留 0。
+    - [x] Pipe 名固定为 `FolderSessionLock.Broker.v1`；原生 `CreateNamedPipeW` 同时固定 `PIPE_REJECT_REMOTE_CLIENTS` 与仅含发起 Logon SID、Broker Account SID 的受保护 DACL。
+    - [x] 根主线程独立复验：CP2 协议回归 45/45；Release build 0 warning、0 error；format、`git diff --check`、CP4+ 越界扫描通过；当前机器未执行跨机器远程连接验证。
+  - [x] checkpoint 4：OS 客户端身份、一次性高熵握手、10 分钟 requestId 防重放、120 秒时间窗口和命令权限矩阵。
+    - [x] coder 在写代码前完成只读精确合同核验；工作区无 CP4 代码修改，未进入 CP5。
+    - [x] 历史 `BLOCKED`：权威文件当时未定义握手、绑定、身份错误和 Replay 原子语义；该停止证据保留。
+    - [x] 用户通过附件 `67fe30c2-2d02-44d8-a036-32b353f86dd4\pasted-text.txt` 最终确认四帧握手、CLI/JSON 绑定、完整错误对象、OS 身份顺序、bindingProof、机器范围 Replay Registry、所有权、TTL、失败撤销与崩溃规则。
+    - [x] 八份权威文档完成同步与一致性验证：D-027 关键合同 50/50、Markdown 围栏平衡、尾随空白 0、禁止术语 0、旧未解除阻塞 0、`git diff --check` 退出码 0。
+    - [x] 根线程重新调用只读 `stage_director`；verdict 为 `BLOCKED`，原五项阻塞已覆盖，但发现两项新合同冲突/缺失。
+    - [x] 用户最终确定 Replay 仅在完整 OS 身份、Broker identity 和命令权限验证成功后 CreateNew；身份/授权失败绝不创建 Replay，删除身份前登记兼容分支。
+    - [x] 用户补齐六个握手/序列/Replay 错误的唯一场景、retryable、field、ServerHello/CommandResponse、标识符回显/null 和 Replay 行为。
+    - [x] 八份权威文档完成最终勘误同步、冲突扫描与一致性验证：8/8 文件、六错误合同表 6/6、核心勘误规则 4/4、冲突短语 5/5；Markdown 围栏平衡、尾随空白 0、禁止术语 0、`git diff --check` 退出码 0。根主线程重新调用只读 `stage_director`。
+    - [x] `stage_director` 返回 `READY`，planner 返回 `PROCEED`；根线程严格串行调用唯一 coder、独立验证和 reviewer，未进入 CP5。
+    - [x] coder 完成四帧状态机、CLI/request/session 绑定、OS Pipe PID/进程/token 身份、finally 恢复、bindingProof、Replay Registry/所有权/TTL/终态和六错误唯一映射。
+    - [x] reviewer 首轮 `FAIL` 的 4 个 `HIGH` 在第 1/6 轮修复关闭：恢复身份失败硬停止、第二帧 malformed/timeout 分离、abandoned mutex 恢复、强类型副作用/rollback 终态映射。
+    - [x] reviewer 复查 `PASS`，无 `BLOCKER` 或 `HIGH`；保留 1 个非阻断 `MEDIUM`：内层应用响应标识符仍由内部 handler 提供，连接层未强制重绑定。
+    - [x] 根线程最终复验：Core Protocol 52/52、App CP4 55/55、Windows identity 5/5、串行 solution 275/275，0 failed、0 skipped；Release build 0 warning/0 error；format、`git diff --check`、CP5 越界扫描通过；TEMP、`.fsrr`、TestResults 与产品/测试进程残留均为 0。
+    - [x] 当前机器 `AGREELIN` 未执行 `%ProgramData%` Replay ACL、受保护全局 mutex DACL、普通用户拒绝、服务、LocalSystem、UAC、重启、签名或其他 `FSL-STAGE4-VM` 专属验证。
+  - [x] checkpoint 5：Broker 计时、内存状态与 D-022 固定 `.fslr` 恢复记录。
+    - [x] `stage_director` 返回 `READY`，确认 CP5 为紧邻 checkpoint；未进入 CP6。
+    - [x] planner 完成只读合同核验并返回 `BLOCKED`；未修改产品代码、测试或文档合同，未调用 coder。
+    - [x] 用户通过附件 `a3173f6d-a52b-4031-b8d2-0c5b83c73311\pasted-text.txt` 最终确认 D-022 恢复记录 `volumeSerialNumber` 为 16 位 UInt64 小写 hex、FILE_ID_128 high/low little-endian 映射、十进制格式、反向重建和固定测试向量。
+    - [x] 用户最终确认 `FSLACE`/`FSLDACL` v1 binary wrapper、control mask `0x1504`、ACE 原始顺序、有效 byte 范围、包含/排除项及三个固定 SHA-256 向量。
+    - [x] 八份权威文档完成 CP5 目录身份与 ACL 摘要最终合同同步和一致性验证：8/8 文件包含 D-022/`volumeSerialNumber`/`FSLACE`/`FSLDACL`，11/11 决策值、3/3 SHA-256 向量、4/4 旧活动条款扫描通过；围栏平衡、尾随空白 0、禁止术语 0、`git diff --check` 退出码 0。重新调用只读 `stage_director`。
+    - [x] `stage_director` 确认目录身份与 ACL 摘要阻塞已解除，但返回 `BLOCKED`；未生成 CP5 payload，未调用 planner/coder/reviewer。
+    - [x] 用户通过附件 `1a3ee981-d95b-4a8b-a05a-f8d22b42574c\pasted-text.txt` 最终确认 `.fslr` v1 header 12 bytes、Flags=0/允许掩码0、blob 1..262144、严格总长、截断/尾随/DPAPI、解密明文上限 131072及固定错误对象。
+    - [x] 用户最终确认 recovery payload 全部 25 字段类型/格式/范围/允许值/必需性、canonical 解析，以及 `Prepared`/Applied/CleanupPending/CleanupFailed 的 postApply/error/count null 矩阵、跨字段规则和完整测试矩阵。
+    - [x] 八份权威文档完成 `.fslr` 容器与 payload 最终合同同步和一致性验证：8/8 文件包含 D-022/Flags/262144/131072/25/Prepared；13/13 稳定错误码、4/4 状态矩阵、25/25 payload 字段通过；Prepared postApply 为 null，围栏平衡、尾随空白 0、禁止术语 0、`git diff --check` 退出码 0。重新调用只读 `stage_director`。
+    - [x] `stage_director` 返回 `READY`，planner 返回 `PROCEED`；根线程严格串行调用唯一 coder、独立验证和 reviewer，未进入 CP6。
+    - [x] coder 完成 16 位 volume/FILE_ID_128、FSLACE/FSLDACL、严格 25 字段 JSON、DPAPI LocalMachine、`.fslr` 容器、原子 store、Prepared/Applied/Cleanup 事务、Broker task/recoveryRecordId 与 Replay evidence 映射。
+    - [x] reviewer 首轮 `FAIL` 的 2 个 `HIGH` 在第 1/6 轮关闭：Prepared 删除失败传播为 RecoveryRequired；D-022.5/D-022.9 强制矩阵和原子中断点测试补齐。
+    - [x] reviewer 复查 `PASS`，无 `BLOCKER` 或 `HIGH`；保留 3 个 `MEDIUM` 和 1 个 `LOW`：accountSid 主体分类、lastErrorMessage 内容拒绝、lastUpdatedUtc 严格递增、临时文件清理异常稳定返回。
+    - [x] 根线程最终复验：Core focused 52/52、App Recovery+Transport 239/239、Windows focused 74/74、串行 solution 473/473，0 failed、0 skipped；Release build 0 warning/0 error；format、`git diff --check`、CP6 越界扫描和全部残留检查通过。
+    - [x] 当前机器 `AGREELIN` 未执行生产 ProgramData ACL、服务、LocalSystem、登录前恢复、UAC、注销、重启、安装、签名、SACL 或审计操作。
+  - [x] checkpoint 6：崩溃、断线、正常退出、注销和断电恢复；当前 `AGREELIN` 环境允许的实现、测试和只读审查完成。
+    - [x] `stage_director` 返回 `READY`，确认 CP6 为紧邻 checkpoint；阶段 6 审计未获批准，CP6 保持禁止 Audit File System、SACL 和 Security 日志。
+    - [x] planner 初步返回 `PROCEED`，但 coder 在写代码前发现 `BrokerLifecycleController.StopAsync` 的 scheduler/cleanup 双失败错误优先级未定义；coder 已暂停，未修改 CP6 代码。
+    - [x] 用户明确确认唯一优先级：cleanup first-task error 优先；scheduler error 仅写入受保护内部日志，不阻止 Cleanup，不覆盖首个 task error，也不把全部成功的 Cleanup 伪造为失败。
+    - [x] 固定 2×2 结果：scheduler success/Cleanup success 返回 success count；success/failure 返回 Cleanup first-task error；failure/success 返回 success count；failure/failure 返回 Cleanup first-task error。
+    - [x] 八份权威文档同步 D-028：稳定任务顺序、完整遍历、后续错误附加诊断、`RecoveryRequired` 优先级、内部日志字段和公开响应脱敏规则已固定。
+    - [x] 根线程重新调用项目级只读 `stage_director`；verdict 为 `READY`，确认 D-028 已解除唯一阻塞并生成完整 CP6 payload。
+    - [x] 只读 planner 重新读取 D-028 后返回 `PROCEED`，固定 Cleanup 按 `StartedTimestamp`、`Id.Value` 升序串行处理，`StopAsync` 最终结果完全等于 Cleanup 结果。
+    - [x] 唯一 coder 完成写入前调用链核验；未修改 CP6 产品代码或测试，未运行 focused/build/full tests，CP6.2/CP6.3 未开始。
+    - [x] 用户批准 administrative Cleanup 的两个精确内部错误：`lock_task.administrative_cleanup.exception` / `The administrative cleanup ended without a confirmed result.`，以及 `lock_task.administrative_cleanup.state_update_failed` / `The lock was removed but its completed state could not be recorded.`；两者均为 `UnrecoverableError -> RecoveryRequired`。
+    - [x] 八份权威文档同步上述 code、message、category、状态和禁止复用 activation/expiration 专用错误规则。
+    - [x] 根线程重新调用项目级只读 `stage_director`；verdict 为 `READY`，确认 D-028 与两个精确错误合同均已解除阻塞。
+    - [x] 根线程按 READY payload 严格串行完成 planner → coder → reviewer。
+    - [x] coder 完成 Core administrative Cleanup、Broker lifecycle、IPC 断线与恢复责任测试；D-028 四组合、稳定首错、完整遍历、并发 Stop、两个精确错误与脱敏日志均覆盖。
+    - [x] 三份测试源码全零损坏通过 session 原文、成功 patch 时间线与 Release PDB document hash 逐字恢复；恢复后 NUL 0、重复测试 0，CP6.3 patch 精确重放。
+    - [x] reviewer 首轮 `FAIL` 的 2 个 `HIGH` 在第 1/6 修复轮关闭：真实 scheduler 不再向 logger 传递 Exception；组合根强制接收 `ILoggerFactory` 并注入三个强类型 logger。
+    - [x] reviewer 复查 `PASS`，无 `BLOCKER`、`HIGH` 或新增 `MEDIUM`/`LOW`。
+    - [x] 根线程独立复验：Core 153/153、App 267/267、Windows 81/81，总计 501/501，0 failed、0 skipped；Release build 0 warning/0 error；format、`git diff --check`、NUL、越界和全部残留检查通过。
+  - [x] checkpoint 7：恢复 ACL 组合、持续句柄和漂移停止。
+    - [x] `stage_director` 返回 `READY`，确认 CP7 为紧邻 checkpoint；`FSL-STAGE4-VM` 与阶段 6 审计门保持不变。
+    - [x] 根线程按 READY payload 串行执行 planner → coder → reviewer；`LastUnrecoveredOperation` 已删除，每次 ACL 调用显式返回独立 operation，单记录恢复清理绑定持续句柄并执行漂移停止。
+    - [x] reviewer 首轮 `FAIL` 的 1 个 `HIGH` 在第 1/6 修复轮关闭：有效 `Applied` 记录遇到 ACL 漂移时原子写入 `CleanupFailed`、递增 attempt count、保留稳定脱敏错误并保持 ACL 与记录责任。
+    - [x] reviewer 复查 `PASS`，无 `BLOCKER` 或 `HIGH`；保留 1 个非阻断 `MEDIUM`：attempt 上限极端中断状态归一留待后续处理。
+    - [x] 根线程独立复验：修复 focused 15/15；完整 Core 153/153、App 273/273、Windows 83/83，总计 509/509，0 failed、0 skipped；Release build 0 warning/0 error；format、diff、NUL、越界和全部残留检查通过。
+  - [x] checkpoint 8：固定恢复模式参数与服务抽象；当前 `AGREELIN` 允许范围完成，VM-only 证据保留至阶段 4 特权门。
+    - [x] `stage_director` 返回 `READY`，确认 CP8 为紧邻 checkpoint；只允许在 `AGREELIN` 完成代码、非特权测试和静态审查，不执行 SCM、LocalSystem 或系统 ACL 操作。
+    - [x] 只读 planner 完成现有参数入口、恢复 store、CP7 单记录清理与 D-023–D-026 合同核验，返回 `BLOCKED`；未调用 coder，未修改 CP8 产品代码或测试。
+    - [x] 用户最终确认 `recovery-once` 唯一退出码 0/2/10/11/12/13/14/15、场景映射与优先级；禁止直接返回 Win32/HRESULT/NTSTATUS/记录错误码。
+    - [x] 用户最终确认固定 Records 顶层枚举、4096/1024 上限、规范小写 Guid D `.fslr`、Ordinal 排序、`.bak`/`.tmp-*`、非法构件、目录级与记录级 I/O 规则。
+    - [x] 用户最终确认多记录 Cleanup 继续稳定遍历、`CleanupPending` ACL 临界区、首个记录错误、五类记录结果、十二字段摘要与 recoveryBlocking 不变量。
+    - [x] 用户最终确认 `recovery-service` 启动扫描一次后持续托管、不周期扫描，以及 StartPending/Preflight/Scanning/Ready/RecoveryBlocked/Stopping/Stopped、Stop、取消、`RecoveryReadinessSnapshot` 与 `FSL_E_RECOVERY_BLOCKING` 合同。
+    - [x] 用户最终确认 D-023 `IProtectedPathSecurityVerifier` 接口、二十步执行顺序、owner/DACL/ACE/继承策略、精确错误码，以及合同所称 CP6/CP8 实现边界。
+    - [x] 八份权威文档完成同步与一致性验证：strict UTF-8 8/8、围栏平衡、尾空白 0、禁用词 0；8/8 包含 recovery-once、4096、`RecoveryReadinessSnapshot`、`IProtectedPathSecurityVerifier`、`FSL_E_RECOVERY_BLOCKING`；`git diff --check` 退出码 0。
+    - [x] 重新调用只读 `stage_director` 返回 `READY`；只读 planner 返回 `PROCEED`；唯一 coder 完成 CP8 当前环境实现，根线程首轮完整复验 555/555、0 failed、0 skipped，Release build 0 warning/0 error，format、diff与残留检查通过。
+    - [x] reviewer 首轮 `FAIL` 报告 4 个 `HIGH`：扫描误删配对 `.bak`、Stop 可绕过 ACL 临界区等待、D-023 接受冲突 Deny/未知 ACE、单记录文件读取/更新/删除 TOCTOU 未闭合。
+    - [x] 第 1/6 修复轮关闭 `.bak`、Stop 与 ACE policy 三个 `HIGH`，并增强记录文件 OPEN_REPARSE_POINT、identity 与安全信息验证；根线程修复后 focused 256/256、完整 565/565、0 failed、0 skipped，Release build 0 warning/0 error，format、diff与全部残留检查通过。
+    - [x] reviewer 第一次复查确认前三个 `HIGH` 已关闭，保留 2 个 `HIGH`：更新/删除仍在关闭验证句柄后按路径操作；writer 未建立 SYSTEM 文件 owner，而 reader 无权威依据地强制每条记录 owner 为 SYSTEM。
+    - [x] 用户最终确认 `.fslr`、`.tmp-*`、`.bak` 唯一 SYSTEM owner、protected ACL revision 2、精确三个显式 `0x001F01FF` FullControl Allow ACE、无继承/额外/Deny/object/callback/unknown ACE。
+    - [x] 用户最终确认 `IRecoveryRecordFileSecurity`、consent writer 同 tempHandle 设置 owner/DACL、`SeRestorePrivilege` finally、`Global\FolderSessionLock.RecoveryStore.v1` 与 fail-closed 错误。
+    - [x] 用户最终确认 Records/temp/old canonical 持续句柄、rename/delete 同句柄 mutation、post-commit 失败 `FSL_E_RECOVERY_FILE_POST_COMMIT_VERIFICATION_FAILED`、auxiliary security与禁止全部路径型 replace/move/delete API；随后明确批准 rename 使用 user-mode `NtSetInformationFile(FileRenameInformationEx = 65)`，删除继续使用 FileDispositionInfoEx。
+    - [x] 初始 D-022.11 八份权威文档同步与一致性验证通过；该版本的 FileRenameInfoEx rename 条款已由后续 Windows 11 实证与用户批准的 class 65 勘误替换。
+    - [x] 重新调用只读 `stage_director` 返回 `READY`；只读 planner 返回 `PROCEED`，确认第 2/6 修复轮只关闭剩余两个 `HIGH`。
+    - [x] 第 2/6 coder 修复轮曾触发强制停止：`SetFileInformationByHandle(FileRenameInfoEx)` 在 Windows 11 `10.0.22631`、NTFS TEMP、持续 Records 目录句柄和 `ReplaceIfExists=false` 下返回 Win32 87；两次依据 Microsoft 文档调整目录句柄访问权限仍失败，相关未证明改动已撤销。
+    - [x] 隔离 ABI 证明矩阵确认 `FILE_RENAME_INFO` x64 `FileName` offset 20、`sizeof` 24；`20 + FileNameLength`、`24 + FileNameLength`、`24 + FileNameLength + NUL` 三种 buffer 均在 `RootDirectory +` 相对叶名下返回 Win32 87，排除现有 buffer 长度为唯一原因。
+    - [x] 同一 Windows 11 `10.0.22631`、同一 TEMP NTFS、同一 source handle 和宽权限目录句柄下：`FileRenameInfoEx` class 22 与 `FileRenameInfo` class 3 使用 `RootDirectory +` 相对叶名均返回 Win32 87；两者改为 `RootDirectory = NULL +` 绝对目标路径均成功。所有探针目录已在 `finally` 清理，残留 0。
+    - [x] WDK 原生替代实证完成：user-mode `NtSetInformationFile` 使用 `FileRenameInformationEx = 65`、`FILE_RENAME_INFORMATION`、持续 Records directory handle 与相对简单叶名成功完成新建；使用 flags `0x00000003` 成功完成 old canonical handle 保持打开的 POSIX replace。rename 后 temp handle 读取新内容，old canonical handle 继续读取旧内容；TEMP 残留 0。
+    - [x] 旧 focused 结果为 256 total、231 passed、25 failed；25 个失败主要由首次 `WriteNewAsync` 无法 handle-relative rename 引起。该 class 22 根因已由 class 65 实现解除，不再作为当前 blocker。
+    - [x] 失败测试留下的 18 个空 `%TEMP%\FolderSessionLock.Tests` 目录已逐个验证为空并清理；最终 TEMP 目录/文件 0，恢复构件、TestResults、进程和服务残留 0。
+    - [x] 用户明确批准以已实证的 user-mode `NtSetInformationFile(FileRenameInformationEx = 65)` 替换 rename mutation API：新建 flags=0，更新 flags=`0x00000003`，production 禁止 class 10、SetFileInformationByHandle class 22/class 3、绝对目标与其他 fallback；FileDispositionInfoEx 删除及其余 D-022.11 不变。
+    - [x] 八份权威文档完成本次 class 65 勘误同步与一致性验证：strict UTF-8 8/8、`FileRenameInformationEx = 65` 8/8、围栏平衡、尾空白 0、禁用词 0、active conflict 0、diff check 通过、TEMP/恢复构件残留 0。
+    - [x] 重新调用只读 `stage_director` 返回 `READY`；只读 planner 返回 `PROCEED`，唯一 coder 恢复第 2/6 修复轮。
+    - [x] production rename 已迁移为 user-mode `NtSetInformationFile(FileRenameInformationEx = 65)`；新增 platform tests 9/9 通过，Release build 0 warning/0 error，静态扫描确认无 class 10/class 22/class 3 rename、绝对目标或路径 fallback。
+    - [x] post-commit leaf mapping 已改为 retained Records directory handle 的 `GetFileInformationByHandleEx(FileIdExtdDirectoryRestartInfo/FileIdExtdDirectoryInfo)` + `FILE_ID_EXTD_DIR_INFO` 枚举；ShareMode 0 保持不变，store tests 提升为 12/13。
+    - [x] Windows WDK 明确 `FILE_DISPOSITION_POSIX_SEMANTICS` 的 link 在执行 delete 的 handle 关闭后才从 visible namespace 移除；旧 D-022.11 关闭前确认顺序与平台语义冲突，唯一 store 失败由此产生。
+    - [x] 用户精确批准 canonical 删除顺序勘误：“同一已验证 canonical handle 执行 FileDispositionInfoEx DELETE|POSIX → 关闭该 handle → retained Records directory handle 确认 canonical 名称消失 → 复核目录 identity”；名称仍存在、枚举失败或无法证明关闭/删除时进入 `RecoveryRequired`，禁止路径重试、按名称删除、重新打开后删除或删除 replacement。
+    - [x] 八份权威文档完成本次 canonical 删除顺序勘误同步与一致性验证：strict UTF-8 8/8、delete order 8/8、围栏平衡、尾空白 0、禁用词 0、active conflict 0、diff check 通过、TEMP 残留 0。
+    - [x] 重新调用只读 `stage_director` 返回 `READY`；只读 planner 返回 `PROCEED`，根线程恢复第 2/6 修复轮。
+    - [x] 第 2/6 修复轮完成 class 65 相对句柄 rename、retained directory FILE_ID 枚举、SYSTEM owner/精确 DACL writer/reader、canonical `FileDispositionInfoEx` 删除与 disposition → close → retained directory confirmation → directory identity 顺序；相关旧共享句柄测试改为精确 delete failure injection，canonical 文件安全错误保留 D-022.11 精确错误。
+    - [x] reviewer 确认原 TOCTOU 与 owner/DACL 两个 `HIGH` 已关闭，但新增 temp 创建后取消/异常绕过同句柄清理的 `HIGH`；第 3/6 修复轮建立统一 temp cleanup 证明：同 handle Delete → close → retained directory 叶名消失 → directory identity，无法证明时永久阻断写入并返回 `FSL_E_RECOVERY_TEMP_CLEANUP_FAILED`。
+    - [x] reviewer 再次确认 temp 生命周期 `HIGH` 已关闭，但新增 committed 后取消/异常绕过 post-commit failure 的 `HIGH`；第 4/6 修复轮将 rename 成功后的验证固定为不可取消，并把 committed 状态全部异常统一映射为 `FSL_E_RECOVERY_FILE_POST_COMMIT_VERIFICATION_FAILED`，保留 canonical 与恢复责任。
+    - [x] reviewer 最终 `PASS`，无 `BLOCKER` 或 `HIGH`；句柄 TOCTOU、writer/reader owner/DACL、temp 生命周期与 post-commit 副作用分类四项均关闭。保留两个既有非阻断 `MEDIUM`：真实 CLI 参数错误输出、wait-hint heartbeat/顶层 `FSL_E_INTERNAL` 映射。
+    - [x] 根线程最终独立复验：Release build 0 warning、0 error；Core 153/153、App 340/340、Windows 103/103，总计 596/596，0 failed、0 skipped；format、`git diff --check -- .`、C# CRLF、禁止路径 API 与 class 65/FileDispositionInfoEx 静态扫描通过。
+    - [x] 清理复核：工作区恢复构件 0、TestResults 0、`%TEMP%\FolderSessionLock.Tests` 目录/文件 0、testhost/vstest/App/Broker 进程 0，`FolderSessionLockRecovery` 服务不存在；未执行 SCM、LocalSystem、UAC、注销、重启、ProgramData/ProgramFiles ACL、签名、SACL、审计或 VM 场景。
+    - [x] CP8 完成后首次 `stage_director` 返回 `BLOCKED`，唯一阻塞为三份状态头、`PLAN.md` 与 `TASKS.md` 尚保留 platform 9/9、store 12/13 和“等待恢复 coder”的旧状态；产品实现、验证、reviewer 与 VM 边界没有新阻塞。
+    - [x] 五份状态文档已同步为 CP8 当前环境完成、596/596、reviewer `PASS`、VM-only 证据未完成，并唯一标明紧邻未开始 checkpoint 为 CP9。
+  - [x] 用户批准 `D-029：同账户 consent elevation 与 consent-broker 生产生命周期`，精确解决 CP9 的 Account SID mismatch/UI 跨账户转换、可信 UI identity bootstrap、UAC/production Broker path/process race、固定退出码与 production composition 四项阻塞。
+  - [x] D-029 已同步到八份权威文档；旧四参数 consent CLI 已改为增加 `--client-process-id` 与 `--client-process-creation-filetime`，SID 不进入 CLI；旧的 Account mismatch/跨账户错误混层、cwd/bin Broker path、ProcessStartInfo runas、连接后 TerminateProcess 与应用错误直接非零退出规则已改写。
+  - [x] 文档同步阶段未运行真实 UAC、elevated Broker、Program Files 安装、跨账户凭据、SCM、LocalSystem、注销、重启、签名、SACL 或审计操作。
+  - [x] CP9 文档一致性验证与只读 `stage_director` gate 完成；`stage_director` 返回 `READY`，确认 CP1–CP8 当前环境范围、596/596、reviewer `PASS`、格式、diff 与清理证据，并下发 CP9 `NEXT_STAGE_GOAL_PAYLOAD`。
+  - [x] 根线程按 payload 调用只读 planner；planner 返回 `BLOCKED`，确认 D-029 已决定内容不再阻塞，但三个生产合同仍缺失：跨进程 recovery readiness 发布/读取；生产 `LockDurationPolicy`、scheduler 与路径策略来源；protected logger provider、owner/DACL、轮换及失败行为。
+  - [x] 用户批准 `D-030：跨进程 Recovery Readiness、生产路径策略与受保护日志`，精确解除上述三个阻塞：受保护machine snapshot、60000..86400000ms与single monotonic scheduler、handle-based repository/Cloud Files/SkyDrive分类、`ProtectedJsonLinesLoggerProvider`安全/格式/rotation/retention/exit语义。
+  - [x] D-030 已同步到八份权威文档；旧八字段readiness、未定义时效、可配置repository/synchronization roots、未固定duration/scheduler和logger占位条款已改写。文档同步未执行真实UAC、SCM、LocalSystem或生产ProgramData ACL。
+  - [x] strict UTF-8 8/8、BOM/NUL 0、Markdown围栏平衡、尾空白0；D-030/machine snapshot/86400000/ProtectedJsonLinesLoggerProvider覆盖8/8；主动冲突0、禁用词0、TEMP/恢复构件0、`git diff --check -- .`退出0。
+  - [x] 重新调用只读`stage_director`返回`READY`；确认D-030三项合同缺口全部解除、CP9源码尚未开始、文档/残留检查通过。`FSL-STAGE4-VM`事项只阻止阶段4整体完成，不阻止`AGREELIN` CP9非特权实现。
+  - [x] 新payload的只读planner返回`PROCEED`，确认D-030覆盖全部旧阻塞，无新设计冲突；将CP9分为共享合同/CLI、machine readiness、分类与scheduler、protected logger、UI client、Broker bootstrap/host、production composition、完整矩阵八个依赖顺序checkpoint。
+  - [x] 唯一 coder 已按 checkpoint 1→8 串行完成 `AGREELIN` 允许范围：UI identity/path/UAC/race、Broker bootstrap/host/production composition、machine readiness、固定 duration/scheduler、repository/synchronization 分类和 protected logger；未进入 CP10、阶段 5 或阶段 6。
+  - [x] coder focused 验证通过：初始 CP9 recovery/readiness/runner 26/26；扩展 Program/Recovery/runner 37/37；repository/synchronization 11/11；全量首次暴露 7 个确定性回归后，精确修复 stale readiness fixture、测试目标路径和 denied directory 的恢复 handle access，回归 focused 7/7。
+  - [x] coder 最终验证：restore 退出 0；Release build 0 warning、0 error；Core 174/174、App 440/440、Windows 114/114，总计 728/728，0 failed、0 skipped；format、`git diff --check -- .`、禁止 recovery 路径 API、production fake/logger/readiness、非权威 repository/synchronization source 与 Windows Task Scheduler API 扫描通过。
+  - [x] coder 清理复核：`%TEMP%\FolderSessionLock.Tests` 条目 0、相关产品进程 0、工作区 bin/obj 外 recovery/readiness/logger 构件 0，`FolderSessionLockRecovery` 服务不存在；未执行 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 Cloud Files/OneDrive、签名、注销或重启。
+  - [x] 用户最终批准两项剩余精确值：exit 2 固定公开对象为 `FSL_E_BROKER_LAUNCH_CONTRACT_INVALID` / `The elevated broker launch request is invalid.` / false / null且不得泄露启动细节；原始 NTSTATUS 为`0xC000CF13`/`-1073688813`，转换 HRESULT 为`0xD000CF13`/`-805253357`，实际 HRESULT wrapper不得混用或掩码。
+  - [x] coder 已补 exit 2 产品 mapper与公开对象测试；Cloud Files产品判断只接受Win32 not-under-sync-root HRESULT和`unchecked((int)0xD000CF13)`，原始NTSTATUS、转换HRESULT与关闭集合分别独立测试。focused App 13/13、Windows 7/7通过。
+  - [x] 两项精确值最终复验：restore退出0；Release build 0 warning、0 error；Core174/174、App441/441、Windows117/117，总计732/732，0 failed、0 skipped；format、diff、八文档精确值/UTF-8/围栏/尾空白、禁止旧缺口短语与残留检查通过。
+  - [x] reviewer 首轮结论为 `FAIL`，报告 6 个 `HIGH`：缺少 SCM dispatcher/status wrapper；protected log retention 未接入创建/rotation/运行维护；scheduler/Cleanup 未通过真实 protected JSONL provider 保留合同诊断；consent-broker 未在永久 logger failure 时稳定退出；repository ancestor 验证存在名称重开 TOCTOU；SkyDrive HRESULT 使用低 16 位判断。
+  - [x] 第 1/6 修复轮完成并验证其中 5 项 `HIGH`：SCM dispatcher/status wrapper 与状态映射；创建/rotation 前 retention 及 24 小时运行维护；consent-broker logger failure 退出优先级；repository retained volume-root relative handle 与逐级 FILE_ID binding；SkyDrive低16位判断已删除，当时在不存在HRESULT尚未定义时临时把所有负HRESULT fail closed，该临时规则现已被修复轮2/6最终合同替换。Cleanup 的真实 protected JSONL稳定顺序、首错/后续错、`taskId`、完整遍历和`RecoveryRequired`诊断也已完成。
+  - [x] 用户解除 scheduler protected logging 合同阻塞：已废弃旧值不得进入生产；统一使用 `lock_task.scheduler.loop.exception` / `The lock task scheduler loop terminated unexpectedly.`，且仅表示 `LockTaskScheduler` 生产loop未预期的非取消异常。protected logger固定`Scheduler`/`Error`；预期token取消不记录；不得用于lifecycle stop、Cleanup failure、task状态转换、已有更具体错误或logger failure，不公开、不覆盖Cleanup first-task error、不阻止Cleanup，也不记录原异常敏感诊断。
+  - [x] 第 1/6 修复轮实际验证：focused Windows 21/21、App 54/54、Core 18/18；restore退出0；Release build 0 warning、0 error；全量串行 Core174/174、App460/460、Windows124/124，总计758/758、failed0、skipped0；format、`git diff --check -- .`与静态禁止API扫描通过。
+  - [x] 第 1/6 修复轮清理复核：`%TEMP%\FolderSessionLock.Tests` 条目0、相关产品/testhost/vstest进程0、bin/obj外`.fslr`/`.fsrr`/`recovery-readiness.v1.json`/JSONL/TestResults构件0，`FolderSessionLockRecovery`服务不存在；未执行UAC、SCM状态变更、LocalSystem、ProgramData/ProgramFiles ACL、签名、注销、重启、SACL、审计或VM操作。
+  - [x] 最终scheduler合同已实现：`LockTaskScheduler`非取消异常返回新code与固定message；预期取消不记录；lifecycle只对精确新code写`Scheduler`/`Error` protected event，lifecycle自身异常与更具体错误不复用；Cleanup first-task error保持对外优先。schema接受新值并拒绝已废弃旧值，production源码旧值匹配0。
+  - [x] 最终scheduler合同复验：focused Core9/9、App36/36；restore退出0；Release build0 warning、0 error；全量串行Core174/174、App462/462、Windows124/124，总计760/760、failed0、skipped0；format、diff、八文档UTF-8/围栏/尾空白、敏感日志静态扫描与残留检查全部通过。
+  - [x] reviewer修复轮2/6的SkyDrive合同已由用户最终批准：固定flags0调用、失败pointer释放、GetFolderIds S_OK二进制GUID注册检查、`0x80070002`与`0x80070003`精确不存在映射，以及其他HRESULT关闭集合与禁止mask/raw值规则均已同步八文档。
+  - [x] reviewer修复轮2/6实现完成：新增`IKnownFolderManager::GetFolderIds` COM wrapper、S_OK/GUID二进制注册检查、`KnownFolderNotRegistered`原因、固定flags0 SH调用、调用前null pointer与全路径pointer释放；精确允许`0x80070002`/`0x80070003`，其他HRESULT fail closed。最低矩阵28/28通过，禁止flags/mask/raw值静态测试通过。
+  - [x] reviewer修复轮2/6完整验证：restore退出0；Release build0 warning、0 error；全量串行Core174/174、App462/462、Windows140/140，总计776/776、failed0、skipped0；format、diff、八文档UTF-8/围栏/尾空白/合同覆盖、静态扫描与残留检查全部通过。
+  - [x] 同一 reviewer 完成 CP9 当前环境实现的最终只读复审并输出 `PASS`，无 `BLOCKER` 或 `HIGH`；第 1/6 与第 2/6 修复轮全部关闭。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped；CP9 当前 `AGREELIN` 范围完成，CP10 尚未开始。
+  - [ ] `FSL-STAGE4-VM` 特权系统验证与 `D-026` 证据完成；当前保持环境阻塞。
+- [ ] 阶段 5：WPF 前端。
+- [ ] 阶段 6：可选访问审计与警告。
+- [ ] 阶段 7：端到端测试与安全加固。
+
+阶段 4 已通过启动阶段门。未取得 `FSL-STAGE4-VM` 完整特权证据前，禁止将阶段 4 标记完成或进入阶段 5。

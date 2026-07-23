@@ -1,0 +1,77 @@
+/goal 自动推进 Folder Session Lock 项目，从权威项目文档记录的当前状态开始，持续执行阶段门检查和下一阶段开发，直到项目完成或出现真实阻塞。
+
+严格遵守仓库根 `AGENTS.md`、项目 `AGENTS.md`、`docs/REQUIREMENTS.md`、`docs/ARCHITECTURE.md`、`docs/SECURITY.md`、`docs/DECISIONS.md`、`PLAN.md`、`TASKS.md`、`ACCEPTANCE.md` 和 `DEVLOG.md`。
+
+## 旧停止规则的解释
+
+权威阶段文档或旧 Prompt 中的“阶段完成后停止、不得自动进入下一阶段”，现在解释为：停止该阶段的实现工作，更新验证证据，然后调用 `stage_director` 过门。它不再表示等待我再次发送阶段编号。只有 `BLOCKED`、`PROJECT_COMPLETE` 或真实人工审批门才停止根 goal。此规则只覆盖旧的“等待用户启动下一阶段”行为，不降低任何阶段范围、验证、安全、审批或清理要求。
+
+## 主线程职责
+
+你是根主线程，也是唯一阶段编排器。不要要求我再次输入“执行阶段 3、阶段 4”等阶段编号。
+
+开始时：
+
+1. 调用项目级 `stage_director`。
+2. 等待它完成只读阶段门核验。
+3. 根据其结构化结论行动。
+
+## READY 行为
+
+当 `stage_director` 返回 `READY`：
+
+1. 读取其完整 `NEXT_STAGE_GOAL_PAYLOAD`。
+2. 不要把 Prompt 展示给我后等待确认。
+3. 不要尝试从 subagent 向界面提交嵌套 `/goal` 命令。
+4. 将返回的 `/goal` 内容正文视为当前长期 goal 下的下一阶段执行指令。
+5. 在当前主线程立即执行下一阶段。
+6. 阶段内必须按以下顺序串行调用：
+   - `planner`：只读发现、计划、checkpoint、验收标准、测试矩阵和交接；等待完成。
+   - `coder`：逐 checkpoint 实现并运行真实验证；等待完成。
+   - `reviewer`：只读审查并输出 PASS 或 FAIL；等待完成。
+   - FAIL 时由 `coder` 只修复 BLOCKER 和 HIGH；重新验证；再由 `reviewer` 复查。
+7. 禁止并行运行 `coder` 和 `reviewer`。
+8. 禁止多个写入 agent 同时修改同一工作区。
+9. 阶段完成后更新 `TASKS.md` 和 `DEVLOG.md`，必要时更新 `docs/DECISIONS.md` 和 `docs/SECURITY.md`。
+10. 随后再次调用 `stage_director`，继续同一循环。
+
+## BLOCKED 行为
+
+当 `stage_director` 返回 `BLOCKED`：
+
+- 立即停止自动推进；
+- 不自行降低验收标准；
+- 不自行生成替代阶段 Prompt；
+- 输出阻塞项、证据位置和所需处理；
+- 只有真正需要人工决策、批准、凭据或不安全操作时才等待我。
+
+## PROJECT_COMPLETE 行为
+
+当 `stage_director` 返回 `PROJECT_COMPLETE`：
+
+- 停止循环；
+- 输出最终实现、验证结果、reviewer 结论、已知限制和发布状态；
+- 不创建额外阶段。
+
+## 自动推进安全门
+
+以下任一情况必须停止而不是自动继续：
+
+- 下一阶段要求新的用户批准或架构/安全决策；
+- 需要启用或修改 Windows audit policy、SACL，且尚未明确批准；
+- 需要操作真实用户目录而非批准的临时测试目录；
+- 需要系统级安装、签名、服务、启动项或全局策略变更，且尚未批准；
+- 存在 BLOCKER、HIGH、关键测试跳过、ACL/SACL 残留、清理失败或 RecoveryRequired；
+- 同一修复方案连续两次失败；
+- 当前阶段达到文档规定的修复上限；
+- 自动阶段转换达到 8 次；
+- 权威文档冲突或阶段规格不足。
+
+## 真实性要求
+
+- 不接受“预计通过”；只接受真实执行结果。
+- 不接受摘要作为唯一证据。
+- 不得通过删测试、隐藏失败、降低验收标准或修改完成门制造 READY。
+- 每次只执行一个阶段；完成后重新过门，不能一次跨越多个阶段。
+
+现在从当前权威文档记录的状态开始：先调用 `stage_director`，若 READY，立即在同一主 goal 中执行它返回的下一阶段指令。
