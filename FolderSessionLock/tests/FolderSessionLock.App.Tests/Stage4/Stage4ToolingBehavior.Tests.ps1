@@ -1216,6 +1216,155 @@ if ($Slice -in @('All', 'Slice8')) {
                         [string[]]$Left.CanonicalRows,
                         [string[]]$Right.CanonicalRows)
             }
+            function New-FslDispatchByteTemplate {
+                param([string]$Path)
+
+                $fullRoot = [System.IO.Path]::GetFullPath($Path).
+                    TrimEnd('\')
+                $rootInfo = [System.IO.DirectoryInfo]::new($fullRoot)
+                if (-not $rootInfo.Exists -or
+                    ($rootInfo.Attributes -band
+                        [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Dispatch template root is missing or reparse-backed.'
+                }
+                $pending =
+                    [Collections.Generic.Queue[System.IO.DirectoryInfo]]::new()
+                $pending.Enqueue($rootInfo)
+                $directories = [Collections.Generic.List[object]]::new()
+                $files = [Collections.Generic.List[object]]::new()
+                $directories.Add([pscustomobject]@{
+                    RelativePath = '.'
+                    Attributes = [int64]$rootInfo.Attributes
+                })
+                while ($pending.Count -gt 0) {
+                    $directory = $pending.Dequeue()
+                    foreach ($item in
+                        $directory.EnumerateFileSystemInfos()) {
+                        if (($item.Attributes -band
+                                [System.IO.FileAttributes]::ReparsePoint) -ne
+                            0) {
+                            throw (
+                                'Dispatch template contains a reparse point: ' +
+                                $item.FullName)
+                        }
+                        $full = [System.IO.Path]::GetFullPath($item.FullName)
+                        $relative =
+                            $full.Substring($fullRoot.Length).TrimStart('\')
+                        if ($item -is [System.IO.DirectoryInfo]) {
+                            $directories.Add([pscustomobject]@{
+                                RelativePath = $relative
+                                Attributes = [int64]$item.Attributes
+                            })
+                            $pending.Enqueue($item)
+                        }
+                        elseif ($item -is [System.IO.FileInfo]) {
+                            $files.Add([pscustomobject]@{
+                                RelativePath = $relative
+                                Attributes = [int64]$item.Attributes
+                                Bytes = [System.IO.File]::ReadAllBytes($full)
+                            })
+                        }
+                        else {
+                            throw (
+                                'Dispatch template contains an unknown entry: ' +
+                                $item.FullName)
+                        }
+                    }
+                }
+                return [pscustomobject]@{
+                    Root = $fullRoot
+                    Directories = $directories.ToArray()
+                    Files = $files.ToArray()
+                }
+            }
+            function Restore-FslDispatchByteTemplate {
+                param([psobject]$Template)
+
+                $directoryMap =
+                    [Collections.Generic.Dictionary[string, object]]::new(
+                        [StringComparer]::Ordinal)
+                foreach ($record in $Template.Directories) {
+                    $directoryMap.Add($record.RelativePath, $record)
+                }
+                $fileMap =
+                    [Collections.Generic.Dictionary[string, object]]::new(
+                        [StringComparer]::Ordinal)
+                foreach ($record in $Template.Files) {
+                    $fileMap.Add($record.RelativePath, $record)
+                }
+                $rootInfo =
+                    [System.IO.DirectoryInfo]::new([string]$Template.Root)
+                if (-not $rootInfo.Exists -or
+                    ($rootInfo.Attributes -band
+                        [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Dispatch template reset root is unsafe.'
+                }
+                $pending =
+                    [Collections.Generic.Queue[System.IO.DirectoryInfo]]::new()
+                $pending.Enqueue($rootInfo)
+                while ($pending.Count -gt 0) {
+                    $directory = $pending.Dequeue()
+                    foreach ($item in
+                        $directory.EnumerateFileSystemInfos()) {
+                        if (($item.Attributes -band
+                                [System.IO.FileAttributes]::ReparsePoint) -ne
+                            0) {
+                            throw (
+                                'Dispatch template reset found a reparse ' +
+                                'point: ' + $item.FullName)
+                        }
+                        $full = [System.IO.Path]::GetFullPath($item.FullName)
+                        $relative = $full.Substring(
+                            $Template.Root.Length).TrimStart('\')
+                        if ($item -is [System.IO.DirectoryInfo]) {
+                            if (-not $directoryMap.ContainsKey($relative)) {
+                                throw (
+                                    'Dispatch template reset found an unknown ' +
+                                    'directory: ' + $item.FullName)
+                            }
+                            $pending.Enqueue($item)
+                        }
+                        elseif ($item -is [System.IO.FileInfo]) {
+                            if (-not $fileMap.ContainsKey($relative)) {
+                                throw (
+                                    'Dispatch template reset found an unknown ' +
+                                    'file: ' + $item.FullName)
+                            }
+                        }
+                        else {
+                            throw (
+                                'Dispatch template reset found an unknown ' +
+                                'entry: ' + $item.FullName)
+                        }
+                    }
+                }
+                foreach ($record in $Template.Directories) {
+                    $path = if ($record.RelativePath -ceq '.') {
+                        $Template.Root
+                    }
+                    else {
+                        Join-Path $Template.Root $record.RelativePath
+                    }
+                    $info = [System.IO.DirectoryInfo]::new($path)
+                    if (-not $info.Exists -or
+                        ($info.Attributes -band
+                            [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                        [int64]$info.Attributes -ne
+                            [int64]$record.Attributes) {
+                        throw 'Dispatch template directory identity changed.'
+                    }
+                }
+                foreach ($record in $Template.Files) {
+                    $path = Join-Path $Template.Root $record.RelativePath
+                    if ([System.IO.Directory]::Exists($path)) {
+                        throw 'Dispatch template file became a directory.'
+                    }
+                    [System.IO.File]::WriteAllBytes($path, $record.Bytes)
+                    [System.IO.File]::SetAttributes(
+                        $path,
+                        [System.IO.FileAttributes]$record.Attributes)
+                }
+            }
             function New-FslDispatchFixture {
                 param([string]$FixtureRoot, [string]$Mode)
 
@@ -1373,6 +1522,26 @@ if ($Slice -in @('All', 'Slice8')) {
                         $key,
                         $payloadBytes)
                 Write-FslUtf8NoBom $Context.ExternalAnchorSlot0Path (
+                    ($slot | ConvertTo-Json -Compress) +
+                    [Environment]::NewLine)
+            }
+            function Set-FslDispatchSlotHmacInvalid {
+                param([string]$Path)
+
+                $slot =
+                    [System.IO.File]::ReadAllText($Path) |
+                    ConvertFrom-Json
+                $replacement = if ($slot.hmacSha256.StartsWith(
+                    '0',
+                    [StringComparison]::Ordinal)) {
+                    '1'
+                }
+                else {
+                    '0'
+                }
+                $slot.hmacSha256 =
+                    $replacement + $slot.hmacSha256.Substring(1)
+                Write-FslUtf8NoBom $Path (
                     ($slot | ConvertTo-Json -Compress) +
                     [Environment]::NewLine)
             }
@@ -1714,6 +1883,180 @@ if ($Slice -in @('All', 'Slice8')) {
                 (Get-FileHash -LiteralPath (
                     $script:FslDispatchContext.InstallWalPath) `
                     -Algorithm SHA256).Hash -ceq $walBefore)
+            $f2sVerifiedRoot = Join-Path $Root 'F2SVerified'
+            $f2sVerifiedContext =
+                New-FslDispatchFixture $f2sVerifiedRoot 'Verified'
+            $f2sVerifiedTemplate =
+                New-FslDispatchByteTemplate $f2sVerifiedRoot
+            $olderMissingRoot = $f2sVerifiedRoot
+            $script:FslDispatchContext = $f2sVerifiedContext
+            $expectedCache = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.StatePath)
+            [System.IO.File]::Delete(
+                $script:FslDispatchContext.ExternalAnchorSlot1Path)
+            [System.IO.File]::Delete(
+                $script:FslDispatchContext.StatePath)
+            $journalBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.JournalPath) `
+                -Algorithm SHA256).Hash
+            $walBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.InstallWalPath) `
+                -Algorithm SHA256).Hash
+            $script:FslDispatchUseMutationReader = $true
+            $olderMissingResult =
+                Invoke-FslDispatchProbe $olderMissingRoot
+            $script:FslDispatchUseMutationReader = $false
+            $olderMissingRestored =
+                (Test-Path -LiteralPath (
+                    $script:FslDispatchContext.StatePath) -PathType Leaf) -and
+                [System.IO.File]::ReadAllText(
+                    $script:FslDispatchContext.StatePath) -ceq $expectedCache
+            $olderMissingOtherBytesUnchanged = (
+                -not (Test-Path -LiteralPath (
+                    $script:FslDispatchContext.ExternalAnchorSlot1Path)) -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.JournalPath) `
+                    -Algorithm SHA256).Hash -ceq $journalBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.InstallWalPath) `
+                    -Algorithm SHA256).Hash -ceq $walBefore)
+            Restore-FslDispatchByteTemplate $f2sVerifiedTemplate
+            $olderTornRoot = $f2sVerifiedRoot
+            $script:FslDispatchContext = $f2sVerifiedContext
+            $expectedCache = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.StatePath)
+            Write-FslUtf8NoBom `
+                $script:FslDispatchContext.ExternalAnchorSlot1Path '{"torn":'
+            Write-FslUtf8NoBom `
+                $script:FslDispatchContext.StatePath '{"torn":'
+            $olderSlotBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.ExternalAnchorSlot1Path) `
+                -Algorithm SHA256).Hash
+            $journalBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.JournalPath) `
+                -Algorithm SHA256).Hash
+            $walBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.InstallWalPath) `
+                -Algorithm SHA256).Hash
+            $script:FslDispatchUseMutationReader = $true
+            $olderTornResult = Invoke-FslDispatchProbe $olderTornRoot
+            $script:FslDispatchUseMutationReader = $false
+            $olderTornRestored =
+                [System.IO.File]::ReadAllText(
+                    $script:FslDispatchContext.StatePath) -ceq
+                    $expectedCache
+            $olderTornOtherBytesUnchanged = (
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.ExternalAnchorSlot1Path) `
+                    -Algorithm SHA256).Hash -ceq $olderSlotBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.JournalPath) `
+                    -Algorithm SHA256).Hash -ceq $journalBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.InstallWalPath) `
+                    -Algorithm SHA256).Hash -ceq $walBefore)
+            Restore-FslDispatchByteTemplate $f2sVerifiedTemplate
+            $olderHmacRoot = $f2sVerifiedRoot
+            $script:FslDispatchContext = $f2sVerifiedContext
+            $expectedCache = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.StatePath)
+            Set-FslDispatchSlotHmacInvalid `
+                $script:FslDispatchContext.ExternalAnchorSlot1Path
+            [System.IO.File]::Delete(
+                $script:FslDispatchContext.StatePath)
+            $olderSlotBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.ExternalAnchorSlot1Path) `
+                -Algorithm SHA256).Hash
+            $journalBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.JournalPath) `
+                -Algorithm SHA256).Hash
+            $walBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.InstallWalPath) `
+                -Algorithm SHA256).Hash
+            $script:FslDispatchUseMutationReader = $true
+            $olderHmacResult = Invoke-FslDispatchProbe $olderHmacRoot
+            $script:FslDispatchUseMutationReader = $false
+            $olderHmacRestored =
+                (Test-Path -LiteralPath (
+                    $script:FslDispatchContext.StatePath) -PathType Leaf) -and
+                [System.IO.File]::ReadAllText(
+                    $script:FslDispatchContext.StatePath) -ceq $expectedCache
+            $olderHmacOtherBytesUnchanged = (
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.ExternalAnchorSlot1Path) `
+                    -Algorithm SHA256).Hash -ceq $olderSlotBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.JournalPath) `
+                    -Algorithm SHA256).Hash -ceq $journalBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.InstallWalPath) `
+                    -Algorithm SHA256).Hash -ceq $walBefore)
+            Restore-FslDispatchByteTemplate $f2sVerifiedTemplate
+            $advancedHmacRoot = $f2sVerifiedRoot
+            $script:FslDispatchContext = $f2sVerifiedContext
+            $advancedState = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.StatePath) |
+                ConvertFrom-Json
+            Write-FslState `
+                $script:FslDispatchContext `
+                $advancedState `
+                'PreflightCaptured'
+            $slot1Outer = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.ExternalAnchorSlot1Path) |
+                ConvertFrom-Json
+            $slot1Payload = [System.Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString(
+                    [Convert]::FromBase64String(
+                        [string]$slot1Outer.payload)) |
+                ConvertFrom-Json
+            $slot0Outer = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.ExternalAnchorSlot0Path) |
+                ConvertFrom-Json
+            $slot0Payload = [System.Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString(
+                    [Convert]::FromBase64String(
+                        [string]$slot0Outer.payload)) |
+                ConvertFrom-Json
+            $advancedJournalLength = [int64](Get-Item -LiteralPath (
+                $script:FslDispatchContext.JournalPath)).Length
+            $advancedSetupCorrect = (
+                [int64]$slot1Payload.generation -eq 3L -and
+                [int64]$slot0Payload.generation -eq 2L -and
+                [int64]$slot1Payload.binding.journal.length -eq
+                    $advancedJournalLength -and
+                [int64]$slot0Payload.binding.journal.length -lt
+                    $advancedJournalLength)
+            Set-FslDispatchSlotHmacInvalid `
+                $script:FslDispatchContext.ExternalAnchorSlot1Path
+            $advancedHmacResult =
+                Invoke-FslDispatchProbe $advancedHmacRoot
+            $f2sDeferredRoot = Join-Path $Root 'F2SDeferred'
+            $f2sDeferredContext =
+                New-FslDispatchFixture $f2sDeferredRoot 'Deferred'
+            $f2sDeferredTemplate =
+                New-FslDispatchByteTemplate $f2sDeferredRoot
+            $deferredOlderMissingRoot = $f2sDeferredRoot
+            $script:FslDispatchContext = $f2sDeferredContext
+            [System.IO.File]::Delete(
+                $script:FslDispatchContext.ExternalAnchorSlot1Path)
+            $deferredOlderMissingResult =
+                Invoke-FslDispatchProbe $deferredOlderMissingRoot
+            Restore-FslDispatchByteTemplate $f2sDeferredTemplate
+            $deferredOlderTornRoot = $f2sDeferredRoot
+            $script:FslDispatchContext = $f2sDeferredContext
+            Write-FslUtf8NoBom `
+                $script:FslDispatchContext.ExternalAnchorSlot1Path '{"torn":'
+            $deferredOlderTornResult =
+                Invoke-FslDispatchProbe $deferredOlderTornRoot
+            Restore-FslDispatchByteTemplate $f2sDeferredTemplate
+            $deferredOlderHmacRoot = $f2sDeferredRoot
+            $script:FslDispatchContext = $f2sDeferredContext
+            Set-FslDispatchSlotHmacInvalid `
+                $script:FslDispatchContext.ExternalAnchorSlot1Path
+            $deferredOlderHmacResult =
+                Invoke-FslDispatchProbe $deferredOlderHmacRoot
             $cacheTornRoot = Join-Path $Root 'VerifiedCacheTorn'
             $script:FslDispatchContext =
                 New-FslDispatchFixture $cacheTornRoot 'Verified'
@@ -1912,6 +2255,31 @@ if ($Slice -in @('All', 'Slice8')) {
                     OtherBytesUnchanged =
                         $cacheMissingOtherBytesUnchanged
                 }
+                OlderMissingCurrentVerified = [pscustomobject]@{
+                    Probe = $olderMissingResult
+                    Restored = $olderMissingRestored
+                    OtherBytesUnchanged =
+                        $olderMissingOtherBytesUnchanged
+                }
+                OlderTornCurrentVerified = [pscustomobject]@{
+                    Probe = $olderTornResult
+                    Restored = $olderTornRestored
+                    OtherBytesUnchanged =
+                        $olderTornOtherBytesUnchanged
+                }
+                OlderHmacCurrentVerified = [pscustomobject]@{
+                    Probe = $olderHmacResult
+                    Restored = $olderHmacRestored
+                    OtherBytesUnchanged =
+                        $olderHmacOtherBytesUnchanged
+                }
+                AdvancedLatestHmacOlderStale = [pscustomobject]@{
+                    SetupCorrect = $advancedSetupCorrect
+                    Probe = $advancedHmacResult
+                }
+                DeferredOlderMissing = $deferredOlderMissingResult
+                DeferredOlderTorn = $deferredOlderTornResult
+                DeferredOlderHmac = $deferredOlderHmacResult
                 VerifiedCacheTorn = [pscustomobject]@{
                     Probe = $cacheTornResult
                     Restored = $cacheTornRestored
@@ -1942,8 +2310,8 @@ if ($Slice -in @('All', 'Slice8')) {
                 ConvertTo-Json -Compress -Depth 6)
         }
         Assert-True (
-            $result.DispatcherInvocations -eq 135) (
-            'The dispatcher coverage count changed from 135 invocations.')
+            $result.DispatcherInvocations -eq 142) (
+            'The dispatcher coverage count changed from 142 invocations.')
         Assert-True (
             $result.Matrix.Count -eq 60 -and
             $badDeferredResults.Count -eq 0) (
@@ -1953,10 +2321,11 @@ if ($Slice -in @('All', 'Slice8')) {
             $result.HandlerEntries -eq 0) (
             'A deferred command reached a handler boundary.')
         Assert-True (
-            $result.Hmac.ExitCode -eq 8 -and
-            $result.Hmac.HandlerEntries -eq 0 -and
+            $result.Hmac.ExitCode -eq 3 -and
+            $result.Hmac.Message -ceq 'HANDLER_SENTINEL' -and
+            $result.Hmac.HandlerEntries -eq 1 -and
             $result.Hmac.TreeUnchanged) (
-            'HMAC tampering reached a handler or changed fixture bytes.')
+            'A fresh surviving slot did not tolerate latest HMAC damage.')
         Assert-True (
             $result.Generation.ExitCode -eq 8 -and
             $result.Generation.HandlerEntries -eq 0 -and
@@ -2013,6 +2382,57 @@ if ($Slice -in @('All', 'Slice8')) {
             $result.VerifiedCacheMissing.Restored -and
             $result.VerifiedCacheMissing.OtherBytesUnchanged) (
             'A verified missing cache was not repaired before handoff.')
+        Assert-True (
+            $result.OlderMissingCurrentVerified.Probe.ExitCode -eq 3 -and
+            $result.OlderMissingCurrentVerified.Probe.Message -ceq
+                'HANDLER_SENTINEL' -and
+            $result.OlderMissingCurrentVerified.Probe.HandlerEntries -eq 1 -and
+            $result.OlderMissingCurrentVerified.Restored -and
+            $result.OlderMissingCurrentVerified.OtherBytesUnchanged) (
+            'A current verified slot did not survive an older missing slot.')
+        Assert-True (
+            $result.OlderTornCurrentVerified.Probe.ExitCode -eq 3 -and
+            $result.OlderTornCurrentVerified.Probe.Message -ceq
+                'HANDLER_SENTINEL' -and
+            $result.OlderTornCurrentVerified.Probe.HandlerEntries -eq 1 -and
+            $result.OlderTornCurrentVerified.Restored -and
+            $result.OlderTornCurrentVerified.OtherBytesUnchanged) (
+            'A current verified slot did not survive an older torn slot.')
+        Assert-True (
+            $result.OlderHmacCurrentVerified.Probe.ExitCode -eq 3 -and
+            $result.OlderHmacCurrentVerified.Probe.Message -ceq
+                'HANDLER_SENTINEL' -and
+            $result.OlderHmacCurrentVerified.Probe.HandlerEntries -eq 1 -and
+            $result.OlderHmacCurrentVerified.Restored -and
+            $result.OlderHmacCurrentVerified.OtherBytesUnchanged) (
+            'A current verified slot did not survive an older HMAC failure.')
+        Assert-True (
+            $result.AdvancedLatestHmacOlderStale.SetupCorrect -and
+            $result.AdvancedLatestHmacOlderStale.Probe.ExitCode -eq 8 -and
+            $result.AdvancedLatestHmacOlderStale.Probe.HandlerEntries -eq 0 -and
+            $result.AdvancedLatestHmacOlderStale.Probe.TreeUnchanged) (
+            'A stale surviving slot was accepted after latest HMAC damage.')
+        Assert-True (
+            $result.DeferredOlderMissing.ExitCode -eq 8 -and
+            $result.DeferredOlderMissing.Message -ceq
+                'Platform readiness is deferred until elevation.' -and
+            $result.DeferredOlderMissing.HandlerEntries -eq 0 -and
+            $result.DeferredOlderMissing.TreeUnchanged) (
+            'Deferred readiness changed bytes with an older missing slot.')
+        Assert-True (
+            $result.DeferredOlderTorn.ExitCode -eq 8 -and
+            $result.DeferredOlderTorn.Message -ceq
+                'Platform readiness is deferred until elevation.' -and
+            $result.DeferredOlderTorn.HandlerEntries -eq 0 -and
+            $result.DeferredOlderTorn.TreeUnchanged) (
+            'Deferred readiness changed bytes with an older torn slot.')
+        Assert-True (
+            $result.DeferredOlderHmac.ExitCode -eq 8 -and
+            $result.DeferredOlderHmac.Message -ceq
+                'Platform readiness is deferred until elevation.' -and
+            $result.DeferredOlderHmac.HandlerEntries -eq 0 -and
+            $result.DeferredOlderHmac.TreeUnchanged) (
+            'Deferred readiness changed bytes with an older HMAC failure.')
         Assert-True (
             $result.VerifiedCacheTorn.Probe.ExitCode -eq 3 -and
             $result.VerifiedCacheTorn.Probe.Message -ceq

@@ -664,7 +664,7 @@ function Initialize-FslExternalAnchor {
 function Get-FslExternalAnchorKey {
     param([Parameter(Mandatory = $true)][psobject]$Context)
 
-    if (-not (Test-Path -LiteralPath $Context.ExternalAnchorKeyPath -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists($Context.ExternalAnchorKeyPath)) {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'The protected external anchor key is missing.')
     }
@@ -682,7 +682,7 @@ function Get-FslExternalAnchorKey {
 function Get-FslBindingFile {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists($Path)) {
         return [pscustomobject]@{
             path = [System.IO.Path]::GetFileName($Path)
             exists = $false
@@ -913,8 +913,8 @@ function ConvertTo-FslJournalCore {
 function Read-FslAnchoredJournal {
     param([Parameter(Mandatory = $true)][psobject]$Context)
 
-    if (-not (Test-Path -LiteralPath $Context.JournalPath -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $Context.AnchorPath -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists($Context.JournalPath) -or
+        -not [System.IO.File]::Exists($Context.AnchorPath)) {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'The Stage 4 journal or independent anchor is missing.')
     }
@@ -1073,41 +1073,63 @@ function Resolve-FslPlatformReadinessState {
         'Platform readiness status is invalid.')
 }
 
-function Read-FslReadOnlyExternalAnchorSlots {
+function Read-FslReadOnlyExternalAnchorSlot {
     param(
         [Parameter(Mandatory = $true)][psobject]$Context,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Key,
         [Parameter(Mandatory = $true)][string]$CurrentBranch,
         [Parameter(Mandatory = $true)][string]$CurrentCommit
     )
 
-    $key = Get-FslExternalAnchorKey $Context
-    $slots = @()
-    foreach ($path in @(
-        $Context.ExternalAnchorSlot0Path,
-        $Context.ExternalAnchorSlot1Path)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
-                'Protected platform readiness evidence is invalid.')
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [pscustomobject]@{
+            Status = 'UnavailableOrCorrupt'
+            Path = $Path
+            Payload = $null
         }
-        try {
-            $slot =
-                [System.IO.File]::ReadAllText($path) |
-                ConvertFrom-Json
-            $payloadBytes =
-                [Convert]::FromBase64String([string]$slot.payload)
-            $calculated = [FolderSessionLock.Stage4.Native]::HmacSha256(
-                $key,
-                $payloadBytes)
-            if (-not [FolderSessionLock.Stage4.Native]::FixedTimeEqualsHex(
-                $calculated,
-                [string]$slot.hmacSha256)) {
-                throw 'HMAC mismatch.'
+    }
+    try {
+        $slot =
+            [System.IO.File]::ReadAllText($Path) |
+            ConvertFrom-Json
+        $payloadBytes =
+            [Convert]::FromBase64String([string]$slot.payload)
+    }
+    catch {
+        return [pscustomobject]@{
+            Status = 'UnavailableOrCorrupt'
+            Path = $Path
+            Payload = $null
+        }
+    }
+    try {
+        $calculated = [FolderSessionLock.Stage4.Native]::HmacSha256(
+            $Key,
+            $payloadBytes)
+        if (-not [FolderSessionLock.Stage4.Native]::FixedTimeEqualsHex(
+            $calculated,
+            [string]$slot.hmacSha256)) {
+            return [pscustomobject]@{
+                Status = 'UnavailableOrCorrupt'
+                Path = $Path
+                Payload = $null
             }
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Status = 'UnavailableOrCorrupt'
+            Path = $Path
+            Payload = $null
+        }
+    }
+    try {
             $payload = [System.Text.UTF8Encoding]::new(
                 $false,
                 $true).GetString($payloadBytes) | ConvertFrom-Json
             $generation = [int64]$payload.generation
-            $expectedParity = if ($path -ceq
+            $expectedParity = if ($Path -ceq
                 $Context.ExternalAnchorSlot0Path) {
                 0
             }
@@ -1184,21 +1206,49 @@ function Read-FslReadOnlyExternalAnchorSlots {
                     throw 'Slot binding is invalid.'
                 }
             }
-            $slots += [pscustomobject]@{
-                Path = $path
-                Payload = $payload
-            }
+    }
+    catch {
+        return [pscustomobject]@{
+            Status = 'AuthenticatedInvalid'
+            Path = $Path
+            Payload = $null
         }
-        catch {
+    }
+    return [pscustomobject]@{
+        Status = 'Valid'
+        Path = $Path
+        Payload = $payload
+    }
+}
+
+function Read-FslReadOnlyExternalAnchorSlots {
+    param(
+        [Parameter(Mandatory = $true)][psobject]$Context,
+        [Parameter(Mandatory = $true)][string]$CurrentBranch,
+        [Parameter(Mandatory = $true)][string]$CurrentCommit
+    )
+
+    $key = Get-FslExternalAnchorKey $Context
+    $slots = @()
+    foreach ($path in @(
+        $Context.ExternalAnchorSlot0Path,
+        $Context.ExternalAnchorSlot1Path)) {
+        $candidate = Read-FslReadOnlyExternalAnchorSlot `
+            $Context $path $key $CurrentBranch $CurrentCommit
+        if ($candidate.Status -ceq 'AuthenticatedInvalid') {
             Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
-            'Protected platform readiness evidence is invalid.')
+                'Protected platform readiness evidence is invalid.')
+        }
+        if ($candidate.Status -ceq 'Valid') {
+            $slots += $candidate
         }
     }
     $slots = @($slots |
         Sort-Object { [int64]$_.Payload.generation } -Descending)
-    if ($slots.Count -ne 2 -or
+    if ($slots.Count -eq 0 -or
+        ($slots.Count -eq 2 -and
         [int64]$slots[0].Payload.generation -ne
-            ([int64]$slots[1].Payload.generation + 1L)) {
+            ([int64]$slots[1].Payload.generation + 1L))) {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Protected platform readiness evidence is invalid.')
     }
@@ -1240,10 +1290,12 @@ function Read-FslReadOnlyAnchoredJournal {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Protected platform readiness journal is missing.')
     }
+    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
     try {
+        $anchorBytes =
+            [System.IO.File]::ReadAllBytes($Context.AnchorPath)
         $anchor =
-            [System.IO.File]::ReadAllText($Context.AnchorPath) |
-            ConvertFrom-Json
+            $strictUtf8.GetString($anchorBytes) | ConvertFrom-Json
         $journalBytes =
             [System.IO.File]::ReadAllBytes($Context.JournalPath)
         $anchoredLength = [int64]$anchor.journalLength
@@ -1258,7 +1310,6 @@ function Read-FslReadOnlyAnchoredJournal {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Protected platform readiness journal is invalid.')
     }
-    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
     if ($journalBytes.LongLength -gt $anchoredLength) {
         try {
             $tail = $strictUtf8.GetString(
@@ -1336,6 +1387,8 @@ function Read-FslReadOnlyAnchoredJournal {
         Last = $last
         PrefixLength = $anchoredLength
         PrefixSha256 = Get-FslSha256 $prefix
+        AnchorLength = $anchorBytes.LongLength
+        AnchorSha256 = Get-FslSha256 $anchorBytes
         CurrentLength = $journalBytes.LongLength
         TailStatus = if ($journalBytes.LongLength -eq $anchoredLength) {
             'Exact'
@@ -1358,11 +1411,27 @@ function Get-FslAuthoritativeStage4Snapshot {
     $chain = Read-FslReadOnlyAnchoredJournal $Context
     $binding = $slots[0].Payload.binding
     $state = $chain.Last.state
+    $stateCompact =
+        $state | ConvertTo-Json -Compress -Depth 20
     $stateContent =
         ($state | ConvertTo-Json -Depth 20) + [Environment]::NewLine
     $stateBytes =
         [System.Text.UTF8Encoding]::new($false).GetBytes($stateContent)
     $stateHash = Get-FslSha256 $stateBytes
+    try {
+        $prestateBytes =
+            [System.IO.File]::ReadAllBytes($Context.PrestatePath)
+        $prestateContent =
+            [System.Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($prestateBytes)
+        $prestate = $prestateContent | ConvertFrom-Json
+        $prestateHash = Get-FslSha256 $prestateBytes
+    }
+    catch {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Stage 4 readiness evidence is invalid.')
+    }
     if ($null -eq $binding -or
         $binding.runId -cne $Context.RunId -or
         $binding.machineName -cne [Environment]::MachineName -or
@@ -1370,10 +1439,12 @@ function Get-FslAuthoritativeStage4Snapshot {
             [System.IO.Path]::GetFullPath($Context.RepositoryRoot) -or
         $binding.branch -cne $currentBranch -or
         $binding.gitCommit -cne $currentCommit -or
-        -not (Test-FslReadOnlyBindingFileExact `
-            $binding.prestate $Context.PrestatePath) -or
-        -not (Test-FslReadOnlyBindingFileExact `
-            $binding.stateAnchor $Context.AnchorPath) -or
+        -not $binding.prestate.exists -or
+        [int64]$binding.prestate.length -ne $prestateBytes.LongLength -or
+        [string]$binding.prestate.sha256 -cne $prestateHash -or
+        -not $binding.stateAnchor.exists -or
+        [int64]$binding.stateAnchor.length -ne $chain.AnchorLength -or
+        [string]$binding.stateAnchor.sha256 -cne $chain.AnchorSha256 -or
         -not $binding.state.exists -or
         [int64]$binding.state.length -ne $stateBytes.LongLength -or
         [string]$binding.state.sha256 -cne $stateHash -or
@@ -1386,15 +1457,6 @@ function Get-FslAuthoritativeStage4Snapshot {
         [string]$binding.journal.sha256 -cne $chain.PrefixSha256) {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Protected platform readiness binding is invalid.')
-    }
-    try {
-        $prestate =
-            [System.IO.File]::ReadAllText($Context.PrestatePath) |
-            ConvertFrom-Json
-    }
-    catch {
-        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
-            'Stage 4 readiness evidence is invalid.')
     }
     if ($stateHash -cne $chain.Anchor.stateSha256 -or
         $state.schemaVersion -ne $script:StateSchemaVersion -or
@@ -1414,17 +1476,19 @@ function Get-FslAuthoritativeStage4Snapshot {
     }
 
     $cacheStatus = 'Missing'
-    if (Test-Path -LiteralPath $Context.StatePath -PathType Leaf) {
+    if ([System.IO.File]::Exists($Context.StatePath)) {
         $cacheStatus = 'Mismatched'
         try {
+            $cachedBytes =
+                [System.IO.File]::ReadAllBytes($Context.StatePath)
             $cachedContent =
-                [System.IO.File]::ReadAllText($Context.StatePath)
+                [System.Text.UTF8Encoding]::new(
+                    $false,
+                    $true).GetString($cachedBytes)
             $cached = $cachedContent | ConvertFrom-Json
-            if ((Get-FslSha256 (
-                    [System.Text.UTF8Encoding]::new($false).GetBytes(
-                        $cachedContent))) -ceq $stateHash -and
+            if ((Get-FslSha256 $cachedBytes) -ceq $stateHash -and
                 ($cached | ConvertTo-Json -Compress -Depth 20) -ceq
-                    ($state | ConvertTo-Json -Compress -Depth 20)) {
+                    $stateCompact) {
                 $cacheStatus = 'Exact'
             }
         }
@@ -1432,14 +1496,14 @@ function Get-FslAuthoritativeStage4Snapshot {
             $cacheStatus = 'Mismatched'
         }
     }
-    elseif (Test-Path -LiteralPath $Context.StatePath) {
+    elseif ([System.IO.Directory]::Exists($Context.StatePath)) {
         $cacheStatus = 'Mismatched'
     }
 
     $walStatus = 'Exact'
     $walBinding = $binding.wal
     $walCurrentLength = 0L
-    if (Test-Path -LiteralPath $Context.InstallWalPath -PathType Leaf) {
+    if ([System.IO.File]::Exists($Context.InstallWalPath)) {
         $walCurrentLength =
             [int64](Get-Item -LiteralPath $Context.InstallWalPath).Length
         if (-not $walBinding.exists) {
@@ -1470,7 +1534,7 @@ function Get-FslAuthoritativeStage4Snapshot {
             }
         }
     }
-    elseif (Test-Path -LiteralPath $Context.InstallWalPath) {
+    elseif ([System.IO.Directory]::Exists($Context.InstallWalPath)) {
         $walStatus = 'FatalPrefixMismatch'
     }
     elseif ($walBinding.exists) {
