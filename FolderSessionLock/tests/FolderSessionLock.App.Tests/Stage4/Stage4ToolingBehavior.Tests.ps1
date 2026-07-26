@@ -666,10 +666,10 @@ if ($Slice -in @('All', 'Slice5')) {
                 }
                 elseif ($Mode -ceq 'Invalid') {
                     foreach ($property in ([ordered]@{
-                        PlatformReadinessStatus = 'Verified'
+                        PlatformReadinessStatus = 'VerifiedElevated'
                         SecureBootVerified = $true
-                        TpmNativeVerified = $true
-                        TpmCmdletVerified = $false
+                        TpmPresentVerified = $true
+                        TpmReadyVerified = $false
                         PlatformReadinessVerifiedUtc = 'not-a-time'
                     }).GetEnumerator()) {
                         Add-Member -InputObject $state `
@@ -824,8 +824,8 @@ if ($Slice -in @('All', 'Slice6')) {
                 Continuation = $null
                 PlatformReadinessStatus = 'DeferredUntilElevated'
                 SecureBootVerified = $false
-                TpmNativeVerified = $false
-                TpmCmdletVerified = $false
+                TpmPresentVerified = $false
+                TpmReadyVerified = $false
                 PlatformReadinessVerifiedUtc = $null
             }
             Write-FslState `
@@ -850,10 +850,11 @@ if ($Slice -in @('All', 'Slice6')) {
             'CreateTestCertificate platform verification order was invalid.')
         Assert-True (
             $result.MutationState.transition -ceq 'CertificateCreating' -and
-            $result.MutationState.PlatformReadinessStatus -ceq 'Verified' -and
+            $result.MutationState.PlatformReadinessStatus -ceq
+                'VerifiedElevated' -and
             $result.MutationState.SecureBootVerified -eq $true -and
-            $result.MutationState.TpmNativeVerified -eq $true -and
-            $result.MutationState.TpmCmdletVerified -eq $true -and
+            $result.MutationState.TpmPresentVerified -eq $true -and
+            $result.MutationState.TpmReadyVerified -eq $true -and
             $result.MutationState.PlatformReadinessVerifiedUtc -is [string]) (
             'Certificate mutation preceded persisted readiness verification.')
         $transitionTail = @($result.Transitions |
@@ -1020,8 +1021,8 @@ if ($Slice -in @('All', 'Slice7')) {
                     Continuation = $null
                     PlatformReadinessStatus = 'DeferredUntilElevated'
                     SecureBootVerified = $false
-                    TpmNativeVerified = $false
-                    TpmCmdletVerified = $false
+                    TpmPresentVerified = $false
+                    TpmReadyVerified = $false
                     PlatformReadinessVerifiedUtc = $null
                 }
                 Write-FslState `
@@ -1062,80 +1063,293 @@ if ($Slice -in @('All', 'Slice8')) {
         $result = & $module {
             param($Root, $Repository)
 
-            $branch = (& git.exe -C $Repository branch --show-current |
+            $script:FslDispatchBranch =
+                (& git.exe -C $Repository branch --show-current |
                 Out-String).Trim()
-            $commit = (& git.exe -C $Repository rev-parse HEAD |
+            $script:FslDispatchCommit =
+                (& git.exe -C $Repository rev-parse HEAD |
                 Out-String).Trim()
             $script:FslDispatchHandlerEntries = 0
-            $script:FslDispatchContext = [pscustomobject]@{
-                RunId = '20260725T185000Z-' +
-                    [Guid]::NewGuid().ToString('N').Substring(0, 8)
-                RepositoryRoot = $Repository
-                EvidenceRoot = (Join-Path $Root 'evidence')
-                ReleaseRoot = (Join-Path $Root 'release')
-                InstallDirectory = (Join-Path $Root 'install')
-                ProgramDataRoot = (Join-Path $Root 'program-data')
-                BrokerPath = (
-                    Join-Path $Root 'install\FolderSessionLock.Broker.exe')
-                PrestatePath = (Join-Path $Root 'evidence\prestate.json')
-                StatePath = (Join-Path $Root 'evidence\stage4-state.json')
-                JournalPath = (
-                    Join-Path $Root 'evidence\stage4-journal.jsonl')
-                AnchorPath = (Join-Path $Root 'evidence\stage4-anchor.json')
-                InstallWalPath = (
-                    Join-Path $Root 'evidence\install-wal.jsonl')
-                CommandsPath = (Join-Path $Root 'evidence\commands.txt')
-                ExternalAnchorRoot = (Join-Path $Root 'external-anchor')
-                ExternalAnchorKeyPath = (
-                    Join-Path $Root 'external-anchor\key.dpapi')
-                ExternalAnchorSlot0Path = (
-                    Join-Path $Root 'external-anchor\anchor-0.json')
-                ExternalAnchorSlot1Path = (
-                    Join-Path $Root 'external-anchor\anchor-1.json')
-            }
             function Get-FslContext { return $script:FslDispatchContext }
+            function Get-FslGitValue {
+                param($Context, [string[]]$Arguments)
+
+                $joined = $Arguments -join ' '
+                if ($joined -ceq 'branch --show-current') {
+                    return $script:FslDispatchBranch
+                }
+                if ($joined -ceq 'rev-parse HEAD') {
+                    return $script:FslDispatchCommit
+                }
+                if ($joined -ceq 'status --porcelain=v1 --untracked-files=all') {
+                    return ''
+                }
+                if ($joined -ceq 'rev-parse --git-dir') {
+                    return (Join-Path $Repository '.git')
+                }
+                throw "Unexpected dispatch fixture git query: $joined"
+            }
             function Assert-FslRepositoryGate {}
             function Assert-FslRepositoryMutationGate {}
-            function Assert-FslMachineGate {
+            function Invoke-FslDispatchHandlerSentinel {
                 $script:FslDispatchHandlerEntries++
-                Stop-FslStage4 3 'HANDLER_BOUNDARY_REACHED'
+                Stop-FslStage4 3 'HANDLER_SENTINEL'
+            }
+            function Invoke-FslPublish {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslVerifySignature {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslInstall {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslVerify {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslPrepareContinuation {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslResume {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslUninstall {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslCleanup {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Invoke-FslFinalizeEvidence {
+                Invoke-FslDispatchHandlerSentinel
+            }
+            function Get-FslDispatchSnapshot {
+                param([string]$Path)
+
+                $fullRoot = [System.IO.Path]::GetFullPath($Path).
+                    TrimEnd('\')
+                $entries = @(
+                    Get-Item -LiteralPath $fullRoot -Force
+                    Get-ChildItem -LiteralPath $fullRoot -Force -Recurse
+                ) | ForEach-Object {
+                    $full = [System.IO.Path]::GetFullPath($_.FullName)
+                    $relative = if ($full -ceq $fullRoot) {
+                        '.'
+                    }
+                    else {
+                        $full.Substring($fullRoot.Length).TrimStart('\')
+                    }
+                    $isFile = -not $_.PSIsContainer
+                    $isReparse = (
+                        $_.Attributes -band
+                        [System.IO.FileAttributes]::ReparsePoint) -ne 0
+                    [pscustomobject][ordered]@{
+                        FullPath = $full
+                        RelativePath = $relative
+                        Type = if ($isFile) { 'File' } else { 'Directory' }
+                        Attributes = [int64]$_.Attributes
+                        Reparse = $isReparse
+                        Length = if ($isFile) { [int64]$_.Length } else { $null }
+                        Sha256 = if ($isFile) {
+                            (Get-FileHash -LiteralPath $full `
+                                -Algorithm SHA256).Hash
+                        }
+                        else {
+                            $null
+                        }
+                    }
+                } | Sort-Object RelativePath
+                return [pscustomobject]@{
+                    Json = ($entries | ConvertTo-Json -Compress -Depth 6)
+                    LeafSet = @($entries |
+                        Where-Object { $_.Type -ceq 'File' } |
+                        ForEach-Object { $_.RelativePath })
+                }
+            }
+            function New-FslDispatchFixture {
+                param([string]$FixtureRoot, [string]$Mode)
+
+                [System.IO.Directory]::CreateDirectory($FixtureRoot) |
+                    Out-Null
+                $context = [pscustomobject]@{
+                    RunId = '20260725T185000Z-' +
+                        [Guid]::NewGuid().ToString('N').Substring(0, 8)
+                    RepositoryRoot = $Repository
+                    EvidenceRoot = (Join-Path $FixtureRoot 'evidence')
+                    ReleaseRoot = (Join-Path $FixtureRoot 'release')
+                    InstallDirectory = (Join-Path $FixtureRoot 'install')
+                    ProgramDataRoot = (Join-Path $FixtureRoot 'program-data')
+                    BrokerPath = (Join-Path $FixtureRoot 'install\FolderSessionLock.Broker.exe')
+                    PrestatePath = (Join-Path $FixtureRoot 'evidence\prestate.json')
+                    StatePath = (Join-Path $FixtureRoot 'evidence\stage4-state.json')
+                    JournalPath = (Join-Path $FixtureRoot 'evidence\stage4-journal.jsonl')
+                    AnchorPath = (Join-Path $FixtureRoot 'evidence\stage4-anchor.json')
+                    InstallWalPath = (Join-Path $FixtureRoot 'evidence\install-wal.jsonl')
+                    CommandsPath = (Join-Path $FixtureRoot 'evidence\commands.txt')
+                    ExternalAnchorRoot = (Join-Path $FixtureRoot 'external-anchor')
+                    ExternalAnchorKeyPath = (Join-Path $FixtureRoot 'external-anchor\key.dpapi')
+                    ExternalAnchorSlot0Path = (Join-Path $FixtureRoot 'external-anchor\anchor-0.json')
+                    ExternalAnchorSlot1Path = (Join-Path $FixtureRoot 'external-anchor\anchor-1.json')
+                }
+                [System.IO.Directory]::CreateDirectory(
+                    $context.EvidenceRoot) | Out-Null
+                [System.IO.Directory]::CreateDirectory(
+                    $context.ReleaseRoot) | Out-Null
+                Write-FslUtf8NoBom $context.PrestatePath (
+                    ([ordered]@{
+                        runId = $context.RunId
+                        machineName = [Environment]::MachineName
+                        branch = $script:FslDispatchBranch
+                        gitCommit = $script:FslDispatchCommit
+                    } | ConvertTo-Json) + [Environment]::NewLine)
+                Write-FslUtf8NoBom $context.CommandsPath "fixture`r`n"
+                Write-FslUtf8NoBom $context.InstallWalPath "fixture-wal`r`n"
+                Write-FslUtf8NoBom (
+                    Join-Path $context.ReleaseRoot 'release.bin') 'release'
+                Initialize-FslExternalAnchor $context
+                $state = [pscustomobject]@{
+                    schemaVersion = 1
+                    runId = $context.RunId
+                    machineName = [Environment]::MachineName
+                    branch = $script:FslDispatchBranch
+                    gitCommit = $script:FslDispatchCommit
+                    sequence = 0
+                    transition = $null
+                    CreatedCertificateThumbprint = $null
+                    TrustedCertificateThumbprint = $null
+                    ReleaseRoot = $null
+                    ReleaseDescriptorSha256 = $null
+                    InstallStarted = $false
+                    Installed = $false
+                    ServiceCreated = $false
+                    InstallProof = $null
+                    Continuation = $null
+                }
+                $properties = switch ($Mode) {
+                    'Deferred' {
+                        [ordered]@{
+                            PlatformReadinessStatus =
+                                'DeferredUntilElevated'
+                            SecureBootVerified = $false
+                            TpmPresentVerified = $false
+                            TpmReadyVerified = $false
+                            PlatformReadinessVerifiedUtc = $null
+                        }
+                    }
+                    'Legacy' { [ordered]@{} }
+                    'Partial' {
+                        [ordered]@{
+                            PlatformReadinessStatus =
+                                'DeferredUntilElevated'
+                        }
+                    }
+                    'OldVocabulary' {
+                        [ordered]@{
+                            PlatformReadinessStatus = 'Verified'
+                            SecureBootVerified = $true
+                            TpmNativeVerified = $true
+                            TpmCmdletVerified = $true
+                            PlatformReadinessVerifiedUtc =
+                                '2026-07-25T18:50:00.0000000Z'
+                        }
+                    }
+                    'MixedVerified' {
+                        [ordered]@{
+                            PlatformReadinessStatus = 'VerifiedElevated'
+                            SecureBootVerified = $true
+                            TpmPresentVerified = $true
+                            TpmReadyVerified = $false
+                            PlatformReadinessVerifiedUtc =
+                                '2026-07-25T18:50:00.0000000Z'
+                        }
+                    }
+                    'InvalidTimestamp' {
+                        [ordered]@{
+                            PlatformReadinessStatus = 'VerifiedElevated'
+                            SecureBootVerified = $true
+                            TpmPresentVerified = $true
+                            TpmReadyVerified = $true
+                            PlatformReadinessVerifiedUtc = 'not-a-time'
+                        }
+                    }
+                    'Verified' {
+                        [ordered]@{
+                            PlatformReadinessStatus = 'VerifiedElevated'
+                            SecureBootVerified = $true
+                            TpmPresentVerified = $true
+                            TpmReadyVerified = $true
+                            PlatformReadinessVerifiedUtc =
+                                '2026-07-25T18:50:00.0000000Z'
+                        }
+                    }
+                }
+                foreach ($property in $properties.GetEnumerator()) {
+                    Add-Member -InputObject $state `
+                        -NotePropertyName $property.Key `
+                        -NotePropertyValue $property.Value
+                }
+                Write-FslState $context $state 'PreflightCaptured'
+                if ($Mode -ceq 'Deferred') {
+                    [System.IO.File]::AppendAllText(
+                        $context.JournalPath,
+                        '{"incomplete":',
+                        [System.Text.UTF8Encoding]::new($false))
+                }
+                return $context
+            }
+            function Set-FslDispatchLatestSlotPayload {
+                param(
+                    [psobject]$Context,
+                    [scriptblock]$Mutation
+                )
+
+                $slot = [System.IO.File]::ReadAllText(
+                    $Context.ExternalAnchorSlot0Path) |
+                    ConvertFrom-Json
+                $payloadBytes =
+                    [Convert]::FromBase64String([string]$slot.payload)
+                $payload = [System.Text.UTF8Encoding]::new(
+                    $false,
+                    $true).GetString($payloadBytes) |
+                    ConvertFrom-Json
+                & $Mutation $payload
+                $payloadBytes = [System.Text.UTF8Encoding]::new($false).
+                    GetBytes(
+                        ($payload | ConvertTo-Json -Compress -Depth 20))
+                $key = Get-FslExternalAnchorKey $Context
+                $slot.payload = [Convert]::ToBase64String($payloadBytes)
+                $slot.hmacSha256 =
+                    [FolderSessionLock.Stage4.Native]::HmacSha256(
+                        $key,
+                        $payloadBytes)
+                Write-FslUtf8NoBom $Context.ExternalAnchorSlot0Path (
+                    ($slot | ConvertTo-Json -Compress) +
+                    [Environment]::NewLine)
+            }
+            function Invoke-FslDispatchProbe {
+                param([string]$FixtureRoot)
+
+                $before = Get-FslDispatchSnapshot $FixtureRoot
+                $script:FslDispatchHandlerEntries = 0
+                $writer = [System.IO.StringWriter]::new()
+                $originalError = [Console]::Error
+                [Console]::SetError($writer)
+                try {
+                    $exitCode = Invoke-FslStage4Command `
+                        -Command Resume `
+                        -RunId $script:FslDispatchContext.RunId
+                }
+                finally {
+                    [Console]::SetError($originalError)
+                }
+                $after = Get-FslDispatchSnapshot $FixtureRoot
+                return [pscustomobject]@{
+                    ExitCode = $exitCode
+                    Message = $writer.ToString().Trim()
+                    HandlerEntries = $script:FslDispatchHandlerEntries
+                    TreeUnchanged = $before.Json -ceq $after.Json
+                }
             }
 
-            [System.IO.Directory]::CreateDirectory(
-                $script:FslDispatchContext.EvidenceRoot) | Out-Null
-            Write-FslUtf8NoBom $script:FslDispatchContext.PrestatePath (
-                ([ordered]@{
-                    runId = $script:FslDispatchContext.RunId
-                    machineName = [Environment]::MachineName
-                    branch = $branch
-                    gitCommit = $commit
-                } | ConvertTo-Json) + [Environment]::NewLine)
-            Initialize-FslExternalAnchor $script:FslDispatchContext
-            $state = [pscustomobject]@{
-                schemaVersion = 1
-                runId = $script:FslDispatchContext.RunId
-                machineName = [Environment]::MachineName
-                branch = $branch
-                gitCommit = $commit
-                sequence = 0
-                transition = $null
-                CreatedCertificateThumbprint = $null
-                TrustedCertificateThumbprint = $null
-                ReleaseRoot = $null
-                ReleaseDescriptorSha256 = $null
-                InstallStarted = $false
-                Installed = $false
-                ServiceCreated = $false
-                InstallProof = $null
-                Continuation = $null
-                PlatformReadinessStatus = 'DeferredUntilElevated'
-                SecureBootVerified = $false
-                TpmNativeVerified = $false
-                TpmCmdletVerified = $false
-                PlatformReadinessVerifiedUtc = $null
-            }
-            Write-FslState `
-                $script:FslDispatchContext $state 'PreflightCaptured'
             $pin = '00112233445566778899AABBCCDDEEFF00112233'
             $commands = @(
                 @{ Command = 'Publish'; PublisherThumbprint = $pin },
@@ -1159,41 +1373,327 @@ if ($Slice -in @('All', 'Slice8')) {
                     Command = 'FinalizeEvidence'
                     ReviewerVerdictPath = (Join-Path $Root 'reviewer.txt')
                 })
-            $exitCodes = @()
-            foreach ($arguments in $commands) {
-                $parameters = @{
-                    RunId = $script:FslDispatchContext.RunId
+            $matrix = @()
+            $requiredLeaves = @(
+                'evidence\commands.txt',
+                'evidence\install-wal.jsonl',
+                'evidence\prestate.json',
+                'evidence\stage4-anchor.json',
+                'evidence\stage4-journal.jsonl',
+                'evidence\stage4-state.json',
+                'external-anchor\anchor-0.json',
+                'external-anchor\anchor-1.json',
+                'external-anchor\key.dpapi',
+                'release\release.bin')
+            foreach ($mode in @(
+                'Deferred',
+                'Legacy',
+                'Partial',
+                'OldVocabulary',
+                'MixedVerified',
+                'InvalidTimestamp')) {
+                $fixtureRoot = Join-Path $Root $mode
+                $script:FslDispatchContext =
+                    New-FslDispatchFixture $fixtureRoot $mode
+                foreach ($arguments in $commands) {
+                    $before = Get-FslDispatchSnapshot $fixtureRoot
+                    $parameters = @{
+                        RunId = $script:FslDispatchContext.RunId
+                    }
+                    foreach ($key in $arguments.Keys) {
+                        $parameters[$key] = $arguments[$key]
+                    }
+                    $writer = [System.IO.StringWriter]::new()
+                    $originalError = [Console]::Error
+                    [Console]::SetError($writer)
+                    try {
+                        $exitCode = Invoke-FslStage4Command @parameters
+                    }
+                    finally {
+                        [Console]::SetError($originalError)
+                    }
+                    $after = Get-FslDispatchSnapshot $fixtureRoot
+                    $matrix += [pscustomobject]@{
+                        Mode = $mode
+                        Command = [string]$arguments.Command
+                        ExitCode = $exitCode
+                        Message = $writer.ToString().Trim()
+                        TreeUnchanged = $before.Json -ceq $after.Json
+                        RequiredLeavesPresent = @(
+                            $requiredLeaves |
+                            Where-Object {
+                                $before.LeafSet -cnotcontains $_
+                            }).Count -eq 0
+                    }
                 }
-                foreach ($key in $arguments.Keys) {
-                    $parameters[$key] = $arguments[$key]
-                }
-                $exitCodes += Invoke-FslStage4Command @parameters
             }
-            $after = Get-Content `
-                -LiteralPath $script:FslDispatchContext.StatePath `
-                -Raw | ConvertFrom-Json
+            $matrixHandlerEntries = $script:FslDispatchHandlerEntries
+            $hmacRoot = Join-Path $Root 'HmacTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $hmacRoot 'Verified'
+            $slot = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.ExternalAnchorSlot0Path) |
+                ConvertFrom-Json
+            $replacement = if (
+                $slot.hmacSha256.StartsWith(
+                    '0',
+                    [StringComparison]::Ordinal)) {
+                '1'
+            }
+            else {
+                '0'
+            }
+            $slot.hmacSha256 =
+                $replacement + $slot.hmacSha256.Substring(1)
+            Write-FslUtf8NoBom `
+                $script:FslDispatchContext.ExternalAnchorSlot0Path (
+                ($slot | ConvertTo-Json -Compress) +
+                [Environment]::NewLine)
+            $beforeHmac = Get-FslDispatchSnapshot $hmacRoot
+            $script:FslDispatchHandlerEntries = 0
+            $hmacWriter = [System.IO.StringWriter]::new()
+            $originalError = [Console]::Error
+            [Console]::SetError($hmacWriter)
+            try {
+                $hmacExit = Invoke-FslStage4Command `
+                    -Command Resume `
+                    -RunId $script:FslDispatchContext.RunId
+            }
+            finally {
+                [Console]::SetError($originalError)
+            }
+            $afterHmac = Get-FslDispatchSnapshot $hmacRoot
+            $hmacHandlerEntries = $script:FslDispatchHandlerEntries
+            $generationRoot = Join-Path $Root 'GenerationTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $generationRoot 'Verified'
+            $slot = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.ExternalAnchorSlot0Path) |
+                ConvertFrom-Json
+            $payloadBytes =
+                [Convert]::FromBase64String([string]$slot.payload)
+            $payload = [System.Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($payloadBytes) |
+                ConvertFrom-Json
+            $payload.generation = 4
+            $payloadBytes = [System.Text.UTF8Encoding]::new($false).
+                GetBytes(($payload | ConvertTo-Json -Compress -Depth 20))
+            $key = Get-FslExternalAnchorKey $script:FslDispatchContext
+            $slot.payload = [Convert]::ToBase64String($payloadBytes)
+            $slot.hmacSha256 =
+                [FolderSessionLock.Stage4.Native]::HmacSha256(
+                    $key,
+                    $payloadBytes)
+            Write-FslUtf8NoBom `
+                $script:FslDispatchContext.ExternalAnchorSlot0Path (
+                ($slot | ConvertTo-Json -Compress) +
+                [Environment]::NewLine)
+            $beforeGeneration =
+                Get-FslDispatchSnapshot $generationRoot
+            $script:FslDispatchHandlerEntries = 0
+            $generationWriter = [System.IO.StringWriter]::new()
+            $originalError = [Console]::Error
+            [Console]::SetError($generationWriter)
+            try {
+                $generationExit = Invoke-FslStage4Command `
+                    -Command Resume `
+                    -RunId $script:FslDispatchContext.RunId
+            }
+            finally {
+                [Console]::SetError($originalError)
+            }
+            $afterGeneration =
+                Get-FslDispatchSnapshot $generationRoot
+            $generationHandlerEntries = $script:FslDispatchHandlerEntries
+            $bindingRoot = Join-Path $Root 'BindingTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $bindingRoot 'Verified'
+            Set-FslDispatchLatestSlotPayload `
+                $script:FslDispatchContext {
+                param($Payload)
+                $Payload.binding.state.length =
+                    [int64]$Payload.binding.state.length + 1L
+            }
+            $bindingResult = Invoke-FslDispatchProbe $bindingRoot
+            $slotBindingRoot = Join-Path $Root 'SlotBindingTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $slotBindingRoot 'Verified'
+            $slot = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.ExternalAnchorSlot1Path) |
+                ConvertFrom-Json
+            $payloadBytes =
+                [Convert]::FromBase64String([string]$slot.payload)
+            $payload = [System.Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($payloadBytes) |
+                ConvertFrom-Json
+            $payload.binding.runId = 'tampered'
+            $payloadBytes = [System.Text.UTF8Encoding]::new($false).
+                GetBytes(($payload | ConvertTo-Json -Compress -Depth 20))
+            $key = Get-FslExternalAnchorKey $script:FslDispatchContext
+            $slot.payload = [Convert]::ToBase64String($payloadBytes)
+            $slot.hmacSha256 =
+                [FolderSessionLock.Stage4.Native]::HmacSha256(
+                    $key,
+                    $payloadBytes)
+            Write-FslUtf8NoBom `
+                $script:FslDispatchContext.ExternalAnchorSlot1Path (
+                ($slot | ConvertTo-Json -Compress) +
+                [Environment]::NewLine)
+            $slotBindingResult =
+                Invoke-FslDispatchProbe $slotBindingRoot
+            $cacheRoot = Join-Path $Root 'CacheTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $cacheRoot 'Verified'
+            [System.IO.File]::AppendAllText(
+                $script:FslDispatchContext.StatePath,
+                'tamper',
+                [System.Text.UTF8Encoding]::new($false))
+            $cacheResult = Invoke-FslDispatchProbe $cacheRoot
+            $walRoot = Join-Path $Root 'WalTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $walRoot 'Verified'
+            [System.IO.File]::AppendAllText(
+                $script:FslDispatchContext.InstallWalPath,
+                'tamper',
+                [System.Text.UTF8Encoding]::new($false))
+            $walResult = Invoke-FslDispatchProbe $walRoot
+            $completeTailRoot = Join-Path $Root 'CompleteTail'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $completeTailRoot 'Verified'
+            [System.IO.File]::AppendAllText(
+                $script:FslDispatchContext.JournalPath,
+                "{}`n",
+                [System.Text.UTF8Encoding]::new($false))
+            $completeTailResult =
+                Invoke-FslDispatchProbe $completeTailRoot
+            $incompleteTailRoot = Join-Path $Root 'IncompleteTail'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $incompleteTailRoot 'Verified'
+            [System.IO.File]::AppendAllText(
+                $script:FslDispatchContext.JournalPath,
+                '{"incomplete":',
+                [System.Text.UTF8Encoding]::new($false))
+            $incompleteTailResult =
+                Invoke-FslDispatchProbe $incompleteTailRoot
+            $keyRoot = Join-Path $Root 'DpapiKeyTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $keyRoot 'Verified'
+            $keyBytes = [System.IO.File]::ReadAllBytes(
+                $script:FslDispatchContext.ExternalAnchorKeyPath)
+            $keyBytes[0] = $keyBytes[0] -bxor 1
+            [System.IO.File]::WriteAllBytes(
+                $script:FslDispatchContext.ExternalAnchorKeyPath,
+                $keyBytes)
+            $keyResult = Invoke-FslDispatchProbe $keyRoot
+            $journalRoot = Join-Path $Root 'JournalPrefixTamper'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $journalRoot 'Verified'
+            $journalBytes = [System.IO.File]::ReadAllBytes(
+                $script:FslDispatchContext.JournalPath)
+            $journalBytes[0] = $journalBytes[0] -bxor 1
+            [System.IO.File]::WriteAllBytes(
+                $script:FslDispatchContext.JournalPath,
+                $journalBytes)
+            $journalResult = Invoke-FslDispatchProbe $journalRoot
             return [pscustomobject]@{
-                ExitCodes = @($exitCodes)
-                HandlerEntries = $script:FslDispatchHandlerEntries
-                Sequence = [int]$after.sequence
-                InstallWalExists =
-                    Test-Path -LiteralPath (
-                        $script:FslDispatchContext.InstallWalPath)
-                ReleaseExists =
-                    Test-Path -LiteralPath (
-                        $script:FslDispatchContext.ReleaseRoot)
+                Matrix = @($matrix)
+                HandlerEntries = $matrixHandlerEntries
+                Hmac = [pscustomobject]@{
+                    ExitCode = $hmacExit
+                    Message = $hmacWriter.ToString().Trim()
+                    HandlerEntries = $hmacHandlerEntries
+                    TreeUnchanged = $beforeHmac.Json -ceq $afterHmac.Json
+                }
+                Generation = [pscustomobject]@{
+                    ExitCode = $generationExit
+                    Message = $generationWriter.ToString().Trim()
+                    HandlerEntries = $generationHandlerEntries
+                    TreeUnchanged =
+                        $beforeGeneration.Json -ceq $afterGeneration.Json
+                }
+                Binding = $bindingResult
+                SlotBinding = $slotBindingResult
+                Cache = $cacheResult
+                Wal = $walResult
+                CompleteTail = $completeTailResult
+                IncompleteTail = $incompleteTailResult
+                DpapiKey = $keyResult
+                JournalPrefix = $journalResult
             }
         } $caseRoot $repository
 
+        $badDeferredResults = @($result.Matrix | Where-Object {
+                $_.ExitCode -ne 8 -or
+                $_.Message -cne
+                    'Platform readiness is deferred until elevation.' -or
+                -not $_.TreeUnchanged -or
+                -not $_.RequiredLeavesPresent
+            })
+        if ($badDeferredResults.Count -gt 0) {
+            Write-Output ($badDeferredResults |
+                ConvertTo-Json -Compress -Depth 6)
+        }
         Assert-True (
-            @($result.ExitCodes | Where-Object { $_ -ne 8 }).Count -eq 0) (
-            'A deferred command returned a non-readiness failure.')
+            $result.Matrix.Count -eq 60 -and
+            $badDeferredResults.Count -eq 0) (
+            'A deferred dispatcher fixture changed bytes or returned ' +
+            'a non-readiness result.')
         Assert-True (
-            $result.HandlerEntries -eq 0 -and
-            $result.Sequence -eq 1 -and
-            -not $result.InstallWalExists -and
-            -not $result.ReleaseExists) (
-            'A deferred command reached a handler or mutation boundary.')
+            $result.HandlerEntries -eq 0) (
+            'A deferred command reached a handler boundary.')
+        Assert-True (
+            $result.Hmac.ExitCode -eq 8 -and
+            $result.Hmac.HandlerEntries -eq 0 -and
+            $result.Hmac.TreeUnchanged) (
+            'HMAC tampering reached a handler or changed fixture bytes.')
+        Assert-True (
+            $result.Generation.ExitCode -eq 8 -and
+            $result.Generation.HandlerEntries -eq 0 -and
+            $result.Generation.TreeUnchanged) (
+            'Generation tampering reached a handler or changed fixture bytes.')
+        Assert-True (
+            $result.Binding.ExitCode -eq 8 -and
+            $result.Binding.HandlerEntries -eq 0 -and
+            $result.Binding.TreeUnchanged) (
+            'Binding tampering reached a handler or changed fixture bytes.')
+        Assert-True (
+            $result.SlotBinding.ExitCode -eq 8 -and
+            $result.SlotBinding.HandlerEntries -eq 0 -and
+            $result.SlotBinding.TreeUnchanged) (
+            'An older slot binding tamper reached a handler or changed bytes.')
+        Assert-True (
+            $result.Cache.ExitCode -eq 8 -and
+            $result.Cache.HandlerEntries -eq 0 -and
+            $result.Cache.TreeUnchanged) (
+            'Cache tampering reached a handler or changed fixture bytes.')
+        Assert-True (
+            $result.Wal.ExitCode -eq 8 -and
+            $result.Wal.HandlerEntries -eq 0 -and
+            $result.Wal.TreeUnchanged) (
+            'WAL tampering reached a handler or changed fixture bytes.')
+        Assert-True (
+            $result.CompleteTail.ExitCode -eq 8 -and
+            $result.CompleteTail.HandlerEntries -eq 0 -and
+            $result.CompleteTail.TreeUnchanged) (
+            'A complete unanchored tail was accepted or changed.')
+        Assert-True (
+            $result.IncompleteTail.ExitCode -eq 3 -and
+            $result.IncompleteTail.Message -ceq 'HANDLER_SENTINEL' -and
+            $result.IncompleteTail.HandlerEntries -eq 1 -and
+            $result.IncompleteTail.TreeUnchanged) (
+            'A verified incomplete tail did not enter the handler unchanged.')
+        Assert-True (
+            $result.DpapiKey.ExitCode -eq 8 -and
+            $result.DpapiKey.HandlerEntries -eq 0 -and
+            $result.DpapiKey.TreeUnchanged) (
+            'A DPAPI key tamper reached a handler or changed fixture bytes.')
+        Assert-True (
+            $result.JournalPrefix.ExitCode -eq 8 -and
+            $result.JournalPrefix.HandlerEntries -eq 0 -and
+            $result.JournalPrefix.TreeUnchanged) (
+            'An anchored journal tamper reached a handler or changed bytes.')
     }
     finally {
         if (Test-Path -LiteralPath $caseRoot) {
@@ -1326,10 +1826,10 @@ if ($Slice -in @('All', 'Slice1')) {
                 'DeferredUntilElevated' -and
             $result.State.SecureBootVerified -is [bool] -and
             -not $result.State.SecureBootVerified -and
-            $result.State.TpmNativeVerified -is [bool] -and
-            -not $result.State.TpmNativeVerified -and
-            $result.State.TpmCmdletVerified -is [bool] -and
-            -not $result.State.TpmCmdletVerified -and
+            $result.State.TpmPresentVerified -is [bool] -and
+            -not $result.State.TpmPresentVerified -and
+            $result.State.TpmReadyVerified -is [bool] -and
+            -not $result.State.TpmReadyVerified -and
             $null -eq $result.State.PlatformReadinessVerifiedUtc) (
             'Preflight did not persist the exact deferred readiness state.')
         Assert-True (

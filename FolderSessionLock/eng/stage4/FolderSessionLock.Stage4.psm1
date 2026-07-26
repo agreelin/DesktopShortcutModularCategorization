@@ -1004,11 +1004,16 @@ function Read-FslAnchoredJournal {
 function Resolve-FslPlatformReadinessState {
     param([Parameter(Mandatory = $true)][psobject]$State)
 
+    if ($State.PSObject.Properties.Name -ccontains 'TpmNativeVerified' -or
+        $State.PSObject.Properties.Name -ccontains 'TpmCmdletVerified') {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Legacy platform readiness properties are invalid.')
+    }
     $properties = @(
         'PlatformReadinessStatus',
         'SecureBootVerified',
-        'TpmNativeVerified',
-        'TpmCmdletVerified',
+        'TpmPresentVerified',
+        'TpmReadyVerified',
         'PlatformReadinessVerifiedUtc')
     $present = @($properties | Where-Object {
         $State.PSObject.Properties.Name -ccontains $_
@@ -1017,8 +1022,8 @@ function Resolve-FslPlatformReadinessState {
         foreach ($property in ([ordered]@{
             PlatformReadinessStatus = 'DeferredUntilElevated'
             SecureBootVerified = $false
-            TpmNativeVerified = $false
-            TpmCmdletVerified = $false
+            TpmPresentVerified = $false
+            TpmReadyVerified = $false
             PlatformReadinessVerifiedUtc = $null
         }).GetEnumerator()) {
             Add-Member -InputObject $State `
@@ -1032,26 +1037,26 @@ function Resolve-FslPlatformReadinessState {
             'Platform readiness state is partial.')
     }
     if ($State.SecureBootVerified -isnot [bool] -or
-        $State.TpmNativeVerified -isnot [bool] -or
-        $State.TpmCmdletVerified -isnot [bool]) {
+        $State.TpmPresentVerified -isnot [bool] -or
+        $State.TpmReadyVerified -isnot [bool]) {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Platform readiness verification flags are invalid.')
     }
     if ($State.PlatformReadinessStatus -ceq 'DeferredUntilElevated') {
         if ($State.SecureBootVerified -or
-            $State.TpmNativeVerified -or
-            $State.TpmCmdletVerified -or
+            $State.TpmPresentVerified -or
+            $State.TpmReadyVerified -or
             $null -ne $State.PlatformReadinessVerifiedUtc) {
             Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
                 'Deferred platform readiness state is invalid.')
         }
         return $State
     }
-    if ($State.PlatformReadinessStatus -ceq 'Verified') {
+    if ($State.PlatformReadinessStatus -ceq 'VerifiedElevated') {
         $verifiedUtc = [DateTimeOffset]::MinValue
         if (-not $State.SecureBootVerified -or
-            -not $State.TpmNativeVerified -or
-            -not $State.TpmCmdletVerified -or
+            -not $State.TpmPresentVerified -or
+            -not $State.TpmReadyVerified -or
             $State.PlatformReadinessVerifiedUtc -isnot [string] -or
             -not [DateTimeOffset]::TryParseExact(
                 [string]$State.PlatformReadinessVerifiedUtc,
@@ -1066,6 +1071,382 @@ function Resolve-FslPlatformReadinessState {
     }
     Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
         'Platform readiness status is invalid.')
+}
+
+function Read-FslReadOnlyExternalAnchorSlots {
+    param([Parameter(Mandatory = $true)][psobject]$Context)
+
+    $key = Get-FslExternalAnchorKey $Context
+    $slots = @()
+    foreach ($path in @(
+        $Context.ExternalAnchorSlot0Path,
+        $Context.ExternalAnchorSlot1Path)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'Protected platform readiness evidence is invalid.')
+        }
+        try {
+            $slot =
+                [System.IO.File]::ReadAllText($path) |
+                ConvertFrom-Json
+            $payloadBytes =
+                [Convert]::FromBase64String([string]$slot.payload)
+            $calculated = [FolderSessionLock.Stage4.Native]::HmacSha256(
+                $key,
+                $payloadBytes)
+            if (-not [FolderSessionLock.Stage4.Native]::FixedTimeEqualsHex(
+                $calculated,
+                [string]$slot.hmacSha256)) {
+                throw 'HMAC mismatch.'
+            }
+            $payload = [System.Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($payloadBytes) | ConvertFrom-Json
+            $generation = [int64]$payload.generation
+            $expectedParity = if ($path -ceq
+                $Context.ExternalAnchorSlot0Path) {
+                0
+            }
+            else {
+                1
+            }
+            $recordedUtc = [DateTimeOffset]::MinValue
+            $binding = $payload.binding
+            if ($payload.schemaVersion -ne 1 -or
+                $payload.runId -cne $Context.RunId -or
+                $payload.machineName -cne [Environment]::MachineName -or
+                $generation -lt 1 -or
+                ($generation % 2) -ne $expectedParity -or
+                $payload.recordedUtc -isnot [string] -or
+                -not [DateTimeOffset]::TryParseExact(
+                    [string]$payload.recordedUtc,
+                    'o',
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind,
+                    [ref]$recordedUtc) -or
+                $null -eq $binding -or
+                $binding.runId -cne $Context.RunId -or
+                $binding.machineName -cne [Environment]::MachineName -or
+                $binding.repositoryRoot -cne
+                    [System.IO.Path]::GetFullPath(
+                        $Context.RepositoryRoot) -or
+                $binding.branch -cne
+                    (Get-FslGitValue $Context @(
+                        'branch', '--show-current')) -or
+                $binding.gitCommit -cne
+                    (Get-FslGitValue $Context @(
+                        'rev-parse', 'HEAD'))) {
+                throw 'Slot identity or generation mismatch.'
+            }
+            foreach ($bindingName in @(
+                'prestate',
+                'journal',
+                'wal',
+                'state',
+                'stateAnchor')) {
+                if ($binding.PSObject.Properties.Name -cnotcontains
+                        $bindingName) {
+                    throw 'Slot binding is incomplete.'
+                }
+                $fileBinding = $binding.$bindingName
+                $expectedPath = switch ($bindingName) {
+                    'prestate' {
+                        [System.IO.Path]::GetFileName(
+                            $Context.PrestatePath)
+                    }
+                    'journal' {
+                        [System.IO.Path]::GetFileName(
+                            $Context.JournalPath)
+                    }
+                    'wal' {
+                        [System.IO.Path]::GetFileName(
+                            $Context.InstallWalPath)
+                    }
+                    'state' {
+                        [System.IO.Path]::GetFileName(
+                            $Context.StatePath)
+                    }
+                    'stateAnchor' {
+                        [System.IO.Path]::GetFileName(
+                            $Context.AnchorPath)
+                    }
+                }
+                if ($null -eq $fileBinding -or
+                    $fileBinding.path -cne $expectedPath -or
+                    $fileBinding.exists -isnot [bool] -or
+                    [int64]$fileBinding.length -lt 0 -or
+                    ($fileBinding.exists -and
+                        [string]$fileBinding.sha256 -cnotmatch
+                            '^[0-9A-F]{64}$') -or
+                    (-not $fileBinding.exists -and
+                        ([int64]$fileBinding.length -ne 0 -or
+                            $null -ne $fileBinding.sha256))) {
+                    throw 'Slot binding is invalid.'
+                }
+            }
+            $slots += [pscustomobject]@{
+                Path = $path
+                Payload = $payload
+            }
+        }
+        catch {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness evidence is invalid.')
+        }
+    }
+    $slots = @($slots |
+        Sort-Object { [int64]$_.Payload.generation } -Descending)
+    if ($slots.Count -ne 2 -or
+        [int64]$slots[0].Payload.generation -ne
+            ([int64]$slots[1].Payload.generation + 1L)) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness evidence is invalid.')
+    }
+    return $slots
+}
+
+function Test-FslReadOnlyBindingFileExact {
+    param(
+        [AllowNull()][psobject]$Expected,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if ($null -eq $Expected -or
+        $Expected.PSObject.Properties.Name -cnotcontains 'path' -or
+        $Expected.PSObject.Properties.Name -cnotcontains 'exists' -or
+        $Expected.PSObject.Properties.Name -cnotcontains 'length' -or
+        $Expected.PSObject.Properties.Name -cnotcontains 'sha256' -or
+        $Expected.path -cne [System.IO.Path]::GetFileName($Path) -or
+        $Expected.exists -isnot [bool]) {
+        return $false
+    }
+    if (-not $Expected.exists) {
+        return -not (Test-Path -LiteralPath $Path)
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    $file = Get-Item -LiteralPath $Path
+    return [int64]$Expected.length -eq [int64]$file.Length -and
+        [string]$Expected.sha256 -ceq
+            (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+function Read-FslReadOnlyAnchoredJournal {
+    param([Parameter(Mandatory = $true)][psobject]$Context)
+
+    if (-not (Test-Path -LiteralPath $Context.JournalPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $Context.AnchorPath -PathType Leaf)) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness journal is missing.')
+    }
+    try {
+        $anchor =
+            [System.IO.File]::ReadAllText($Context.AnchorPath) |
+            ConvertFrom-Json
+        $journalBytes =
+            [System.IO.File]::ReadAllBytes($Context.JournalPath)
+        $anchoredLength = [int64]$anchor.journalLength
+    }
+    catch {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness journal is invalid.')
+    }
+    if ($anchoredLength -lt 1 -or
+        $anchoredLength -gt [int]::MaxValue -or
+        $journalBytes.LongLength -lt $anchoredLength) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness journal is invalid.')
+    }
+    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    if ($journalBytes.LongLength -gt $anchoredLength) {
+        try {
+            $tail = $strictUtf8.GetString(
+                $journalBytes,
+                [int]$anchoredLength,
+                [int]($journalBytes.LongLength - $anchoredLength))
+        }
+        catch {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'Protected platform readiness journal tail is invalid.')
+        }
+        if ($tail.Contains("`n")) {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'A complete unanchored Stage 4 journal record was found.')
+        }
+    }
+    $prefix = [byte[]]::new([int]$anchoredLength)
+    [Array]::Copy($journalBytes, 0, $prefix, 0, [int]$anchoredLength)
+    try {
+        $text = $strictUtf8.GetString($prefix)
+    }
+    catch {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness journal is invalid.')
+    }
+    if (-not $text.EndsWith("`n", [StringComparison]::Ordinal)) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness journal is invalid.')
+    }
+    $lines = @($text -split "`n" |
+        ForEach-Object { $_.TrimEnd("`r") } |
+        Where-Object { $_.Length -gt 0 })
+    if ($lines.Count -eq 0) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness journal is empty.')
+    }
+    $previous = '0' * 64
+    $entries = @()
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        try {
+            $entry = $lines[$index] | ConvertFrom-Json
+            $core = ConvertTo-FslJournalCore $entry
+            $calculated = Get-FslSha256 (
+                [System.Text.UTF8Encoding]::new($false).GetBytes(
+                    ($core | ConvertTo-Json -Compress -Depth 20)))
+        }
+        catch {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'Protected platform readiness journal is invalid.')
+        }
+        if ($entry.entrySha256 -cne $calculated -or
+            $entry.previousEntrySha256 -cne $previous -or
+            [int]$entry.sequence -ne ($index + 1) -or
+            $entry.runId -cne $Context.RunId -or
+            $entry.machineName -cne [Environment]::MachineName -or
+            $entry.transition -cnotin $script:KnownTransitions) {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'Protected platform readiness journal is invalid.')
+        }
+        $previous = $calculated
+        $entries += $entry
+    }
+    $last = $entries[-1]
+    if ($anchor.schemaVersion -ne $script:StateSchemaVersion -or
+        $anchor.runId -cne $Context.RunId -or
+        $anchor.machineName -cne [Environment]::MachineName -or
+        [int]$anchor.sequence -ne [int]$last.sequence -or
+        $anchor.entrySha256 -cne $last.entrySha256 -or
+        [int64]$anchor.journalLength -ne $anchoredLength) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness journal is invalid.')
+    }
+    return [pscustomobject]@{
+        Anchor = $anchor
+        Last = $last
+        PrefixLength = $anchoredLength
+        PrefixSha256 = Get-FslSha256 $prefix
+    }
+}
+
+function Read-FslReadOnlyPlatformReadiness {
+    param([Parameter(Mandatory = $true)][psobject]$Context)
+
+    $slots = @(Read-FslReadOnlyExternalAnchorSlots $Context)
+    $chain = Read-FslReadOnlyAnchoredJournal $Context
+    $binding = $slots[0].Payload.binding
+    if ($null -eq $binding -or
+        $binding.runId -cne $Context.RunId -or
+        $binding.machineName -cne [Environment]::MachineName -or
+        $binding.repositoryRoot -cne
+            [System.IO.Path]::GetFullPath($Context.RepositoryRoot) -or
+        $binding.branch -cne
+            (Get-FslGitValue $Context @('branch', '--show-current')) -or
+        $binding.gitCommit -cne
+            (Get-FslGitValue $Context @('rev-parse', 'HEAD')) -or
+        -not (Test-FslReadOnlyBindingFileExact `
+            $binding.prestate $Context.PrestatePath) -or
+        -not (Test-FslReadOnlyBindingFileExact `
+            $binding.wal $Context.InstallWalPath) -or
+        -not (Test-FslReadOnlyBindingFileExact `
+            $binding.state $Context.StatePath) -or
+        -not (Test-FslReadOnlyBindingFileExact `
+            $binding.stateAnchor $Context.AnchorPath) -or
+        $null -eq $binding.journal -or
+        $binding.journal.path -cne
+            [System.IO.Path]::GetFileName($Context.JournalPath) -or
+        $binding.journal.exists -isnot [bool] -or
+        -not $binding.journal.exists -or
+        [int64]$binding.journal.length -ne $chain.PrefixLength -or
+        [string]$binding.journal.sha256 -cne $chain.PrefixSha256) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Protected platform readiness binding is invalid.')
+    }
+    if (-not (Test-Path -LiteralPath $Context.StatePath -PathType Leaf)) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Stage 4 readiness evidence is missing.')
+    }
+    try {
+        $stateContent =
+            [System.IO.File]::ReadAllText($Context.StatePath)
+        $state = $stateContent |
+            ConvertFrom-Json
+        $prestate =
+            [System.IO.File]::ReadAllText($Context.PrestatePath) |
+            ConvertFrom-Json
+    }
+    catch {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Stage 4 readiness evidence is invalid.')
+    }
+    if ((Get-FslSha256 (
+            [System.Text.UTF8Encoding]::new($false).GetBytes(
+                $stateContent))) -cne $chain.Anchor.stateSha256 -or
+        ($state | ConvertTo-Json -Compress -Depth 20) -cne
+            ($chain.Last.state | ConvertTo-Json -Compress -Depth 20) -or
+        $state.schemaVersion -ne $script:StateSchemaVersion -or
+        $state.runId -cne $Context.RunId -or
+        $state.machineName -cne [Environment]::MachineName -or
+        $prestate.runId -cne $Context.RunId -or
+        $prestate.machineName -cne [Environment]::MachineName -or
+        $state.branch -cne $prestate.branch -or
+        $state.gitCommit -cne $prestate.gitCommit -or
+        $state.branch -cne $binding.branch -or
+        $state.gitCommit -cne $binding.gitCommit -or
+        $state.transition -cnotin $script:KnownTransitions -or
+        [int]$state.sequence -ne [int]$chain.Last.sequence -or
+        $state.transition -cne $chain.Last.transition) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Stage 4 readiness evidence is invalid.')
+    }
+    $properties = @(
+        'PlatformReadinessStatus',
+        'SecureBootVerified',
+        'TpmPresentVerified',
+        'TpmReadyVerified',
+        'PlatformReadinessVerifiedUtc')
+    $present = @($properties | Where-Object {
+        $state.PSObject.Properties.Name -ccontains $_
+    })
+    $verifiedUtc = [DateTimeOffset]::MinValue
+    if ($present.Count -eq $properties.Count -and
+        $state.PSObject.Properties.Name -cnotcontains
+            'TpmNativeVerified' -and
+        $state.PSObject.Properties.Name -cnotcontains
+            'TpmCmdletVerified' -and
+        $state.PlatformReadinessStatus -ceq 'VerifiedElevated' -and
+        $state.SecureBootVerified -is [bool] -and
+        $state.SecureBootVerified -and
+        $state.TpmPresentVerified -is [bool] -and
+        $state.TpmPresentVerified -and
+        $state.TpmReadyVerified -is [bool] -and
+        $state.TpmReadyVerified -and
+        $state.PlatformReadinessVerifiedUtc -is [string] -and
+        [DateTimeOffset]::TryParseExact(
+            [string]$state.PlatformReadinessVerifiedUtc,
+            'o',
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$verifiedUtc)) {
+        return $state
+    }
+    return [pscustomobject]@{
+        PlatformReadinessStatus = 'DeferredUntilElevated'
+        SecureBootVerified = $false
+        TpmPresentVerified = $false
+        TpmReadyVerified = $false
+        PlatformReadinessVerifiedUtc = $null
+    }
 }
 
 function Read-FslState {
@@ -1383,8 +1764,8 @@ function Invoke-FslPreflight {
         Continuation = $null
         PlatformReadinessStatus = 'DeferredUntilElevated'
         SecureBootVerified = $false
-        TpmNativeVerified = $false
-        TpmCmdletVerified = $false
+        TpmPresentVerified = $false
+        TpmReadyVerified = $false
         PlatformReadinessVerifiedUtc = $null
     }) 'PreflightCaptured'
     Add-FslCommandEvidence $Context "Preflight -RunId $($Context.RunId)"
@@ -1443,10 +1824,10 @@ function Invoke-FslCreateTestCertificate {
         $prestate.secureBootRegistry `
         $prestate.tbsDeviceInfo `
         $prestate.isElevated
-    $state.PlatformReadinessStatus = 'Verified'
+    $state.PlatformReadinessStatus = 'VerifiedElevated'
     $state.SecureBootVerified = $true
-    $state.TpmNativeVerified = $true
-    $state.TpmCmdletVerified = $true
+    $state.TpmPresentVerified = $true
+    $state.TpmReadyVerified = $true
     $state.PlatformReadinessVerifiedUtc =
         [DateTime]::UtcNow.ToString('o')
     Write-FslState $Context $state 'PlatformReadinessVerified'
@@ -4786,11 +5167,12 @@ function Invoke-FslStage4Command {
             Assert-FslRepositoryMutationGate $context
         }
         if ($Command -cnotin @('Preflight', 'CreateTestCertificate')) {
-            $readinessState = Read-FslState $context
-            if ($readinessState.PlatformReadinessStatus -cne 'Verified' -or
+            $readinessState = Read-FslReadOnlyPlatformReadiness $context
+            if ($readinessState.PlatformReadinessStatus -cne
+                    'VerifiedElevated' -or
                 -not $readinessState.SecureBootVerified -or
-                -not $readinessState.TpmNativeVerified -or
-                -not $readinessState.TpmCmdletVerified -or
+                -not $readinessState.TpmPresentVerified -or
+                -not $readinessState.TpmReadyVerified -or
                 $null -eq $readinessState.PlatformReadinessVerifiedUtc) {
                 Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
                     'Platform readiness is deferred until elevation.')

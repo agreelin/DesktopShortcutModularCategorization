@@ -6,14 +6,17 @@ restores, creates, or deletes VMware snapshots and it never accepts arbitrary
 service names, installation roots, ProgramData roots, pipe names, ACLs, or
 commands.
 
-Run `Preflight` from a non-elevated Windows PowerShell. It reads only the fixed
-64-bit registry value
+Run `Preflight` from a non-elevated Windows PowerShell. Its platform
+attestation sources are read-only: the fixed 64-bit registry value
 `HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State\UEFISecureBootEnabled`,
 native `Tbsi_GetDeviceInfo`, and the current WindowsPrincipal token. It requires
 an `Int32` DWORD value of exactly `1`, a successful TPM 2.0 device descriptor,
-and a non-administrator token. The raw registry/TBS fields are preserved in
-`prestate.json`; readiness remains `DeferredUntilElevated` with all three
-verification flags false and no verification timestamp.
+and a non-administrator token. `Preflight` itself is not a read-only command: it
+writes the new run's evidence, journal, state cache, independent state anchor,
+and DPAPI/HMAC-protected external anchor. The raw registry/TBS fields are
+preserved in `prestate.json`; readiness remains `DeferredUntilElevated` with
+`SecureBootVerified=false`, `TpmPresentVerified=false`,
+`TpmReadyVerified=false`, and a null `PlatformReadinessVerifiedUtc`.
 
 Run `CreateTestCertificate` later from an elevated Windows PowerShell:
 
@@ -30,6 +33,14 @@ gate, requires an administrator token, requires strict Boolean `true` from
 durably records `PlatformReadinessVerified`, then records
 `CertificateCreating`. Every other command rejects
 `DeferredUntilElevated` before entering its handler or performing a mutation.
+Only the complete `VerifiedElevated` tuple with all three verification flags
+true and a round-trip verification timestamp can enter those handlers.
+The dispatcher readiness check is itself completely read-only: it validates
+both protected external anchor slots, their generation and bindings, the
+anchored journal prefix and hash chain, the state anchor and cache, and the WAL
+binding without repair, reconciliation, truncation, or deletion. An incomplete
+unanchored journal tail remains byte-for-byte unchanged; a complete unanchored
+record is rejected.
 Legacy anchored state with all five readiness properties absent is normalized
 to deferred only in memory; partial or invalid readiness state is rejected.
 
