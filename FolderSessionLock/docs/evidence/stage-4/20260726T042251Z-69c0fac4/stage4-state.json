@@ -1,0 +1,23 @@
+{
+    "schemaVersion":  1,
+    "runId":  "20260726T042251Z-69c0fac4",
+    "machineName":  "FSL-STAGE4-VM",
+    "branch":  "cp10-vm-transfer",
+    "gitCommit":  "3bacdad9328e5abe2ae15f3716703ccf9408e1b7",
+    "sequence":  1,
+    "transition":  "PreflightCaptured",
+    "CreatedCertificateThumbprint":  null,
+    "TrustedCertificateThumbprint":  null,
+    "ReleaseRoot":  null,
+    "ReleaseDescriptorSha256":  null,
+    "InstallStarted":  false,
+    "Installed":  false,
+    "ServiceCreated":  false,
+    "InstallProof":  null,
+    "Continuation":  null,
+    "PlatformReadinessStatus":  "DeferredUntilElevated",
+    "SecureBootVerified":  false,
+    "TpmNativeVerified":  false,
+    "TpmCmdletVerified":  false,
+    "PlatformReadinessVerifiedUtc":  null
+}

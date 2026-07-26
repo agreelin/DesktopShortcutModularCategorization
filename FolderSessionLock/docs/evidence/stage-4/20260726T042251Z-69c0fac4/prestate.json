@@ -1,0 +1,39 @@
+{
+    "runId":  "20260726T042251Z-69c0fac4",
+    "capturedUtc":  "2026-07-26T04:30:13.1953634Z",
+    "machineName":  "FSL-STAGE4-VM",
+    "computerName":  "FSL-STAGE4-VM",
+    "cimName":  "FSL-STAGE4-VM",
+    "osCaption":  "Microsoft Windows 11 Pro",
+    "osVersion":  "10.0.26200",
+    "osBuildNumber":  "26200",
+    "secureBootRegistry":  {
+                               "path":  "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State",
+                               "name":  "UEFISecureBootEnabled",
+                               "kind":  "DWord",
+                               "valueType":  "System.Int32",
+                               "rawValue":  1
+                           },
+    "tbsDeviceInfo":  {
+                          "result":  0,
+                          "structVersion":  1,
+                          "tpmVersion":  2,
+                          "tpmInterfaceType":  1,
+                          "tpmImpRevision":  0
+                      },
+    "isElevated":  false,
+    "repositoryRoot":  "C:\\FSL-Workspace\\Repository\\FolderSessionLock",
+    "branch":  "cp10-vm-transfer",
+    "gitCommit":  "3bacdad9328e5abe2ae15f3716703ccf9408e1b7",
+    "gitStatus":  "",
+    "serviceExisted":  false,
+    "installDirectoryExisted":  false,
+    "programDataRootExisted":  false,
+    "releaseRootExisted":  false,
+    "matchingTestCertificateThumbprints":  [
+
+                                           ],
+    "relevantProcesses":  [
+
+                          ]
+}
