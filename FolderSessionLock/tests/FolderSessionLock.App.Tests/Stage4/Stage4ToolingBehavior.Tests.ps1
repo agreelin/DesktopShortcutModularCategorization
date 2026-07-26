@@ -1070,6 +1070,8 @@ if ($Slice -in @('All', 'Slice8')) {
                 (& git.exe -C $Repository rev-parse HEAD |
                 Out-String).Trim()
             $script:FslDispatchHandlerEntries = 0
+            $script:FslDispatchInvocations = 0
+            $script:FslDispatchUseMutationReader = $false
             function Get-FslContext { return $script:FslDispatchContext }
             function Get-FslGitValue {
                 param($Context, [string[]]$Arguments)
@@ -1092,6 +1094,9 @@ if ($Slice -in @('All', 'Slice8')) {
             function Assert-FslRepositoryGate {}
             function Assert-FslRepositoryMutationGate {}
             function Invoke-FslDispatchHandlerSentinel {
+                if ($script:FslDispatchUseMutationReader) {
+                    [void](Read-FslState $script:FslDispatchContext)
+                }
                 $script:FslDispatchHandlerEntries++
                 Stop-FslStage4 3 'HANDLER_SENTINEL'
             }
@@ -1127,43 +1132,89 @@ if ($Slice -in @('All', 'Slice8')) {
 
                 $fullRoot = [System.IO.Path]::GetFullPath($Path).
                     TrimEnd('\')
-                $entries = @(
-                    Get-Item -LiteralPath $fullRoot -Force
-                    Get-ChildItem -LiteralPath $fullRoot -Force -Recurse
-                ) | ForEach-Object {
-                    $full = [System.IO.Path]::GetFullPath($_.FullName)
-                    $relative = if ($full -ceq $fullRoot) {
-                        '.'
-                    }
-                    else {
-                        $full.Substring($fullRoot.Length).TrimStart('\')
-                    }
-                    $isFile = -not $_.PSIsContainer
-                    $isReparse = (
-                        $_.Attributes -band
-                        [System.IO.FileAttributes]::ReparsePoint) -ne 0
-                    [pscustomobject][ordered]@{
-                        FullPath = $full
-                        RelativePath = $relative
-                        Type = if ($isFile) { 'File' } else { 'Directory' }
-                        Attributes = [int64]$_.Attributes
-                        Reparse = $isReparse
-                        Length = if ($isFile) { [int64]$_.Length } else { $null }
-                        Sha256 = if ($isFile) {
-                            (Get-FileHash -LiteralPath $full `
-                                -Algorithm SHA256).Hash
-                        }
-                        else {
-                            $null
-                        }
-                    }
-                } | Sort-Object RelativePath
-                return [pscustomobject]@{
-                    Json = ($entries | ConvertTo-Json -Compress -Depth 6)
-                    LeafSet = @($entries |
-                        Where-Object { $_.Type -ceq 'File' } |
-                        ForEach-Object { $_.RelativePath })
+                $rootInfo = [System.IO.DirectoryInfo]::new($fullRoot)
+                if (-not $rootInfo.Exists -or
+                    ($rootInfo.Attributes -band
+                        [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Dispatch fixture root is missing or reparse-backed.'
                 }
+                $pending =
+                    [Collections.Generic.Queue[System.IO.DirectoryInfo]]::new()
+                $pending.Enqueue($rootInfo)
+                $rows = [Collections.Generic.List[string]]::new()
+                $leaves = [Collections.Generic.List[string]]::new()
+                $separator = [char]0
+                $rows.Add(('D{0}.{0}{1}' -f
+                    $separator,
+                    [int64]$rootInfo.Attributes))
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try {
+                    while ($pending.Count -gt 0) {
+                        $directory = $pending.Dequeue()
+                        foreach ($item in
+                            $directory.EnumerateFileSystemInfos()) {
+                            if (($item.Attributes -band
+                                    [System.IO.FileAttributes]::
+                                    ReparsePoint) -ne 0) {
+                                throw (
+                                    'Dispatch fixture contains a reparse ' +
+                                    'point: ' + $item.FullName)
+                            }
+                            $full = [System.IO.Path]::GetFullPath(
+                                $item.FullName)
+                            $relative =
+                                $full.Substring($fullRoot.Length).TrimStart('\')
+                            if ($item -is [System.IO.DirectoryInfo]) {
+                                $rows.Add(('D{0}{1}{0}{2}' -f
+                                    $separator,
+                                    $relative,
+                                    [int64]$item.Attributes))
+                                $pending.Enqueue($item)
+                            }
+                            elseif ($item -is [System.IO.FileInfo]) {
+                                $bytes =
+                                    [System.IO.File]::ReadAllBytes($full)
+                                $fileHash = [BitConverter]::ToString(
+                                    $sha.ComputeHash($bytes)).Replace('-', '')
+                                $rows.Add(
+                                    ('F{0}{1}{0}{2}{0}{3}{0}{4}' -f
+                                        $separator,
+                                        $relative,
+                                        [int64]$item.Attributes,
+                                        [int64]$bytes.LongLength,
+                                        $fileHash))
+                                $leaves.Add($relative)
+                            }
+                            else {
+                                throw (
+                                    'Dispatch fixture contains an unknown ' +
+                                    'entry: ' + $item.FullName)
+                            }
+                        }
+                    }
+                }
+                finally {
+                    $sha.Dispose()
+                }
+                $canonicalRows = $rows.ToArray()
+                [Array]::Sort(
+                    $canonicalRows,
+                    [StringComparer]::Ordinal)
+                $leafSet = $leaves.ToArray()
+                [Array]::Sort($leafSet, [StringComparer]::Ordinal)
+                return [pscustomobject]@{
+                    CanonicalRows = $canonicalRows
+                    LeafSet = $leafSet
+                }
+            }
+            function Test-FslDispatchSnapshotEqual {
+                param([psobject]$Left, [psobject]$Right)
+
+                return $Left.CanonicalRows.Count -eq
+                    $Right.CanonicalRows.Count -and
+                    [Linq.Enumerable]::SequenceEqual(
+                        [string[]]$Left.CanonicalRows,
+                        [string[]]$Right.CanonicalRows)
             }
             function New-FslDispatchFixture {
                 param([string]$FixtureRoot, [string]$Mode)
@@ -1326,17 +1377,28 @@ if ($Slice -in @('All', 'Slice8')) {
                     [Environment]::NewLine)
             }
             function Invoke-FslDispatchProbe {
-                param([string]$FixtureRoot)
+                param(
+                    [string]$FixtureRoot,
+                    [hashtable]$Arguments = @{ Command = 'Resume' },
+                    [AllowNull()][psobject]$Baseline
+                )
 
-                $before = Get-FslDispatchSnapshot $FixtureRoot
+                if ($null -eq $Baseline) {
+                    $Baseline = Get-FslDispatchSnapshot $FixtureRoot
+                }
                 $script:FslDispatchHandlerEntries = 0
+                $parameters = @{
+                    RunId = $script:FslDispatchContext.RunId
+                }
+                foreach ($key in $Arguments.Keys) {
+                    $parameters[$key] = $Arguments[$key]
+                }
                 $writer = [System.IO.StringWriter]::new()
                 $originalError = [Console]::Error
                 [Console]::SetError($writer)
                 try {
-                    $exitCode = Invoke-FslStage4Command `
-                        -Command Resume `
-                        -RunId $script:FslDispatchContext.RunId
+                    $script:FslDispatchInvocations++
+                    $exitCode = Invoke-FslStage4Command @parameters
                 }
                 finally {
                     [Console]::SetError($originalError)
@@ -1346,7 +1408,8 @@ if ($Slice -in @('All', 'Slice8')) {
                     ExitCode = $exitCode
                     Message = $writer.ToString().Trim()
                     HandlerEntries = $script:FslDispatchHandlerEntries
-                    TreeUnchanged = $before.Json -ceq $after.Json
+                    TreeUnchanged =
+                        Test-FslDispatchSnapshotEqual $Baseline $after
                 }
             }
 
@@ -1395,8 +1458,8 @@ if ($Slice -in @('All', 'Slice8')) {
                 $fixtureRoot = Join-Path $Root $mode
                 $script:FslDispatchContext =
                     New-FslDispatchFixture $fixtureRoot $mode
+                $baseline = Get-FslDispatchSnapshot $fixtureRoot
                 foreach ($arguments in $commands) {
-                    $before = Get-FslDispatchSnapshot $fixtureRoot
                     $parameters = @{
                         RunId = $script:FslDispatchContext.RunId
                     }
@@ -1407,6 +1470,7 @@ if ($Slice -in @('All', 'Slice8')) {
                     $originalError = [Console]::Error
                     [Console]::SetError($writer)
                     try {
+                        $script:FslDispatchInvocations++
                         $exitCode = Invoke-FslStage4Command @parameters
                     }
                     finally {
@@ -1418,11 +1482,12 @@ if ($Slice -in @('All', 'Slice8')) {
                         Command = [string]$arguments.Command
                         ExitCode = $exitCode
                         Message = $writer.ToString().Trim()
-                        TreeUnchanged = $before.Json -ceq $after.Json
+                        TreeUnchanged =
+                            Test-FslDispatchSnapshotEqual $baseline $after
                         RequiredLeavesPresent = @(
                             $requiredLeaves |
                             Where-Object {
-                                $before.LeafSet -cnotcontains $_
+                                $baseline.LeafSet -cnotcontains $_
                             }).Count -eq 0
                     }
                 }
@@ -1455,6 +1520,7 @@ if ($Slice -in @('All', 'Slice8')) {
             $originalError = [Console]::Error
             [Console]::SetError($hmacWriter)
             try {
+                $script:FslDispatchInvocations++
                 $hmacExit = Invoke-FslStage4Command `
                     -Command Resume `
                     -RunId $script:FslDispatchContext.RunId
@@ -1496,6 +1562,7 @@ if ($Slice -in @('All', 'Slice8')) {
             $originalError = [Console]::Error
             [Console]::SetError($generationWriter)
             try {
+                $script:FslDispatchInvocations++
                 $generationExit = Invoke-FslStage4Command `
                     -Command Resume `
                     -RunId $script:FslDispatchContext.RunId
@@ -1545,7 +1612,7 @@ if ($Slice -in @('All', 'Slice8')) {
                 Invoke-FslDispatchProbe $slotBindingRoot
             $cacheRoot = Join-Path $Root 'CacheTamper'
             $script:FslDispatchContext =
-                New-FslDispatchFixture $cacheRoot 'Verified'
+                New-FslDispatchFixture $cacheRoot 'Deferred'
             [System.IO.File]::AppendAllText(
                 $script:FslDispatchContext.StatePath,
                 'tamper',
@@ -1553,7 +1620,7 @@ if ($Slice -in @('All', 'Slice8')) {
             $cacheResult = Invoke-FslDispatchProbe $cacheRoot
             $walRoot = Join-Path $Root 'WalTamper'
             $script:FslDispatchContext =
-                New-FslDispatchFixture $walRoot 'Verified'
+                New-FslDispatchFixture $walRoot 'Deferred'
             [System.IO.File]::AppendAllText(
                 $script:FslDispatchContext.InstallWalPath,
                 'tamper',
@@ -1571,12 +1638,33 @@ if ($Slice -in @('All', 'Slice8')) {
             $incompleteTailRoot = Join-Path $Root 'IncompleteTail'
             $script:FslDispatchContext =
                 New-FslDispatchFixture $incompleteTailRoot 'Verified'
+            $expectedJournal = [System.IO.File]::ReadAllBytes(
+                $script:FslDispatchContext.JournalPath)
+            $incompleteStateBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.StatePath) `
+                -Algorithm SHA256).Hash
+            $incompleteWalBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.InstallWalPath) `
+                -Algorithm SHA256).Hash
             [System.IO.File]::AppendAllText(
                 $script:FslDispatchContext.JournalPath,
                 '{"incomplete":',
                 [System.Text.UTF8Encoding]::new($false))
+            $script:FslDispatchUseMutationReader = $true
             $incompleteTailResult =
                 Invoke-FslDispatchProbe $incompleteTailRoot
+            $script:FslDispatchUseMutationReader = $false
+            $incompleteTailRepaired = [Linq.Enumerable]::SequenceEqual(
+                [byte[]]$expectedJournal,
+                [byte[]][System.IO.File]::ReadAllBytes(
+                    $script:FslDispatchContext.JournalPath))
+            $incompleteOtherBytesUnchanged = (
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.StatePath) `
+                    -Algorithm SHA256).Hash -ceq $incompleteStateBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.InstallWalPath) `
+                    -Algorithm SHA256).Hash -ceq $incompleteWalBefore)
             $keyRoot = Join-Path $Root 'DpapiKeyTamper'
             $script:FslDispatchContext =
                 New-FslDispatchFixture $keyRoot 'Verified'
@@ -1597,30 +1685,248 @@ if ($Slice -in @('All', 'Slice8')) {
                 $script:FslDispatchContext.JournalPath,
                 $journalBytes)
             $journalResult = Invoke-FslDispatchProbe $journalRoot
+            $cacheMissingRoot = Join-Path $Root 'VerifiedCacheMissing'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $cacheMissingRoot 'Verified'
+            $expectedCache = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.StatePath)
+            [System.IO.File]::Delete(
+                $script:FslDispatchContext.StatePath)
+            $journalBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.JournalPath) `
+                -Algorithm SHA256).Hash
+            $walBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.InstallWalPath) `
+                -Algorithm SHA256).Hash
+            $script:FslDispatchUseMutationReader = $true
+            $cacheMissingResult =
+                Invoke-FslDispatchProbe $cacheMissingRoot
+            $script:FslDispatchUseMutationReader = $false
+            $cacheMissingRestored =
+                (Test-Path -LiteralPath (
+                    $script:FslDispatchContext.StatePath) -PathType Leaf) -and
+                [System.IO.File]::ReadAllText(
+                    $script:FslDispatchContext.StatePath) -ceq $expectedCache
+            $cacheMissingOtherBytesUnchanged = (
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.JournalPath) `
+                    -Algorithm SHA256).Hash -ceq $journalBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.InstallWalPath) `
+                    -Algorithm SHA256).Hash -ceq $walBefore)
+            $cacheTornRoot = Join-Path $Root 'VerifiedCacheTorn'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $cacheTornRoot 'Verified'
+            $expectedCache = [System.IO.File]::ReadAllText(
+                $script:FslDispatchContext.StatePath)
+            Write-FslUtf8NoBom $script:FslDispatchContext.StatePath (
+                '{"torn":')
+            $journalBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.JournalPath) `
+                -Algorithm SHA256).Hash
+            $walBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.InstallWalPath) `
+                -Algorithm SHA256).Hash
+            $script:FslDispatchUseMutationReader = $true
+            $cacheTornResult =
+                Invoke-FslDispatchProbe $cacheTornRoot
+            $script:FslDispatchUseMutationReader = $false
+            $cacheTornRestored =
+                [System.IO.File]::ReadAllText(
+                    $script:FslDispatchContext.StatePath) -ceq
+                    $expectedCache
+            $cacheTornOtherBytesUnchanged = (
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.JournalPath) `
+                    -Algorithm SHA256).Hash -ceq $journalBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.InstallWalPath) `
+                    -Algorithm SHA256).Hash -ceq $walBefore)
+            $walTailRoot = Join-Path $Root 'VerifiedWalTail'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $walTailRoot 'Verified'
+            $expectedWal = [System.IO.File]::ReadAllBytes(
+                $script:FslDispatchContext.InstallWalPath)
+            $stateBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.StatePath) `
+                -Algorithm SHA256).Hash
+            $journalBefore = (Get-FileHash -LiteralPath (
+                $script:FslDispatchContext.JournalPath) `
+                -Algorithm SHA256).Hash
+            [System.IO.File]::AppendAllText(
+                $script:FslDispatchContext.InstallWalPath,
+                'recoverable-tail',
+                [System.Text.UTF8Encoding]::new($false))
+            $script:FslDispatchUseMutationReader = $true
+            $walTailResult = Invoke-FslDispatchProbe $walTailRoot
+            $script:FslDispatchUseMutationReader = $false
+            $walTailRepaired = [Linq.Enumerable]::SequenceEqual(
+                [byte[]]$expectedWal,
+                [byte[]][System.IO.File]::ReadAllBytes(
+                    $script:FslDispatchContext.InstallWalPath))
+            $walTailOtherBytesUnchanged = (
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.StatePath) `
+                    -Algorithm SHA256).Hash -ceq $stateBefore -and
+                (Get-FileHash -LiteralPath (
+                    $script:FslDispatchContext.JournalPath) `
+                    -Algorithm SHA256).Hash -ceq $journalBefore)
+            $walTruncatedRoot = Join-Path $Root 'VerifiedWalTruncated'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $walTruncatedRoot 'Verified'
+            $walBytes = [System.IO.File]::ReadAllBytes(
+                $script:FslDispatchContext.InstallWalPath)
+            [System.IO.File]::WriteAllBytes(
+                $script:FslDispatchContext.InstallWalPath,
+                $walBytes[0..($walBytes.Length - 2)])
+            $script:FslDispatchUseMutationReader = $true
+            $walTruncatedResult =
+                Invoke-FslDispatchProbe $walTruncatedRoot
+            $script:FslDispatchUseMutationReader = $false
+            $walPrefixRoot = Join-Path $Root 'VerifiedWalPrefix'
+            $script:FslDispatchContext =
+                New-FslDispatchFixture $walPrefixRoot 'Verified'
+            $walBytes = [System.IO.File]::ReadAllBytes(
+                $script:FslDispatchContext.InstallWalPath)
+            $walBytes[0] = $walBytes[0] -bxor 1
+            [System.IO.File]::WriteAllBytes(
+                $script:FslDispatchContext.InstallWalPath,
+                $walBytes)
+            $script:FslDispatchUseMutationReader = $true
+            $walPrefixResult = Invoke-FslDispatchProbe $walPrefixRoot
+            $script:FslDispatchUseMutationReader = $false
+            $deferredIntegrity = @()
+            $deferredCases = @(
+                [pscustomobject]@{
+                    Name = 'CacheMissing'
+                    FatalWal = $false
+                    Mutation = {
+                        param($Context)
+                        [System.IO.File]::Delete($Context.StatePath)
+                    }
+                },
+                [pscustomobject]@{
+                    Name = 'CacheTorn'
+                    FatalWal = $false
+                    Mutation = {
+                        param($Context)
+                        Write-FslUtf8NoBom $Context.StatePath '{"torn":'
+                    }
+                },
+                [pscustomobject]@{
+                    Name = 'WalTail'
+                    FatalWal = $false
+                    Mutation = {
+                        param($Context)
+                        [System.IO.File]::AppendAllText(
+                            $Context.InstallWalPath,
+                            'recoverable-tail',
+                            [System.Text.UTF8Encoding]::new($false))
+                    }
+                },
+                [pscustomobject]@{
+                    Name = 'JournalTail'
+                    FatalWal = $false
+                    Mutation = { param($Context) }
+                },
+                [pscustomobject]@{
+                    Name = 'WalTruncated'
+                    FatalWal = $true
+                    Mutation = {
+                        param($Context)
+                        $bytes = [System.IO.File]::ReadAllBytes(
+                            $Context.InstallWalPath)
+                        [System.IO.File]::WriteAllBytes(
+                            $Context.InstallWalPath,
+                            $bytes[0..($bytes.Length - 2)])
+                    }
+                },
+                [pscustomobject]@{
+                    Name = 'WalPrefix'
+                    FatalWal = $true
+                    Mutation = {
+                        param($Context)
+                        $bytes = [System.IO.File]::ReadAllBytes(
+                            $Context.InstallWalPath)
+                        $bytes[0] = $bytes[0] -bxor 1
+                        [System.IO.File]::WriteAllBytes(
+                            $Context.InstallWalPath,
+                            $bytes)
+                    }
+                })
+            foreach ($case in $deferredCases) {
+                $fixtureRoot =
+                    Join-Path $Root ('Deferred' + $case.Name)
+                $script:FslDispatchContext =
+                    New-FslDispatchFixture $fixtureRoot 'Deferred'
+                & $case.Mutation $script:FslDispatchContext
+                $baseline = Get-FslDispatchSnapshot $fixtureRoot
+                foreach ($arguments in $commands) {
+                    $probe = Invoke-FslDispatchProbe `
+                        $fixtureRoot $arguments $baseline
+                    $deferredIntegrity += [pscustomobject]@{
+                        Case = $case.Name
+                        Command = [string]$arguments.Command
+                        FatalWal = $case.FatalWal
+                        ExitCode = $probe.ExitCode
+                        Message = $probe.Message
+                        HandlerEntries = $probe.HandlerEntries
+                        TreeUnchanged = $probe.TreeUnchanged
+                    }
+                }
+            }
             return [pscustomobject]@{
+                DispatcherInvocations = $script:FslDispatchInvocations
                 Matrix = @($matrix)
                 HandlerEntries = $matrixHandlerEntries
                 Hmac = [pscustomobject]@{
                     ExitCode = $hmacExit
                     Message = $hmacWriter.ToString().Trim()
                     HandlerEntries = $hmacHandlerEntries
-                    TreeUnchanged = $beforeHmac.Json -ceq $afterHmac.Json
+                    TreeUnchanged = Test-FslDispatchSnapshotEqual `
+                        $beforeHmac $afterHmac
                 }
                 Generation = [pscustomobject]@{
                     ExitCode = $generationExit
                     Message = $generationWriter.ToString().Trim()
                     HandlerEntries = $generationHandlerEntries
-                    TreeUnchanged =
-                        $beforeGeneration.Json -ceq $afterGeneration.Json
+                    TreeUnchanged = Test-FslDispatchSnapshotEqual `
+                        $beforeGeneration $afterGeneration
                 }
                 Binding = $bindingResult
                 SlotBinding = $slotBindingResult
                 Cache = $cacheResult
                 Wal = $walResult
                 CompleteTail = $completeTailResult
-                IncompleteTail = $incompleteTailResult
+                IncompleteTail = [pscustomobject]@{
+                    Probe = $incompleteTailResult
+                    Repaired = $incompleteTailRepaired
+                    OtherBytesUnchanged =
+                        $incompleteOtherBytesUnchanged
+                }
                 DpapiKey = $keyResult
                 JournalPrefix = $journalResult
+                VerifiedCacheMissing = [pscustomobject]@{
+                    Probe = $cacheMissingResult
+                    Restored = $cacheMissingRestored
+                    OtherBytesUnchanged =
+                        $cacheMissingOtherBytesUnchanged
+                }
+                VerifiedCacheTorn = [pscustomobject]@{
+                    Probe = $cacheTornResult
+                    Restored = $cacheTornRestored
+                    OtherBytesUnchanged =
+                        $cacheTornOtherBytesUnchanged
+                }
+                VerifiedWalTail = [pscustomobject]@{
+                    Probe = $walTailResult
+                    Repaired = $walTailRepaired
+                    OtherBytesUnchanged =
+                        $walTailOtherBytesUnchanged
+                }
+                VerifiedWalTruncated = $walTruncatedResult
+                VerifiedWalPrefix = $walPrefixResult
+                DeferredIntegrity = @($deferredIntegrity)
             }
         } $caseRoot $repository
 
@@ -1635,6 +1941,9 @@ if ($Slice -in @('All', 'Slice8')) {
             Write-Output ($badDeferredResults |
                 ConvertTo-Json -Compress -Depth 6)
         }
+        Assert-True (
+            $result.DispatcherInvocations -eq 135) (
+            'The dispatcher coverage count changed from 135 invocations.')
         Assert-True (
             $result.Matrix.Count -eq 60 -and
             $badDeferredResults.Count -eq 0) (
@@ -1679,11 +1988,13 @@ if ($Slice -in @('All', 'Slice8')) {
             $result.CompleteTail.TreeUnchanged) (
             'A complete unanchored tail was accepted or changed.')
         Assert-True (
-            $result.IncompleteTail.ExitCode -eq 3 -and
-            $result.IncompleteTail.Message -ceq 'HANDLER_SENTINEL' -and
-            $result.IncompleteTail.HandlerEntries -eq 1 -and
-            $result.IncompleteTail.TreeUnchanged) (
-            'A verified incomplete tail did not enter the handler unchanged.')
+            $result.IncompleteTail.Probe.ExitCode -eq 3 -and
+            $result.IncompleteTail.Probe.Message -ceq
+                'HANDLER_SENTINEL' -and
+            $result.IncompleteTail.Probe.HandlerEntries -eq 1 -and
+            $result.IncompleteTail.Repaired -and
+            $result.IncompleteTail.OtherBytesUnchanged) (
+            'A verified incomplete journal tail was not repaired at handoff.')
         Assert-True (
             $result.DpapiKey.ExitCode -eq 8 -and
             $result.DpapiKey.HandlerEntries -eq 0 -and
@@ -1694,6 +2005,61 @@ if ($Slice -in @('All', 'Slice8')) {
             $result.JournalPrefix.HandlerEntries -eq 0 -and
             $result.JournalPrefix.TreeUnchanged) (
             'An anchored journal tamper reached a handler or changed bytes.')
+        Assert-True (
+            $result.VerifiedCacheMissing.Probe.ExitCode -eq 3 -and
+            $result.VerifiedCacheMissing.Probe.Message -ceq
+                'HANDLER_SENTINEL' -and
+            $result.VerifiedCacheMissing.Probe.HandlerEntries -eq 1 -and
+            $result.VerifiedCacheMissing.Restored -and
+            $result.VerifiedCacheMissing.OtherBytesUnchanged) (
+            'A verified missing cache was not repaired before handoff.')
+        Assert-True (
+            $result.VerifiedCacheTorn.Probe.ExitCode -eq 3 -and
+            $result.VerifiedCacheTorn.Probe.Message -ceq
+                'HANDLER_SENTINEL' -and
+            $result.VerifiedCacheTorn.Probe.HandlerEntries -eq 1 -and
+            $result.VerifiedCacheTorn.Restored -and
+            $result.VerifiedCacheTorn.OtherBytesUnchanged) (
+            'A verified torn cache was not repaired from journal authority.')
+        Assert-True (
+            $result.VerifiedWalTail.Probe.ExitCode -eq 3 -and
+            $result.VerifiedWalTail.Probe.Message -ceq
+                'HANDLER_SENTINEL' -and
+            $result.VerifiedWalTail.Probe.HandlerEntries -eq 1 -and
+            $result.VerifiedWalTail.Repaired -and
+            $result.VerifiedWalTail.OtherBytesUnchanged) (
+            'A verified recoverable WAL tail was not repaired at handoff.')
+        Assert-True (
+            $result.VerifiedWalTruncated.ExitCode -eq 8 -and
+            $result.VerifiedWalTruncated.HandlerEntries -eq 0 -and
+            $result.VerifiedWalTruncated.TreeUnchanged) (
+            'A truncated WAL reached a handler or changed fixture bytes.')
+        Assert-True (
+            $result.VerifiedWalPrefix.ExitCode -eq 8 -and
+            $result.VerifiedWalPrefix.HandlerEntries -eq 0 -and
+            $result.VerifiedWalPrefix.TreeUnchanged) (
+            'A WAL prefix tamper reached a handler or changed fixture bytes.')
+        $badDeferredIntegrity = @(
+            $result.DeferredIntegrity | Where-Object {
+                $_.ExitCode -ne 8 -or
+                $_.HandlerEntries -ne 0 -or
+                -not $_.TreeUnchanged -or
+                ($_.FatalWal -and
+                    $_.Message -cne
+                        'Protected platform readiness WAL is invalid.') -or
+                (-not $_.FatalWal -and
+                    $_.Message -cne
+                        'Platform readiness is deferred until elevation.')
+            })
+        if ($badDeferredIntegrity.Count -gt 0) {
+            Write-Output ($badDeferredIntegrity |
+                ConvertTo-Json -Compress -Depth 5)
+        }
+        Assert-True (
+            $result.DeferredIntegrity.Count -eq 60 -and
+            $badDeferredIntegrity.Count -eq 0) (
+            'A deferred integrity case wrote bytes, reached a handler, or ' +
+            'returned the wrong readiness result across the 10 commands.')
     }
     finally {
         if (Test-Path -LiteralPath $caseRoot) {

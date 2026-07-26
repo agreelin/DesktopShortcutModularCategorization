@@ -1074,7 +1074,11 @@ function Resolve-FslPlatformReadinessState {
 }
 
 function Read-FslReadOnlyExternalAnchorSlots {
-    param([Parameter(Mandatory = $true)][psobject]$Context)
+    param(
+        [Parameter(Mandatory = $true)][psobject]$Context,
+        [Parameter(Mandatory = $true)][string]$CurrentBranch,
+        [Parameter(Mandatory = $true)][string]$CurrentCommit
+    )
 
     $key = Get-FslExternalAnchorKey $Context
     $slots = @()
@@ -1130,12 +1134,8 @@ function Read-FslReadOnlyExternalAnchorSlots {
                 $binding.repositoryRoot -cne
                     [System.IO.Path]::GetFullPath(
                         $Context.RepositoryRoot) -or
-                $binding.branch -cne
-                    (Get-FslGitValue $Context @(
-                        'branch', '--show-current')) -or
-                $binding.gitCommit -cne
-                    (Get-FslGitValue $Context @(
-                        'rev-parse', 'HEAD'))) {
+                $binding.branch -cne $CurrentBranch -or
+                $binding.gitCommit -cne $CurrentCommit) {
                 throw 'Slot identity or generation mismatch.'
             }
             foreach ($bindingName in @(
@@ -1336,32 +1336,47 @@ function Read-FslReadOnlyAnchoredJournal {
         Last = $last
         PrefixLength = $anchoredLength
         PrefixSha256 = Get-FslSha256 $prefix
+        CurrentLength = $journalBytes.LongLength
+        TailStatus = if ($journalBytes.LongLength -eq $anchoredLength) {
+            'Exact'
+        }
+        else {
+            'Incomplete'
+        }
     }
 }
 
-function Read-FslReadOnlyPlatformReadiness {
+function Get-FslAuthoritativeStage4Snapshot {
     param([Parameter(Mandatory = $true)][psobject]$Context)
 
-    $slots = @(Read-FslReadOnlyExternalAnchorSlots $Context)
+    $currentBranch =
+        Get-FslGitValue $Context @('branch', '--show-current')
+    $currentCommit =
+        Get-FslGitValue $Context @('rev-parse', 'HEAD')
+    $slots = @(Read-FslReadOnlyExternalAnchorSlots `
+        $Context $currentBranch $currentCommit)
     $chain = Read-FslReadOnlyAnchoredJournal $Context
     $binding = $slots[0].Payload.binding
+    $state = $chain.Last.state
+    $stateContent =
+        ($state | ConvertTo-Json -Depth 20) + [Environment]::NewLine
+    $stateBytes =
+        [System.Text.UTF8Encoding]::new($false).GetBytes($stateContent)
+    $stateHash = Get-FslSha256 $stateBytes
     if ($null -eq $binding -or
         $binding.runId -cne $Context.RunId -or
         $binding.machineName -cne [Environment]::MachineName -or
         $binding.repositoryRoot -cne
             [System.IO.Path]::GetFullPath($Context.RepositoryRoot) -or
-        $binding.branch -cne
-            (Get-FslGitValue $Context @('branch', '--show-current')) -or
-        $binding.gitCommit -cne
-            (Get-FslGitValue $Context @('rev-parse', 'HEAD')) -or
+        $binding.branch -cne $currentBranch -or
+        $binding.gitCommit -cne $currentCommit -or
         -not (Test-FslReadOnlyBindingFileExact `
             $binding.prestate $Context.PrestatePath) -or
         -not (Test-FslReadOnlyBindingFileExact `
-            $binding.wal $Context.InstallWalPath) -or
-        -not (Test-FslReadOnlyBindingFileExact `
-            $binding.state $Context.StatePath) -or
-        -not (Test-FslReadOnlyBindingFileExact `
             $binding.stateAnchor $Context.AnchorPath) -or
+        -not $binding.state.exists -or
+        [int64]$binding.state.length -ne $stateBytes.LongLength -or
+        [string]$binding.state.sha256 -cne $stateHash -or
         $null -eq $binding.journal -or
         $binding.journal.path -cne
             [System.IO.Path]::GetFileName($Context.JournalPath) -or
@@ -1372,15 +1387,7 @@ function Read-FslReadOnlyPlatformReadiness {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Protected platform readiness binding is invalid.')
     }
-    if (-not (Test-Path -LiteralPath $Context.StatePath -PathType Leaf)) {
-        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
-            'Stage 4 readiness evidence is missing.')
-    }
     try {
-        $stateContent =
-            [System.IO.File]::ReadAllText($Context.StatePath)
-        $state = $stateContent |
-            ConvertFrom-Json
         $prestate =
             [System.IO.File]::ReadAllText($Context.PrestatePath) |
             ConvertFrom-Json
@@ -1389,11 +1396,7 @@ function Read-FslReadOnlyPlatformReadiness {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Stage 4 readiness evidence is invalid.')
     }
-    if ((Get-FslSha256 (
-            [System.Text.UTF8Encoding]::new($false).GetBytes(
-                $stateContent))) -cne $chain.Anchor.stateSha256 -or
-        ($state | ConvertTo-Json -Compress -Depth 20) -cne
-            ($chain.Last.state | ConvertTo-Json -Compress -Depth 20) -or
+    if ($stateHash -cne $chain.Anchor.stateSha256 -or
         $state.schemaVersion -ne $script:StateSchemaVersion -or
         $state.runId -cne $Context.RunId -or
         $state.machineName -cne [Environment]::MachineName -or
@@ -1409,6 +1412,93 @@ function Read-FslReadOnlyPlatformReadiness {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
             'Stage 4 readiness evidence is invalid.')
     }
+
+    $cacheStatus = 'Missing'
+    if (Test-Path -LiteralPath $Context.StatePath -PathType Leaf) {
+        $cacheStatus = 'Mismatched'
+        try {
+            $cachedContent =
+                [System.IO.File]::ReadAllText($Context.StatePath)
+            $cached = $cachedContent | ConvertFrom-Json
+            if ((Get-FslSha256 (
+                    [System.Text.UTF8Encoding]::new($false).GetBytes(
+                        $cachedContent))) -ceq $stateHash -and
+                ($cached | ConvertTo-Json -Compress -Depth 20) -ceq
+                    ($state | ConvertTo-Json -Compress -Depth 20)) {
+                $cacheStatus = 'Exact'
+            }
+        }
+        catch {
+            $cacheStatus = 'Mismatched'
+        }
+    }
+    elseif (Test-Path -LiteralPath $Context.StatePath) {
+        $cacheStatus = 'Mismatched'
+    }
+
+    $walStatus = 'Exact'
+    $walBinding = $binding.wal
+    $walCurrentLength = 0L
+    if (Test-Path -LiteralPath $Context.InstallWalPath -PathType Leaf) {
+        $walCurrentLength =
+            [int64](Get-Item -LiteralPath $Context.InstallWalPath).Length
+        if (-not $walBinding.exists) {
+            $walStatus = 'RecoverableTail'
+        }
+        elseif ($walCurrentLength -lt [int64]$walBinding.length) {
+            $walStatus = 'FatalTruncated'
+        }
+        else {
+            $walBytes =
+                [System.IO.File]::ReadAllBytes($Context.InstallWalPath)
+            $walPrefix =
+                [byte[]]::new([int][int64]$walBinding.length)
+            if ($walPrefix.Length -gt 0) {
+                [Array]::Copy(
+                    $walBytes,
+                    0,
+                    $walPrefix,
+                    0,
+                    $walPrefix.Length)
+            }
+            if ((Get-FslSha256 $walPrefix) -cne
+                    [string]$walBinding.sha256) {
+                $walStatus = 'FatalPrefixMismatch'
+            }
+            elseif ($walCurrentLength -gt [int64]$walBinding.length) {
+                $walStatus = 'RecoverableTail'
+            }
+        }
+    }
+    elseif (Test-Path -LiteralPath $Context.InstallWalPath) {
+        $walStatus = 'FatalPrefixMismatch'
+    }
+    elseif ($walBinding.exists) {
+        $walStatus = 'FatalMissing'
+    }
+
+    return [pscustomobject]@{
+        State = $state
+        Slot = $slots[0].Path
+        Generation = [int64]$slots[0].Payload.generation
+        JournalTail = [pscustomobject]@{
+            Status = $chain.TailStatus
+            AnchoredLength = [int64]$chain.PrefixLength
+            CurrentLength = [int64]$chain.CurrentLength
+        }
+        CacheStatus = $cacheStatus
+        WalStatus = $walStatus
+        WalAnchoredExists = [bool]$walBinding.exists
+        WalAnchoredLength = [int64]$walBinding.length
+        WalCurrentLength = $walCurrentLength
+        StateContent = $stateContent
+    }
+}
+
+function Read-FslReadOnlyPlatformReadiness {
+    param([Parameter(Mandatory = $true)][psobject]$Snapshot)
+
+    $state = $Snapshot.State
     $properties = @(
         'PlatformReadinessStatus',
         'SecureBootVerified',
@@ -1452,51 +1542,36 @@ function Read-FslReadOnlyPlatformReadiness {
 function Read-FslState {
     param([Parameter(Mandatory = $true)][psobject]$Context)
 
-    if (-not (Test-Path -LiteralPath $Context.PrestatePath -PathType Leaf)) {
-        Stop-FslStage4 $script:ExitCodes.ValidationEvidence 'Preflight evidence is missing.'
+    $snapshotProperty =
+        $Context.PSObject.Properties['AuthoritativeSnapshot']
+    if ($null -ne $snapshotProperty) {
+        $snapshot = $snapshotProperty.Value
+        $Context.PSObject.Properties.Remove('AuthoritativeSnapshot')
     }
-    $chain = Read-FslAnchoredJournal $Context
-    $state = $chain.Last.state
-    $stateContent = ($state | ConvertTo-Json -Depth 20) + [Environment]::NewLine
-    $cacheValid = $false
-    if (Test-Path -LiteralPath $Context.StatePath -PathType Leaf) {
-        try {
-            $cachedContent = [System.IO.File]::ReadAllText($Context.StatePath)
-            $cached = $cachedContent | ConvertFrom-Json
-            $cacheValid = (Get-FslSha256 (
-                [System.Text.UTF8Encoding]::new($false).GetBytes($cachedContent))) -ceq
-                $chain.Anchor.stateSha256
-            if ($cacheValid -and
-                (($cached | ConvertTo-Json -Compress -Depth 20) -cne
-                    ($state | ConvertTo-Json -Compress -Depth 20))) {
-                $cacheValid = $false
-            }
-        }
-        catch {
-            $cacheValid = $false
-        }
+    else {
+        $snapshot = Get-FslAuthoritativeStage4Snapshot $Context
     }
-    if (-not $cacheValid) {
-        Write-FslAtomicUtf8NoBom $Context.StatePath $stateContent
-    }
-    $prestate = [System.IO.File]::ReadAllText($Context.PrestatePath) | ConvertFrom-Json
-    $currentBranch = Get-FslGitValue $Context @('branch', '--show-current')
-    $currentCommit = Get-FslGitValue $Context @('rev-parse', 'HEAD')
-    if ($state.schemaVersion -ne $script:StateSchemaVersion -or
-        $state.runId -cne $Context.RunId -or
-        $state.machineName -cne [Environment]::MachineName -or
-        $state.branch -cne $prestate.branch -or
-        $state.gitCommit -cne $prestate.gitCommit -or
-        $state.branch -cne $currentBranch -or
-        $state.gitCommit -cne $currentCommit -or
-        $state.transition -cnotin $script:KnownTransitions -or
-        [int]$state.sequence -ne [int]$chain.Last.sequence -or
-        $state.transition -cne $chain.Last.transition) {
+    if ($snapshot.WalStatus -like 'Fatal*') {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
-            'Stage 4 state identity, transition, or journal validation failed.')
+            'Protected platform readiness WAL is invalid.')
     }
-    [void](Assert-FslExternalAnchor $Context)
-    return Resolve-FslPlatformReadinessState $state
+    if ($snapshot.JournalTail.Status -ceq 'Incomplete') {
+        [FolderSessionLock.Stage4.Native]::Truncate(
+            $Context.JournalPath,
+            [int64]$snapshot.JournalTail.AnchoredLength)
+    }
+    if ($snapshot.CacheStatus -cne 'Exact') {
+        Write-FslAtomicUtf8NoBom $Context.StatePath $snapshot.StateContent
+    }
+    if ($snapshot.WalStatus -ceq 'RecoverableTail') {
+        [FolderSessionLock.Stage4.Native]::Truncate(
+            $Context.InstallWalPath,
+            [int64]$snapshot.WalAnchoredLength)
+        if (-not $snapshot.WalAnchoredExists) {
+            [System.IO.File]::Delete($Context.InstallWalPath)
+        }
+    }
+    return Resolve-FslPlatformReadinessState $snapshot.State
 }
 
 function Write-FslState {
@@ -5167,7 +5242,13 @@ function Invoke-FslStage4Command {
             Assert-FslRepositoryMutationGate $context
         }
         if ($Command -cnotin @('Preflight', 'CreateTestCertificate')) {
-            $readinessState = Read-FslReadOnlyPlatformReadiness $context
+            $snapshot = Get-FslAuthoritativeStage4Snapshot $context
+            if ($snapshot.WalStatus -like 'Fatal*') {
+                Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                    'Protected platform readiness WAL is invalid.')
+            }
+            $readinessState =
+                Read-FslReadOnlyPlatformReadiness $snapshot
             if ($readinessState.PlatformReadinessStatus -cne
                     'VerifiedElevated' -or
                 -not $readinessState.SecureBootVerified -or
@@ -5177,6 +5258,8 @@ function Invoke-FslStage4Command {
                 Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
                     'Platform readiness is deferred until elevation.')
             }
+            $context | Add-Member -NotePropertyName `
+                AuthoritativeSnapshot -NotePropertyValue $snapshot -Force
         }
         switch ($Command) {
             'Preflight' { Invoke-FslPreflight $context }

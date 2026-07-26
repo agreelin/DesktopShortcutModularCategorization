@@ -37,10 +37,15 @@ Only the complete `VerifiedElevated` tuple with all three verification flags
 true and a round-trip verification timestamp can enter those handlers.
 The dispatcher readiness check is itself completely read-only: it validates
 both protected external anchor slots, their generation and bindings, the
-anchored journal prefix and hash chain, the state anchor and cache, and the WAL
-binding without repair, reconciliation, truncation, or deletion. An incomplete
-unanchored journal tail remains byte-for-byte unchanged; a complete unanchored
-record is rejected.
+anchored journal prefix and hash chain, the state anchor, and the WAL binding.
+One authoritative snapshot takes its state only from the latest valid HMAC slot
+and the internally anchored journal prefix. It classifies the rebuildable cache
+as exact, missing, or mismatched and the WAL as exact, recoverable tail, or a
+fatal missing/truncated/prefix-mismatch condition. The dispatcher and mutation
+reader consume that same snapshot; the readiness check never repairs,
+reconciles, truncates, or deletes. Deferred readiness therefore leaves a
+missing or torn cache, a recoverable WAL tail, and an incomplete journal tail
+byte-for-byte unchanged. A complete unanchored journal record is rejected.
 Legacy anchored state with all five readiness properties absent is normalized
 to deferred only in memory; partial or invalid readiness state is rejected.
 
@@ -91,8 +96,12 @@ An additional anchor outside the repository is stored below the current user's
 LocalApplicationData. A random HMAC key is protected with current-user DPAPI;
 alternating write-through slots bind machine/run/repository/branch/commit and
 the exact prestate, journal, WAL, state cache, and internal-anchor lengths and
-hashes. WAL bytes after the last protected slot are treated only as a crash tail
-and truncated before parsing.
+hashes. After `VerifiedElevated`, the mutation reader repairs a missing or torn
+cache from authoritative journal state, removes an incomplete journal tail, and
+truncates WAL bytes after the protected prefix before handler state mutation.
+A missing or shortened protected WAL, or any protected-prefix mismatch, fails
+closed without entering a handler or changing bytes. Cache bytes never replace
+the authoritative journal state.
 
 `release-descriptor.json` freezes the exact case-sensitive release file set and
 binds the manifest, checksums, payload lengths, and SHA-256 values. Verification
