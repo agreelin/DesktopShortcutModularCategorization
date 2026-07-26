@@ -1084,3 +1084,21 @@
 - 本次仅修正上述三个当前状态入口及 `docs/REQUIREMENTS.md` 的决策状态段：统一为 CP1–CP9 当前 `AGREELIN` 允许范围完成、Core 174/174、App 462/462、Windows 140/140、总计 776/776、CP10 未开始且仅允许在 `FSL-STAGE4-VM` 执行。DEVLOG 中 732/732 的历史验证事实保持不变。
 - 阶段 4 仍未完成；真实 UAC、SCM 系统变更、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 OneDrive/Cloud Files、签名、注销/重启与 D-026 证据仍未执行。本次未修改产品代码或测试，未运行 build/test，未进入 CP10、阶段 5 或阶段 6。
 - 下一步由根线程再次调用项目级只读 `stage_director`。
+
+## 2026-07-25 — CP10 R5 WAL partial-write recovery
+
+- `FileCopyAtomic` now freezes a transaction-derived same-directory temp name,
+  proves target/temp absence before Begin, and durably binds the target parent
+  and source identity/ACL before temp creation.
+- The production writer uses explicit write-through chunks with
+  `AfterTempCreate`, `DuringTempWrite`, `AfterTempFlush`, and `AfterRename`
+  boundaries. Recovery deletes a partial temp only when the source and parent
+  bindings remain exact and the temp is an ordinary, non-reparse, single-link,
+  safe-owner/DACL exact source prefix no longer than the frozen source.
+- Windows PowerShell 5.1 parent-side `Process.Kill` tests passed all eight
+  positive boundaries, second-reconcile idempotence, nine post-Intent rejection
+  cases, and three pre-Begin rejection cases. Six PowerShell parsers and the
+  repository-integrity behavior suite also passed.
+- This is a trusted-controller/executor recovery contract. It does not claim a
+  boundary against malicious same-user code, administrators, LocalSystem,
+  snapshot rollback, an external witness, or anti-rollback.

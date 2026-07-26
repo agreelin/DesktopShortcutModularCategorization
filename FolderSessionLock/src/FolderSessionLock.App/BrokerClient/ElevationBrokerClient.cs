@@ -24,6 +24,7 @@ internal sealed class ElevationBrokerClient
     private readonly IRecoveryReadinessReader _readiness;
     private readonly IInitiatingClientIdentityProvider _identity;
     private readonly IBrokerPathResolver _pathResolver;
+    private readonly IBrokerAuthenticodeVerifier _authenticode;
     private readonly IConsentElevationLauncher _launcher;
     private readonly BrokerConnectionRace _connectionRace;
     private readonly Func<DateTimeOffset> _utcNow;
@@ -32,6 +33,7 @@ internal sealed class ElevationBrokerClient
         IRecoveryReadinessReader readiness,
         IInitiatingClientIdentityProvider identity,
         IBrokerPathResolver pathResolver,
+        IBrokerAuthenticodeVerifier authenticode,
         IConsentElevationLauncher launcher,
         BrokerConnectionRace connectionRace,
         Func<DateTimeOffset>? utcNow = null)
@@ -39,10 +41,19 @@ internal sealed class ElevationBrokerClient
         _readiness = readiness ?? throw new ArgumentNullException(nameof(readiness));
         _identity = identity ?? throw new ArgumentNullException(nameof(identity));
         _pathResolver = pathResolver ?? throw new ArgumentNullException(nameof(pathResolver));
+        _authenticode = authenticode ?? throw new ArgumentNullException(nameof(authenticode));
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
         _connectionRace = connectionRace ?? throw new ArgumentNullException(nameof(connectionRace));
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
     }
+
+    internal static ElevationBrokerClient CreateProduction() => new(
+        new WindowsRecoveryReadinessReader(),
+        new WindowsInitiatingClientIdentityProvider(),
+        new WindowsBrokerPathResolver(),
+        new WindowsBrokerAuthenticodeVerifier(),
+        new WindowsConsentElevationLauncher(),
+        new BrokerConnectionRace(new WindowsBrokerPipeConnector()));
 
     internal async ValueTask<BrokerClientResult> ExecuteAsync(
         BrokerRequestEnvelope request,
@@ -93,8 +104,21 @@ internal sealed class ElevationBrokerClient
             return Failure(ToBrokerError(brokerPath.Error!));
         }
 
+        Result authenticode = _authenticode.Verify(brokerPath.Value.BrokerPath);
+        if (authenticode.IsFailure)
+        {
+            return Failure(BrokerPathUntrusted());
+        }
+
+        Result<ResolvedBrokerPath> finalBrokerPath = _pathResolver.Resolve();
+        if (finalBrokerPath.IsFailure
+            || !Equals(brokerPath.Value, finalBrokerPath.Value))
+        {
+            return Failure(BrokerPathUntrusted());
+        }
+
         Result<IBrokerProcessHandle> launch = await _launcher.LaunchAsync(new(
-            brokerPath.Value,
+            finalBrokerPath.Value,
             request.RequestId,
             identity.Value,
             ownerWindow));
@@ -226,6 +250,12 @@ internal sealed class ElevationBrokerClient
         BrokerErrorCodes.FSL_E_RECOVERY_BLOCKING,
         "Folder restrictions cannot be created until recovery is complete.",
         true,
+        null);
+
+    private static BrokerError BrokerPathUntrusted() => new(
+        BrokerErrorCodes.FSL_E_BROKER_PATH_UNTRUSTED,
+        "The elevated broker installation could not be verified.",
+        false,
         null);
 
     private static BrokerError MapAccountMismatch(BrokerError error) =>
