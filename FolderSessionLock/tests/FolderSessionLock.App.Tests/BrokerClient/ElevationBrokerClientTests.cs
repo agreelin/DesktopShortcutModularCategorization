@@ -26,6 +26,7 @@ public sealed class ElevationBrokerClientTests
             new ReadinessReader(BlockedReadiness()),
             identity,
             path,
+            new AuthenticodeVerifier(),
             launcher,
             new BrokerConnectionRace(new NeverUsedConnector()),
             () => Now);
@@ -154,6 +155,7 @@ public sealed class ElevationBrokerClientTests
             new ReadinessReader(ReadyReadiness()),
             new IdentityProvider(),
             new PathResolver(),
+            new AuthenticodeVerifier(),
             launcher,
             new BrokerConnectionRace(new NeverUsedConnector()),
             () => Now);
@@ -166,12 +168,61 @@ public sealed class ElevationBrokerClientTests
         Assert.Null(result.Error.Field);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_SignatureFailureStopsBeforeLaunchAndConnection()
+    {
+        var path = new PathResolver();
+        var signature = new AuthenticodeVerifier(Result.Failure(PathError()));
+        var launcher = new Launcher();
+        var client = new ElevationBrokerClient(
+            new ReadinessReader(ReadyReadiness()),
+            new IdentityProvider(),
+            path,
+            signature,
+            launcher,
+            new BrokerConnectionRace(new NeverUsedConnector()),
+            () => Now);
+
+        BrokerClientResult result = await client.ExecuteAsync(Request(), nint.Zero, default);
+
+        AssertPathFailure(result);
+        Assert.Equal(1, path.Calls);
+        Assert.Equal(1, signature.Calls);
+        Assert.Equal(0, launcher.Calls);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_IdentityChangeAfterSignatureStopsBeforeLaunch()
+    {
+        var path = new PathResolver(
+            new BrokerFileIdentity(1, 2, 3),
+            new BrokerFileIdentity(1, 2, 4));
+        var signature = new AuthenticodeVerifier();
+        var launcher = new Launcher();
+        var client = new ElevationBrokerClient(
+            new ReadinessReader(ReadyReadiness()),
+            new IdentityProvider(),
+            path,
+            signature,
+            launcher,
+            new BrokerConnectionRace(new NeverUsedConnector()),
+            () => Now);
+
+        BrokerClientResult result = await client.ExecuteAsync(Request(), nint.Zero, default);
+
+        AssertPathFailure(result);
+        Assert.Equal(2, path.Calls);
+        Assert.Equal(1, signature.Calls);
+        Assert.Equal(0, launcher.Calls);
+    }
+
     private static ElevationBrokerClient Client(
         Stream stream,
         BrokerProcess process) => new(
             new ReadinessReader(ReadyReadiness()),
             new IdentityProvider(),
             new PathResolver(),
+            new AuthenticodeVerifier(),
             new Launcher(Result<IBrokerProcessHandle>.Success(process)),
             new BrokerConnectionRace(new ImmediateConnector(stream)),
             () => Now);
@@ -266,7 +317,23 @@ public sealed class ElevationBrokerClientTests
         }
     }
 
-    private sealed class PathResolver : IBrokerPathResolver
+    private static Error PathError() => new(
+        BrokerErrorCodes.FSL_E_BROKER_PATH_UNTRUSTED,
+        "The elevated broker installation could not be verified.",
+        ErrorCategory.UnrecoverableError);
+
+    private static void AssertPathFailure(BrokerClientResult result)
+    {
+        Assert.Equal(BrokerErrorCodes.FSL_E_BROKER_PATH_UNTRUSTED, result.Error!.Code);
+        Assert.Equal(
+            "The elevated broker installation could not be verified.",
+            result.Error.Message);
+        Assert.False(result.Error.Retryable);
+        Assert.Null(result.Error.Field);
+    }
+
+    private sealed class PathResolver(params BrokerFileIdentity[] identities)
+        : IBrokerPathResolver
     {
         internal int Calls { get; private set; }
 
@@ -274,10 +341,27 @@ public sealed class ElevationBrokerClientTests
         {
             Calls++;
             string directory = Path.GetFullPath(@"C:\Program Files\FolderSessionLock");
+            BrokerFileIdentity identity = identities.Length == 0
+                ? new BrokerFileIdentity(1, 2, 3)
+                : identities[Math.Min(Calls - 1, identities.Length - 1)];
             return Result<ResolvedBrokerPath>.Success(new(
                 directory,
                 Path.Combine(directory, "FolderSessionLock.Broker.exe"),
-                new BrokerFileIdentity(1, 2, 3)));
+                identity));
+        }
+    }
+
+    private sealed class AuthenticodeVerifier(Result? result = null)
+        : IBrokerAuthenticodeVerifier
+    {
+        private readonly Result _result = result ?? Result.Success();
+
+        internal int Calls { get; private set; }
+
+        public Result Verify(string brokerPath)
+        {
+            Calls++;
+            return _result;
         }
     }
 

@@ -1,6 +1,6 @@
 # Folder Session Lock 安全边界
 
-状态：阶段 3 与阶段 4 CP1–CP9 当前 `AGREELIN` 允许范围已完成；同一 reviewer 最终输出 `PASS`，无 `BLOCKER` 或 `HIGH`。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped，Release build 0 warning、0 error，format、diff、禁止 API、文档一致性与残留检查通过。CP10 尚未开始且仅允许在 `FSL-STAGE4-VM` 执行；SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 UAC、真实 OneDrive/Cloud Files、重启、签名和 D-026 安全证据仍未执行，阶段 4 不得完成。
+状态：阶段 3 与阶段 4 CP1–CP9 基线已完成；同一 reviewer 最终输出 `PASS`，无 `BLOCKER` 或 `HIGH`。基线验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped，Release build 0 warning、0 error，format、diff、禁止 API、文档一致性与残留检查通过。CP10 当前正在 `FSL-STAGE4-VM` 按串行流程实施；R5 的非特权 WAL partial-write/reconcile 聚焦验证已通过，但 SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 UAC、真实 OneDrive/Cloud Files、重启、签名和 D-026 安全证据仍未执行，阶段 4 不得完成。
 
 ## 1. 安全定位
 
@@ -229,6 +229,17 @@ Prepared 必须 postApply/error=null、count=0；Applied 必须实际 postApply 
 
 开发构建可未签名，仅用于本机测试。生产 Broker 及托管其恢复模式的自动启动服务必须位于管理员保护目录；Broker 必须代码签名；普通用户不得替换或修改。生产 IPC 必须限制本机访问、使用最小 Pipe DACL、验证客户端身份并防重放。
 
+WPF 应用的受信任 Broker publisher 指纹由非秘密 MSBuild 属性
+`BrokerPublisherThumbprint` 写入应用 assembly metadata。生产发布必须显式提供
+40 位十六进制证书 thumbprint；空值或格式错误一律 fail closed。应用在任何 UAC、
+Pipe、replay、恢复记录或 ACL 副作用前，先完成固定 Program Files 路径、安装目录
+ACL、普通文件/non-reparse、final path 与文件 identity 验证，再使用无 UI
+`WinVerifyTrust` 验证 Authenticode、提取 signer thumbprint 并与 pin 精确匹配，最后
+重新验证 final path 与文件 identity。签名无效、无 signer、publisher 不匹配或
+identity 改变均只返回 `FSL_E_BROKER_PATH_UNTRUSTED` /
+`The elevated broker installation could not be verified.` / `retryable=false` /
+`field=null`，不得启动 Broker。
+
 阶段 4 的 Broker/Service 安装根固定为 `%ProgramFiles%\FolderSessionLock`，ACL 为 `SYSTEM: FullControl`、`Administrators: FullControl`、`Users: ReadAndExecute`，不为 `Authenticated Users` 额外授予写权限。禁止从仓库 `bin`、`obj`、TEMP、用户目录或网络路径注册服务。
 
 阶段 4 测试证书只允许在 `FSL-STAGE4-VM` 的 `LocalMachine\My` 创建不可导出自签名 Code Signing 证书，仅该 VM 信任。不得提交私钥或 PFX。必须使用 Authenticode/`WinVerifyTrust` 或经审查等价 API 验证原始签名、篡改失败、未签名拒绝和允许证书指纹。生产证书采购、托管和发布签名流水线不属阶段 4。
@@ -307,3 +318,68 @@ Prepared 必须 postApply/error=null、count=0；Applied 必须实际 postApply 
 - ACL 恢复失败却报告成功。
 - 支持范围外路径绕过准入验证。
 - 阶段 6 未获批准即修改审计策略、添加 SACL 或读取 Security 日志。
+
+## 15. Stage 4 发布与证据完整性
+
+- Stage 4 发布信任边界固定包含六个第一方 PE：
+  `FolderSessionLock.App.exe`、`FolderSessionLock.App.dll`、
+  `FolderSessionLock.Broker.exe`、`FolderSessionLock.Broker.dll`、
+  `FolderSessionLock.Core.dll`、`FolderSessionLock.Windows.dll`。缺少任何一个，
+  或发布目录出现额外 `FolderSessionLock.*` executable/DLL，均阻止发布。
+- 六个 PE 必须全部 Authenticode 签名并由 Windows Kits x64 SignTool 验证；
+  `PATH` 不作为 SignTool 信任来源。VM 自签名证书只属于测试证据，不能表示生产签名。
+- UI 对 Broker 的验证使用单一 `WinVerifyTrust` provider state：在同一已验证
+  state 中取得 signer 证书和 thumbprint，完成后执行 state close。不得通过第二次文件
+  打开或独立证书解析替代 signer 绑定。
+- `Logs\v1`、三个日志 mode 目录和 `Readiness` 目录的显式 ACE 均为
+  `AceFlags.None`；只有 Recovery/Replay 容器按各自权威合同使用继承 ACE。Stage 4
+  VM 测试必须由生产 protected logger/readiness reader 实际接受安装出的描述符。
+- 控制器状态同时写入 `state.json` 和 append-only JSONL journal。每个命令重新验证
+  RunId、机器、分支、commit、转换序号以及 journal 中记录的 state SHA-256；只编辑
+  state 文件不能推进阶段。
+- canonical `test-results.trx` 必须由一次真实 `dotnet vstest` 直接生成。唯一 counter
+  集合须满足 `executed = passed = total`，failed/notExecuted/error/timeout/aborted
+  全为 0，UnitTestResult 数量精确等于 total，且每项 outcome 为 Passed；禁止合并时
+  伪造或归零 skipped 计数。
+- 卸载和清理绑定预先记录的 final path、NTFS file ID、SHA-256、release manifest
+  hash 与精确 ACL。出现 reparse、替换对象、identity/ACL 漂移或未知文件即拒绝清理；
+  产品安装目录和 ProgramData 目录不得递归删除。
+- VM 测试证书清理覆盖 `LocalMachine\My` 和
+  `LocalMachine\TrustedPeople`，并以 run-specific subject 在两处均为 0 作为成功条件。
+- Release descriptor 在 Publish 后冻结精确、区分大小写的完整文件集合，并绑定
+  manifest、SHA256SUMS、每个 payload 的长度和 SHA-256；后续验证和复制不得重写或
+  重新认可已变化的发布目录，复制前后均复核源与目标。
+- Stage 4 journal 使用 write-through append、previous-entry hash chain 和独立
+  anchor；state 仅为可重建 cache。仅不完整 torn tail 可恢复；完整未 anchor 记录、
+  截断、anchor 不匹配以及 state+journal 联合篡改均拒绝。
+- 安装对象在 mutation 前写 WAL intent，成功后写 applied proof；失败时按严格逆序、
+  验证 identity 后回滚。未知对象和 replacement 必须保留并报告失败。
+- Preflight 后仓库只允许当前 RunId evidence 精确变化；tracked 源码变化、其他
+  untracked 文件和 other-run evidence 均阻止命令。
+- 服务删除前必须用结构化 SCM snapshot 精确验证全部固定字段和 Stopped 状态。
+- Windows Kits SignTool 的 final path、non-reparse ancestors、owner、DACL、
+  Microsoft signer 和执行前后 file identity 全部属于信任门。
+- CP10 SignTool 信任使用经批准的 Microsoft SPKI SHA-256 allowlist，而不是
+  certificate Subject 文本。Native WinTrust 提供已验证 signer chain；executable
+  及直到卷根的每一级祖先，在执行前后均以 handle 绑定 final path、non-reparse、
+  file identity、owner 与有效 mutation ACL。
+- CP10 在仓库外 LocalApplicationData 下维护 current-user DPAPI 保护的随机 HMAC
+  key 与双槽 anchor，绑定 run/machine/repository/branch/commit 以及 prestate、
+  journal、WAL、state 和内部 anchor 的精确 length/hash。Finalization 删除 key、
+  两个 slot 和 run-specific anchor 目录。
+- Install、Uninstall 与 Cleanup 共用 hash-chained durable adapter：protected
+  Intent 在 side effect 前，完整 Applied proof 在其后，每条 WAL record 随即由
+  外部 anchor 保护。schema 3 在 Begin 前冻结完整有序 plan/hash；FileCopyAtomic
+  使用 transaction-derived 同目录 temp，并在创建前绑定 temp/final absence、
+  parent identity/ACL 与 source identity/content。中途恢复只允许删除 final 不存在、
+  source 仍完整、parent proof 不变、且对象为 ordinary、non-reparse、single-link、
+  safe owner/DACL、长度不超过冻结长度、内容为 source 精确前缀的 temp；任一证明
+  失败均保留对象并禁止伪造 RolledBack/Aborted。真实 PowerShell 5.1
+  worker-process matrix 以父进程 Process.Kill 覆盖 Begin、Intent、temp create、
+  mid-write、Flush、rename、Applied 与 Commit 窗口。
+- 该 WAL/reconcile 合同假设 controller/executor 是受信且唯一的写入者；它不是对同一
+  用户恶意进程、管理员、LocalSystem、VM/磁盘快照回滚的安全边界。current-user
+  DPAPI/HMAC 双槽 anchor 只检测其覆盖范围内的本地不一致，不是外部 witness，也不提供
+  anti-rollback 保证；D-026 证据不得把这些非目标宣称为已解决。
+- reviewer verdict 只允许单个大写 `PASS` 或 `FAIL` token；重复、冲突、正文和
+  大小写别名均拒绝，且仅 `PASS` 允许 finalization。

@@ -16,6 +16,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <BrokerPublisherThumbprint Condition="'$(BrokerPublisherThumbprint)' == ''"></BrokerPublisherThumbprint>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="BrokerPublisherThumbprint" Value="$(BrokerPublisherThumbprint)" />
+  </ItemGroup>
 
 </Project>
