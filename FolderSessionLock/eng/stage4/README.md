@@ -6,14 +6,32 @@ restores, creates, or deletes VMware snapshots and it never accepts arbitrary
 service names, installation roots, ProgramData roots, pipe names, ACLs, or
 commands.
 
-Run from an elevated Windows PowerShell when the selected command performs a
-system change:
+Run `Preflight` from a non-elevated Windows PowerShell. It reads only the fixed
+64-bit registry value
+`HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State\UEFISecureBootEnabled`,
+native `Tbsi_GetDeviceInfo`, and the current WindowsPrincipal token. It requires
+an `Int32` DWORD value of exactly `1`, a successful TPM 2.0 device descriptor,
+and a non-administrator token. The raw registry/TBS fields are preserved in
+`prestate.json`; readiness remains `DeferredUntilElevated` with all three
+verification flags false and no verification timestamp.
+
+Run `CreateTestCertificate` later from an elevated Windows PowerShell:
 
 ```powershell
 $runId = '20260725T120000Z-0123abcd'
 .\eng\stage4\Invoke-Stage4.ps1 Preflight -RunId $runId
 .\eng\stage4\Invoke-Stage4.ps1 CreateTestCertificate -RunId $runId
 ```
+
+Before any certificate mutation, `CreateTestCertificate` repeats the fixed base
+gate, requires an administrator token, requires strict Boolean `true` from
+`Confirm-SecureBootUEFI`, and requires strict Boolean `TpmPresent=true` and
+`TpmReady=true` from `Get-Tpm`. It revalidates the anchored preflight evidence,
+durably records `PlatformReadinessVerified`, then records
+`CertificateCreating`. Every other command rejects
+`DeferredUntilElevated` before entering its handler or performing a mutation.
+Legacy anchored state with all five readiness properties absent is normalized
+to deferred only in memory; partial or invalid readiness state is rejected.
 
 `CreateTestCertificate` creates a seven-day, non-exportable, self-signed VM test
 certificate. It is explicitly not a production certificate. The public

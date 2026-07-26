@@ -127,6 +127,20 @@ namespace FolderSessionLock.Stage4
             return bytes;
         }
 
+        public static TpmDeviceInfo GetTpmDeviceInfo()
+        {
+            TbsDeviceInfo native = new TbsDeviceInfo();
+            uint result = TbsiGetDeviceInfo(
+                (uint)Marshal.SizeOf(typeof(TbsDeviceInfo)),
+                ref native);
+            return new TpmDeviceInfo(
+                result,
+                native.StructVersion,
+                native.TpmVersion,
+                native.TpmInterfaceType,
+                native.TpmImpRevision);
+        }
+
         public static byte[] ProtectCurrentUser(byte[] bytes, byte[] entropy)
         {
             return ProtectedData.Protect(
@@ -529,6 +543,29 @@ namespace FolderSessionLock.Stage4
             public string SpkiSha256 { get; private set; }
         }
 
+        public sealed class TpmDeviceInfo
+        {
+            public TpmDeviceInfo(
+                uint result,
+                uint structVersion,
+                uint tpmVersion,
+                uint tpmInterfaceType,
+                uint tpmImpRevision)
+            {
+                Result = result;
+                StructVersion = structVersion;
+                TpmVersion = tpmVersion;
+                TpmInterfaceType = tpmInterfaceType;
+                TpmImpRevision = tpmImpRevision;
+            }
+
+            public uint Result { get; private set; }
+            public uint StructVersion { get; private set; }
+            public uint TpmVersion { get; private set; }
+            public uint TpmInterfaceType { get; private set; }
+            public uint TpmImpRevision { get; private set; }
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct ByHandleFileInformation
         {
@@ -542,6 +579,15 @@ namespace FolderSessionLock.Stage4
             internal uint NumberOfLinks;
             internal uint FileIndexHigh;
             internal uint FileIndexLow;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TbsDeviceInfo
+        {
+            internal uint StructVersion;
+            internal uint TpmVersion;
+            internal uint TpmInterfaceType;
+            internal uint TpmImpRevision;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -623,6 +669,14 @@ namespace FolderSessionLock.Stage4
             string existingFileName,
             string newFileName,
             uint flags);
+
+        [DllImport(
+            "tbs.dll",
+            EntryPoint = "Tbsi_GetDeviceInfo",
+            ExactSpelling = true)]
+        private static extern uint TbsiGetDeviceInfo(
+            uint size,
+            ref TbsDeviceInfo information);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         private static extern bool GetSecurityDescriptorOwner(

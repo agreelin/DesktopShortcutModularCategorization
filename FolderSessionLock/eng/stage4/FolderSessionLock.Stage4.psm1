@@ -128,6 +128,7 @@ $script:KnownTransitions = @(
     'PublishCompleted',
     'SignatureVerified',
     'InstallStarted',
+    'PlatformReadinessVerified',
     'ServiceCreated',
     'Installed',
     'Verified',
@@ -236,7 +237,8 @@ function Get-FslContext {
     $version = '1.0.0'
     [xml]$project = Get-Content -LiteralPath (
         Join-Path $repository 'src\FolderSessionLock.App\FolderSessionLock.App.csproj') -Raw
-    $declaredVersion = @($project.Project.PropertyGroup.Version |
+    $declaredVersion = @($project.SelectNodes(
+            '/Project/PropertyGroup/Version') |
         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
         Select-Object -First 1)
     if ($declaredVersion.Count -eq 1) {
@@ -309,15 +311,6 @@ function Assert-FslMachineGate {
         Stop-FslStage4 $script:ExitCodes.EnvironmentGate 'Stage 4 requires Windows 11 Pro or Enterprise.'
     }
 
-    if ((Confirm-SecureBootUEFI) -ne $true) {
-        Stop-FslStage4 $script:ExitCodes.EnvironmentGate 'Secure Boot must be enabled.'
-    }
-
-    $tpm = Get-Tpm
-    if (-not $tpm.TpmPresent -or -not $tpm.TpmReady) {
-        Stop-FslStage4 $script:ExitCodes.EnvironmentGate 'A present and ready TPM is required.'
-    }
-
     $pending = @(
         (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'),
         (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'),
@@ -325,6 +318,104 @@ function Assert-FslMachineGate {
     )
     if ($pending -contains $true) {
         Stop-FslStage4 $script:ExitCodes.EnvironmentGate 'A pending Windows restart blocks Stage 4.'
+    }
+}
+
+function Get-FslSecureBootRegistryEvidence {
+    $path = 'SYSTEM\CurrentControlSet\Control\SecureBoot\State'
+    $key = $null
+    try {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry64)
+        try {
+            $key = $base.OpenSubKey($path, $false)
+            if ($null -eq $key) {
+                Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+                    'The fixed Secure Boot registry key is missing.')
+            }
+            $kind = $key.GetValueKind('UEFISecureBootEnabled')
+            $value = $key.GetValue(
+                'UEFISecureBootEnabled',
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::
+                    DoNotExpandEnvironmentNames)
+        }
+        finally {
+            if ($null -ne $key) {
+                $key.Dispose()
+            }
+            $base.Dispose()
+        }
+    }
+    catch {
+        if ($_.Exception.Data['FslStage4ExitCode']) {
+            throw
+        }
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'The fixed Secure Boot registry value could not be read.')
+    }
+    return [pscustomobject][ordered]@{
+        path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State'
+        name = 'UEFISecureBootEnabled'
+        kind = [string]$kind
+        valueType = if ($null -eq $value) {
+            $null
+        }
+        else {
+            $value.GetType().FullName
+        }
+        rawValue = $value
+    }
+}
+
+function Get-FslNativeTpmDeviceInfo {
+    $raw = [FolderSessionLock.Stage4.Native]::GetTpmDeviceInfo()
+    return [pscustomobject][ordered]@{
+        result = [uint32]$raw.Result
+        structVersion = [uint32]$raw.StructVersion
+        tpmVersion = [uint32]$raw.TpmVersion
+        tpmInterfaceType = [uint32]$raw.TpmInterfaceType
+        tpmImpRevision = [uint32]$raw.TpmImpRevision
+    }
+}
+
+function Test-FslCurrentTokenAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Assert-FslPreflightPlatformEvidence {
+    param(
+        [AllowNull()][psobject]$SecureBoot,
+        [AllowNull()][psobject]$Tpm,
+        [AllowNull()]$IsElevated
+    )
+
+    if ($null -eq $SecureBoot -or
+        $SecureBoot.path -cne
+            'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' -or
+        $SecureBoot.name -cne 'UEFISecureBootEnabled' -or
+        $SecureBoot.kind -cne 'DWord' -or
+        $SecureBoot.valueType -cne 'System.Int32' -or
+        $SecureBoot.rawValue -isnot [int] -or
+        [int]$SecureBoot.rawValue -ne 1) {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'Secure Boot registry attestation failed.')
+    }
+    if ($null -eq $Tpm -or
+        $Tpm.result -notin @([int]0, [uint32]0) -or
+        [uint32]$Tpm.structVersion -ne 1 -or
+        [uint32]$Tpm.tpmVersion -ne 2 -or
+        [uint32]$Tpm.tpmInterfaceType -notin @(1, 2)) {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'Native TPM device attestation failed.')
+    }
+    if ($IsElevated -isnot [bool] -or [bool]$IsElevated) {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'Preflight requires a non-elevated current token.')
     }
 }
 
@@ -910,6 +1001,73 @@ function Read-FslAnchoredJournal {
     }
 }
 
+function Resolve-FslPlatformReadinessState {
+    param([Parameter(Mandatory = $true)][psobject]$State)
+
+    $properties = @(
+        'PlatformReadinessStatus',
+        'SecureBootVerified',
+        'TpmNativeVerified',
+        'TpmCmdletVerified',
+        'PlatformReadinessVerifiedUtc')
+    $present = @($properties | Where-Object {
+        $State.PSObject.Properties.Name -ccontains $_
+    })
+    if ($present.Count -eq 0) {
+        foreach ($property in ([ordered]@{
+            PlatformReadinessStatus = 'DeferredUntilElevated'
+            SecureBootVerified = $false
+            TpmNativeVerified = $false
+            TpmCmdletVerified = $false
+            PlatformReadinessVerifiedUtc = $null
+        }).GetEnumerator()) {
+            Add-Member -InputObject $State `
+                -NotePropertyName $property.Key `
+                -NotePropertyValue $property.Value
+        }
+        return $State
+    }
+    if ($present.Count -ne $properties.Count) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Platform readiness state is partial.')
+    }
+    if ($State.SecureBootVerified -isnot [bool] -or
+        $State.TpmNativeVerified -isnot [bool] -or
+        $State.TpmCmdletVerified -isnot [bool]) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'Platform readiness verification flags are invalid.')
+    }
+    if ($State.PlatformReadinessStatus -ceq 'DeferredUntilElevated') {
+        if ($State.SecureBootVerified -or
+            $State.TpmNativeVerified -or
+            $State.TpmCmdletVerified -or
+            $null -ne $State.PlatformReadinessVerifiedUtc) {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'Deferred platform readiness state is invalid.')
+        }
+        return $State
+    }
+    if ($State.PlatformReadinessStatus -ceq 'Verified') {
+        $verifiedUtc = [DateTimeOffset]::MinValue
+        if (-not $State.SecureBootVerified -or
+            -not $State.TpmNativeVerified -or
+            -not $State.TpmCmdletVerified -or
+            $State.PlatformReadinessVerifiedUtc -isnot [string] -or
+            -not [DateTimeOffset]::TryParseExact(
+                [string]$State.PlatformReadinessVerifiedUtc,
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$verifiedUtc)) {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'Verified platform readiness state is invalid.')
+        }
+        return $State
+    }
+    Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+        'Platform readiness status is invalid.')
+}
+
 function Read-FslState {
     param([Parameter(Mandatory = $true)][psobject]$Context)
 
@@ -957,7 +1115,7 @@ function Read-FslState {
             'Stage 4 state identity, transition, or journal validation failed.')
     }
     [void](Assert-FslExternalAnchor $Context)
-    return $state
+    return Resolve-FslPlatformReadinessState $state
 }
 
 function Write-FslState {
@@ -1117,6 +1275,20 @@ function Invoke-FslPreflight {
 
     Assert-FslMachineGate
     Assert-FslRepositoryGate $Context
+    try {
+        $secureBootEvidence = Get-FslSecureBootRegistryEvidence
+        $tpmEvidence = Get-FslNativeTpmDeviceInfo
+        $isElevated = Test-FslCurrentTokenAdministrator
+    }
+    catch {
+        if ($_.Exception.Data['FslStage4ExitCode']) {
+            throw
+        }
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'Non-elevated platform evidence could not be captured.')
+    }
+    Assert-FslPreflightPlatformEvidence `
+        $secureBootEvidence $tpmEvidence $isElevated
 
     $initialGitStatus = Get-FslGitValue $Context @(
         'status', '--porcelain=v1', '--untracked-files=all')
@@ -1176,9 +1348,9 @@ function Invoke-FslPreflight {
         osCaption = $os.Caption
         osVersion = $os.Version
         osBuildNumber = $os.BuildNumber
-        secureBoot = [bool](Confirm-SecureBootUEFI)
-        tpmPresent = [bool](Get-Tpm).TpmPresent
-        tpmReady = [bool](Get-Tpm).TpmReady
+        secureBootRegistry = $secureBootEvidence
+        tbsDeviceInfo = $tpmEvidence
+        isElevated = $isElevated
         repositoryRoot = $Context.RepositoryRoot
         branch = (Get-FslGitValue $Context @('branch', '--show-current'))
         gitCommit = (Get-FslGitValue $Context @('rev-parse', 'HEAD'))
@@ -1209,6 +1381,11 @@ function Invoke-FslPreflight {
         ServiceCreated = $false
         InstallProof = $null
         Continuation = $null
+        PlatformReadinessStatus = 'DeferredUntilElevated'
+        SecureBootVerified = $false
+        TpmNativeVerified = $false
+        TpmCmdletVerified = $false
+        PlatformReadinessVerifiedUtc = $null
     }) 'PreflightCaptured'
     Add-FslCommandEvidence $Context "Preflight -RunId $($Context.RunId)"
 }
@@ -1216,14 +1393,63 @@ function Invoke-FslPreflight {
 function Invoke-FslCreateTestCertificate {
     param([Parameter(Mandatory = $true)][psobject]$Context)
 
-    Assert-FslMachineGate
-    Assert-FslAdministrator
+    try {
+        Assert-FslMachineGate
+        Assert-FslAdministrator
+    }
+    catch {
+        if ($_.Exception.Data['FslStage4ExitCode']) {
+            throw
+        }
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'Elevated base or administrator verification failed.')
+    }
+    try {
+        $secureBootConfirmed = Confirm-SecureBootUEFI
+        if ($secureBootConfirmed -isnot [bool] -or
+            -not $secureBootConfirmed) {
+            Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+                'Elevated Secure Boot confirmation failed.')
+        }
+        $tpm = Get-Tpm
+        if ($null -eq $tpm -or
+            $tpm.PSObject.Properties.Name -cnotcontains 'TpmPresent' -or
+            $tpm.PSObject.Properties.Name -cnotcontains 'TpmReady' -or
+            $tpm.TpmPresent -isnot [bool] -or
+            $tpm.TpmReady -isnot [bool] -or
+            -not $tpm.TpmPresent -or
+            -not $tpm.TpmReady) {
+            Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+                'Elevated TPM cmdlet confirmation failed.')
+        }
+    }
+    catch {
+        if ($_.Exception.Data['FslStage4ExitCode']) {
+            throw
+        }
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'Elevated platform readiness could not be confirmed.')
+    }
     $state = Read-FslState $Context
     Invoke-FslReconcileInstallWal $Context $state
     Assert-FslTransition $state @('PreflightCaptured', 'CertificateRolledBack')
     if (-not [string]::IsNullOrWhiteSpace([string]$state.CreatedCertificateThumbprint)) {
         Stop-FslStage4 $script:ExitCodes.PreExistingConflict 'This run already created a test certificate.'
     }
+    $prestate =
+        [System.IO.File]::ReadAllText($Context.PrestatePath) |
+        ConvertFrom-Json
+    Assert-FslPreflightPlatformEvidence `
+        $prestate.secureBootRegistry `
+        $prestate.tbsDeviceInfo `
+        $prestate.isElevated
+    $state.PlatformReadinessStatus = 'Verified'
+    $state.SecureBootVerified = $true
+    $state.TpmNativeVerified = $true
+    $state.TpmCmdletVerified = $true
+    $state.PlatformReadinessVerifiedUtc =
+        [DateTime]::UtcNow.ToString('o')
+    Write-FslState $Context $state 'PlatformReadinessVerified'
 
     $subject = "CN=$($script:TestCertificatePrefix) [$($Context.RunId)]"
     Write-FslState $Context $state 'CertificateCreating'
@@ -4558,6 +4784,17 @@ function Invoke-FslStage4Command {
         if ($Command -cne 'Preflight') {
             Assert-FslRepositoryGate $context
             Assert-FslRepositoryMutationGate $context
+        }
+        if ($Command -cnotin @('Preflight', 'CreateTestCertificate')) {
+            $readinessState = Read-FslState $context
+            if ($readinessState.PlatformReadinessStatus -cne 'Verified' -or
+                -not $readinessState.SecureBootVerified -or
+                -not $readinessState.TpmNativeVerified -or
+                -not $readinessState.TpmCmdletVerified -or
+                $null -eq $readinessState.PlatformReadinessVerifiedUtc) {
+                Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                    'Platform readiness is deferred until elevation.')
+            }
         }
         switch ($Command) {
             'Preflight' { Invoke-FslPreflight $context }
