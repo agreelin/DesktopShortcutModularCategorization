@@ -148,7 +148,7 @@ Checkpoint：
    - 再完成用户合同所称 CP8 的 `WindowsProtectedPathSecurityVerifier`、handle/final path/reparse/FILE_ID_128、owner/DACL/ACE/继承校验、安装与 Recovery/Replay ACL 创建验证、service SID ACL 及 `FSL-STAGE4-VM` 安全集成矩阵。
    - D-022.11：三类记录文件唯一 SYSTEM owner、精确 protected 三 ACE DACL（mask `0x001F01FF`）、`IRecoveryRecordFileSecurity`、SeRestorePrivilege finally、`Global\FolderSessionLock.RecoveryStore.v1`、Records/temp/old canonical 持续句柄、user-mode `NtSetInformationFile(FileRenameInformationEx = 65)` rename、同 handle FileDispositionInfoEx delete、`FSL_E_RECOVERY_FILE_POST_COMMIT_VERIFICATION_FAILED`、auxiliary security与禁止路径 API。
    - 当前 `AGREELIN` 只允许接口、控制流、产品代码、单元/非特权测试和静态审查；SCM、LocalSystem、ProgramFiles/ProgramData ACL 写入与 VM 真实验证保持环境阻塞。
-9. 同账户 consent elevation；另一管理员账户凭据确定拒绝。
+9. 当前本地管理员同账户 consent elevation；跨账户作为不支持路径 fail closed。
    - 身份错误按 D-029 分为 UI launcher、elevated bootstrap 与 connected Pipe handshake。bootstrap Account SID 不同 exit 20；connected `FSL_E_ACCOUNT_SID_MISMATCH` 只在 UI elevation 边界转换为 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`；Logon/Session/PID/identity/Pipe/unauthorized 错误禁止转换。
    - UI 在 UAC 前从自身 token 读取 Account SID、唯一 Logon SID、Session ID，并取得 PID + creation FILETIME。CLI 只增加 `--client-process-id` 与 `--client-process-creation-filetime`；Broker 在创建 Pipe 前重开 UI process/token并重新读取身份。
    - production Broker path 只从 `SHGetKnownFolderPath(FOLDERID_ProgramFiles)` 的固定安装路径取得并通过 D-023/file final-path/identity 验证；CP9 不完成 Authenticode。
@@ -159,8 +159,11 @@ Checkpoint：
    - D-030 readiness固定为ProgramData Known Folder下受保护machine snapshot，SYSTEM/四ACE DACL、publisher mutex、十二字段、10-second heartbeat、30-second validity、class65原子publish、retained-handle reader/delete与十个稳定内部错误；CreateLock继续统一公开`FSL_E_RECOVERY_BLOCKING`。
    - production `LockDurationPolicy`固定60000..86400000ms；scheduler每进程单Active owner/单loop，monotonic remaining与最大30-second分段重算。repository只按handle-relative祖先`.git|.hg|.svn`；sync先用Cloud Files handle API，再用`IKnownFolderManager::GetFolderIds`的S_OK二进制GUID集合确认SkyDrive注册，只有注册存在才以flags0和initiating token调用`SHGetKnownFolderPath`。注册缺失、完整`0x80070002`/`-2147024894`、完整`0x80070003`/`-2147024893`是仅有三个`Exists=false`场景；其他GetFolderIds/SH HRESULT全部fail closed。禁止CREATE/DONT_VERIFY/DEFAULT_PATH、E_INVALIDARG未注册、低16位/HRESULT_CODE/facility mask/raw2/3/NTSTATUS/重编号。所有非null native path在成功复制或失败后释放；S_OK必须非空绝对路径并继续retained handle/reparse/final path/identity检查。
    - production logger唯一为`ProtectedJsonLinesLoggerProvider`：ProgramData `Logs\v1`三模式子目录、SYSTEM/三ACE安全、每进程十四字段JSONL、每事件flush、8MiB/UTC日rotation、14days/32-per-mode/256MiB retention、固定redaction及`FSL_E_PROTECTED_LOGGER_UNAVAILABLE`。Pipe前初始化失败exit28；副作用后先Cleanup且exit27优先。
-   - `AGREELIN` 只实现 wrapper、resolver、identity/bootstrap、exit mapping、race abstraction、composition、fakes 与自动测试；真实 UAC、跨账户凭据、elevated Broker、Program Files/签名和 FSL-Standard/FSL-Admin 仍为 VM-only。
-10. VM 测试 Authenticode 签名、服务注册/启动、发布安全验证与 D-026 证据归档；生产证书流水线为非目标。CP8 已负责的 owner/DACL/verifier 安全矩阵不得在此重复定义为可选项。
+   - 非 VM 环境只实现 wrapper、resolver、identity/bootstrap、exit mapping、race abstraction、composition、fakes 与自动测试；真实同账户 UAC、elevated Broker、Program Files、SCM/LocalSystem 和恢复为 VM-only。真实跨账户凭据和专用测试账户已取消。
+10. VM 内验证 unsigned 本地 Release、服务注册/启动、发布安全与 D-026 schema v2 证据；生产证书流水线为非目标。CP8 已负责的 owner/DACL/verifier 安全矩阵不得在此重复定义为可选项。
+    - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
+    - null 或精确空 `BrokerPublisherThumbprint` 为显式 unsigned 本地模式；空白/畸形非空失败，有效 pin 保留 signed fail-closed。当前 run 不创建测试证书、不调用 SignTool，逐一验证六个第一方 PE 为 `NotSigned`/null signer。
+    - D-026 使用 `TRUSTED_SINGLE_USER_STAGE4_EXECUTOR_MODEL`，scenario-results 与 manifest 均为 schema v2，记录同账户 consent 而非跨账户场景。
 
 验收：
 
@@ -190,7 +193,7 @@ Checkpoint：
 - 25 字段 JSON/.NET 类型、范围、canonical Guid/date/SID/hash、enum/flags、字段必需性、四状态 null/count 矩阵和跨字段时间关系与 D-022.7–D-022.9 完全一致。
 - `Prepared` 在 ACL 前完成同句柄安全设置、flush、回读和 user-mode `NtSetInformationFile(FileRenameInformationEx = 65)` 原子提交；新建 flags=0，更新保持 old/temp/directory handles 并使用 flags=`0x00000003` POSIX replace。production 禁止 class 10、SetFileInformationByHandle class 22/class 3、绝对目标或其他 fallback。canonical 删除使用验证过的同一 handle FileDispositionInfoEx，成功后关闭该 handle，再由 retained directory handle 确认名称消失与目录 identity；失败进入 RecoveryRequired，禁止路径重试或删除 replacement。
 - 恢复目录 owner/DACL 精确符合 `D-023`，普通用户和 UI 无直接访问；服务启动时复核并安全失败。
-- 其他管理员账户凭据安全失败并显示“不支持跨账户提升”。
+- 跨账户身份在不创建真实第二账户的单元测试中安全失败并显示“不支持跨账户提升”；真实双账户 VM evidence 不要求。
 - 跨账户拒绝错误码为 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`，且 ACL 写入前拒绝。
 - consent-broker CLI 精确包含固定 mode/pipe/session/request 与 `--client-process-id <UInt32>`、`--client-process-creation-filetime <UInt64 decimal>`；不包含 SID、用户名、角色或 Pipe SDDL。
 - UI token snapshot、PID/creation-time binding、Broker bootstrap token reread、Pipe-before-create Account/Session 比较和 Pipe DACL 主体全部通过 D-029 正反测试。
@@ -209,15 +212,17 @@ Checkpoint：
 - 自动启动服务未就绪或清理失败时保持恢复阻断状态，不报告成功。
 - 恢复记录与 ACL 不一致时停止自动删除，不覆盖 DACL。
 - 启动恢复清理失败时保留记录并产生明确诊断。
-- 开发未签名构建只用于本机测试；生产 Broker 签名和安装目录权限验证可执行。
-- 隔离 VM 测试签名覆盖有效签名、篡改失败、未签名拒绝和证书指纹匹配；不生成或保存生产私钥。
+- 当前本地 Release 明确允许 unsigned，安装目录权限、普通用户不可替换、identity/hash/TOCTOU 门仍须验证；不得扩张为公开或企业分发。
+- 隔离 VM 逐一验证固定六 PE 的实际状态为 `NotSigned`、signer null并绑定 SHA-256；不创建测试证书，不伪造签名。
 - Broker 正常退出尝试清理全部任务。
 - 全部集成测试仅修改临时目录。
-- 证据目录、必需文件和 `manifest.json` 精确结构符合 `D-026`；`TASKS.md`、`DEVLOG.md` 引用 RunId，reviewer 核验 manifest 与实际工件一致。
+- 证据目录、必需文件、`scenario-results.json` 与 `manifest.json` 精确结构符合 D-026 schema v2；`TASKS.md`、`DEVLOG.md` 引用 RunId，reviewer 核验 manifest 与实际工件一致。
 - 特权验证只在 `FSL-STAGE4-VM` 执行；当前机器名不匹配时不得将系统级场景标记为通过。
 - reviewer `PASS`。
 
 阶段 4 非目标：阶段 5 完整 WPF UI；阶段 6 Audit File System、SACL、Security 日志和访问失败通知；生产证书采购、私钥托管和发布签名流水线；任意服务名、任意 binPath、任意 Pipe 名、任意恢复路径或任意 ACL 描述符；宽松 JSON、同连接批量/流式请求、UI 提前解除、持久任务历史。
+
+阶段 5 只由仍适用的 Stage 4 完成门阻止；缺少第二账户、`FSL-Standard`、`FSL-Admin`、真实双账户 evidence 或真实签名证书不得单独阻止进入。
 
 ## 阶段 5：WPF 前端
 

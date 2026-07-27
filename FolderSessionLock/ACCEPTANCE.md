@@ -153,7 +153,7 @@ dotnet format --verify-no-changes
 - `LockTaskScheduler`生产loop未预期非取消异常只产生`lock_task.scheduler.loop.exception` / `The lock task scheduler loop terminated unexpectedly.`；真实protected JSONL固定`component = Scheduler`、`level = Error`、精确code/message，且不含异常message、`ToString()`、stack、内部类型、路径、SID、HRESULT或Win32 message。
 - 预期token已取消的`OperationCanceledException`不产生scheduler error日志；lifecycle stop、Cleanup failure、task状态转换、已有更具体错误和logger failure不复用该code/message。测试必须证明新值通过schema、已废弃旧值被拒绝、Cleanup first-task error不被覆盖且production源码无已废弃旧值。
 - administrative Cleanup 的 `RemoveLockAsync` 抛异常精确产生 `lock_task.administrative_cleanup.exception` / `The administrative cleanup ended without a confirmed result.`；ACE 已移除但 `Completed` 状态记录失败精确产生 `lock_task.administrative_cleanup.state_update_failed` / `The lock was removed but its completed state could not be recorded.`。两者均为 `UnrecoverableError`，任务均进入 `RecoveryRequired`，测试不得接受 activation/expiration 专用错误替代。
-- 同一账户 consent elevation 成功；其他管理员账户凭据安全失败并显示“不支持跨账户提升”。
+- 当前本地管理员的同账户 consent elevation 成功。跨账户 elevation 不属于支持范围；现有拒绝逻辑只用不创建真实账户的单元测试证明 fail closed。
 - 跨账户拒绝在任何 ACL 写入前发生，稳定错误码为 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`。
 - 身份错误分层精确：connected Pipe 的 `FSL_E_ACCOUNT_SID_MISMATCH` 保持 D-027 ServerHello failure；bootstrap Account SID不同 exit 20；UI只在这两条路径输出 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`。Logon SID、Session、PID、identity unavailable、Pipe access 与 unauthorized 错误不得转换。
 - UI 在 UAC 前从自身 process token 取得 TokenUser、唯一 Logon SID、TokenSessionId，并保存 PID/creation FILETIME；Token读取失败、0/多 Logon SID、PID不存在、creation mismatch与PID重用测试通过。SID只在内存，不进入 CLI；Broker必须重开 UI process/token重新读取。
@@ -168,7 +168,7 @@ dotnet format --verify-no-changes
 - CreateLock成功响应后UI关闭不终止Broker，scheduler继续持有唯一Active task直到Expiration Cleanup；成功exit0，Cleanup失败exit27。响应前断开按无副作用exit25、确定Active继续、未知副作用RecoveryRequired分类。
 - production `BrokerCompositionRoot` 显式包含D-029列出的identity/path/ACL/recovery security/readiness/replay/frame/protocol/execution/task/scheduler/lifecycle/logging/clock依赖；静态测试确认无AllowAll、fake identity/readiness、in-memory recovery、test cleanup hook、test path或debug Broker path。
 - 新错误 `FSL_E_BROKER_PATH_UNTRUSTED`、`FSL_E_ELEVATION_CANCELLED`、`FSL_E_ELEVATION_LAUNCH_FAILED`、`FSL_E_BROKER_LAUNCH_CONTRACT_INVALID`、`FSL_E_PIPE_INITIALIZATION_FAILED`、`FSL_E_BROKER_CONNECT_TIMEOUT`、`FSL_E_BROKER_EXITED_EARLY`、`FSL_E_BROKER_PROCESS_CLEANUP_FAILED` 的message/retryable/field与D-029一致。
-- CP9在`AGREELIN`只记录wrapper/resolver/bootstrap/mapper/race/composition及fake自动测试；真实UAC、跨账户凭据、elevated Broker、Program Files安装/签名和FSL-Standard/FSL-Admin场景不得记录通过。
+- 非 VM CP9证据只记录wrapper/resolver/bootstrap/mapper/race/composition及fake自动测试；真实同账户 UAC、elevated Broker、Program Files 安装、SCM/LocalSystem不得记录通过。真实跨账户凭据和专用账户场景由 D-031 取消。
 - D-030 readiness固定为ProgramData Known Folder下受保护machine snapshot，包含Readiness目录/canonical/temp、SYSTEM owner、四ACE protected DACL、Users只读、publisher mutex、十二字段严格JSON、四状态矩阵、sequence、10-second heartbeat、30-second有效期和5-second future tolerance。publish/read/delete全部retained-handle绑定，class65原子replace与FileDispositionInfoEx无路径fallback；全部内部错误对CreateLock映射`FSL_E_RECOVERY_BLOCKING`。
 - production duration边界60000与86400000通过，59999与86400001拒绝；每consent-broker单Active owner/单scheduler loop，monotonic到期、最大30-second分段重算、UI断开不取消、scheduler error不覆盖Cleanup。不得使用Windows Task Scheduler或多Timer。
 - repository分类从target retained handle逐级检查`.git|.hg|.svn`；synchronization只使用Cloud Files handle API、`IKnownFolderManager::GetFolderIds`与initiating-user `FOLDERID_SkyDrive`。测试必须覆盖：GetFolderIds S_OK不含/失败/含SkyDrive后才调用SH；GUID二进制比较；SH固定flags0且不出现CREATE/DONT_VERIFY/DEFAULT_PATH；调用前null pointer；S_OK有效/null/empty；完整`0x80070002`/`-2147024894`与`0x80070003`/`-2147024893`返回`Exists=false, Path=null`；`0x80070057`、`0x80004005`、`0x80070005`、`0x80070006`、`0x8007052E`、`0x80070520`、`0x80070522`、raw2/3、低16位2/3伪装与其他HRESULT统一fail closed；所有失败非null pointer释放；S_OK有效路径继续retained handle/reparse/final path/DirectoryIdentity/Same-Descendant检查。只有注册缺失与两个完整not-found HRESULT允许继续；禁止E_INVALIDARG未注册、HRESULT_CODE、facility mask、rawWin32/NTSTATUS/重编号。Cloud Files原始`0xC000CF13`与转换`0xD000CF13`规则保持不变。环境变量、cwd、PATH、CLI/用户roots不影响分类。
@@ -178,7 +178,7 @@ dotnet format --verify-no-changes
 - UI/Broker 异常退出后按恢复记录处理；恢复完成后尽快删除记录。
 - 重启、注销和新会话后只清理旧 ACE，不恢复旧任务或剩余时间。
 - 机器范围恢复记录只允许 LocalSystem 和提升后的同账户 Broker 访问，普通权限 UI 无直接访问权。
-- 重启/登录测试证明测试用户首次访问目标前已完成既定遗留扫描和清理。
+- 重启/登录测试证明当前本地管理员首次访问目标前已完成既定遗留扫描和清理。
 - 自动启动服务未就绪或清理失败时保持恢复阻断状态，不报告成功。
 - 服务内部名、Display Name、Description、账户、启动类型、服务 SID、入口和 binPath 与 `D-024` 完全一致。
 - 恢复记录与 ACL 不一致时停止自动删除；清理失败保留记录并诊断；不覆盖 DACL。
@@ -187,9 +187,10 @@ dotnet format --verify-no-changes
 - CP4 补充矩阵全部通过：正常/畸形握手；CLI/request/session/PID/Account/Logon/Session 绑定；identity unavailable；nonce、connectionId、bindingProof；协议顺序；并发 replay、lease/TTL、owner 崩溃、Abandoned、RolledBack、RecoveryRequired、普通用户 Replay 目录拒绝和并发过期清理唯一所有者。
 - Broker/Service 只从 `%ProgramFiles%\FolderSessionLock` 注册；安装目录 ACL 为 `SYSTEM: FullControl`、`Administrators: FullControl`、`Users: ReadAndExecute`，不为 `Authenticated Users` 增加写权限。
 - 特权集成验证只在 `FSL-STAGE4-VM`、快照 `FolderSessionLock-Stage4-Clean` 执行。非该机器的服务、LocalSystem、登录前、UAC、注销、重启、安装 ACL 和签名场景必须为 `BLOCKED`，不得标记通过。
-- VM 测试账户为 `FSL-Standard` 与 `FSL-Admin`；凭据只由人工输入，不进入日志或证据。
-- VM 测试签名验证有效签名、篡改失败、未签名拒绝和允许证书指纹；不生成、保存或提交生产私钥。
-- `docs\evidence\stage-4\<RunId>\` 包含 `D-026` 规定的全部文件；`manifest.json` 字段和实际证据一致；`TASKS.md`、`DEVLOG.md` 引用 RunId。
+- 明确禁止创建 `FSL-Standard`、`FSL-Admin` 或任何专用 Windows 测试账户；缺少第二账户或真实双账户 evidence 不得阻塞 Stage 4/Stage 5。
+- 当前 VM run 不创建测试证书、不要求 publisher pin。固定六个第一方 PE 的实际状态逐一为 `NotSigned`、signer null并绑定 SHA-256；有效 pin 的 signed fail-closed 单元合同保持通过。
+- `docs\evidence\stage-4\<RunId>\` 包含 `D-026` 规定的全部文件；`scenario-results.json` 和 `manifest.json` 使用精确 schema v2，productScope、executorModel、sameAccountConsentPassed 与实际证据一致；`TASKS.md`、`DEVLOG.md` 引用 RunId。
+- `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
 - 每轮服务/UAC/注销/重启测试后，目标 ACL 已恢复、恢复记录已删除、服务状态已清理、临时目录可访问且可删除；任何未知状态阻止完成。
 - `recovery-once` 参数错误在 D-023/枚举/ACL 前返回 exit 2 与 `FSL_E_INVALID_ARGUMENTS`；受保护路径失败返回 10；目录枚举不完整返回 11；总条目 4097 或规范记录 1025 返回 12 且零 ACL 写入；任一记录/构件阻塞返回 13；纯取消且临界区安全完成返回 14；无法映射的顶层内部故障返回 15；无记录和全部安全清理均返回 0。
 - exit code 优先级测试精确覆盖 `InvalidArguments → ProtectedStorageSecurityFailure → RecoveryEnumerationFailure → RecoveryRecordLimitExceeded → RecoveryBlocked → Cancelled → InternalFailure → Success`；scheduler error 不覆盖记录主错误或成功结果。

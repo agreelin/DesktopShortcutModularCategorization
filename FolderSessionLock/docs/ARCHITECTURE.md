@@ -1,6 +1,6 @@
 # Folder Session Lock 架构
 
-状态：阶段 3 与阶段 4 CP1–CP9 当前 `AGREELIN` 允许范围已完成；同一 reviewer 最终输出 `PASS`，无 `BLOCKER` 或 `HIGH`。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped，Release build 0 warning、0 error，format、diff、文档、静态扫描和清理通过。CP10 尚未开始且仅允许在 `FSL-STAGE4-VM` 执行；当前 `AGREELIN` 未执行 SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 UAC、真实 OneDrive/Cloud Files、重启、签名或 D-026 验证，阶段 4 不得完成。
+状态：阶段 3 与阶段 4 CP1–CP9 已完成；CP10 工具实现最近验证为 799/799、0 failed、0 skipped、Release 0 warning/0 error。D-031 将当前交付范围修订为本地单用户管理员；同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 证据尚未完成，阶段 4 不得完成。
 
 ## 1. 选择 WPF
 
@@ -46,6 +46,8 @@ Broker 受信启动恢复模式
 
 恢复模式使用与交互控制模式相同的受信 Broker 二进制和 ACL 实现。阶段 4 已确认服务名、项目名、入口、存储路径、安装路径和启动参数，精确值见 `D-022` 至 `D-026`；不得静默改名或创建功能重复的第二个提升项目。
 
+当前部署拓扑由 D-031 固定为一个当前本地管理员账户。UI 与 consent-broker 必须保持同 Account SID、Logon SID 和 Session；跨账户只作为不支持路径 fail closed，不允许为验证创建第二账户。
+
 依赖方向：
 
 ```text
@@ -79,7 +81,7 @@ UI 在 UAC 前从自身当前进程令牌精确读取 Account SID、唯一 Logon
 
 已连接 Pipe 的 `FSL_E_ACCOUNT_SID_MISMATCH` 是 D-027 握手层诊断；连接前 bootstrap Account SID 不同使用 consent-broker exit 20。UI elevation 边界把这两条跨账户路径统一为 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`，但不得转换 Logon SID、Session、PID、identity unavailable、Pipe access 或 unauthorized 错误。
 
-该模型只支持同一 Windows 账户、同一交互会话的 consent elevation。标准用户在 UAC 中输入另一管理员账户凭据、跨账户 elevation、远程管理员控制和服务账户代执行均必须拒绝，并向用户显示“不支持跨账户提升”。
+该模型只支持当前本地管理员账户、同一交互会话的 consent elevation。跨账户 elevation、远程管理员控制和服务账户代执行均属于不支持路径并 fail closed；跨账户仅用合成身份单元测试验证，不创建标准用户或第二管理员账户。
 
 Logon SID 数值在操作系统重启后回收。因此注销后令牌不再匹配不等于磁盘 ACL 已恢复；恢复记录和清理流程是强制架构组成。
 
@@ -214,7 +216,7 @@ Named Pipe 方案：
 - 重复任务 ID 返回确定结果，不重复执行 ACL 变更。
 - 客户端 JSON 中出现 SID、ACL/SDDL/ACE、恢复/安装路径、服务/Pipe 名、命令/脚本/可执行路径、`LockRemovalIntent` 或清理模式时返回 `FSL_E_FORBIDDEN_INPUT`，即使值为空也拒绝。
 
-Pipe ACL、Logon SID 和随机握手不能对抗已经控制同一用户会话的恶意进程。开发阶段允许未签名构建用于本机测试。生产 Broker 必须代码签名并安装在管理员保护目录，普通用户不得替换或修改；必须验证客户端身份。未签名、安装目录普通用户可写、Broker 可替换或 IPC 身份验证缺失均为发布阻断。
+Pipe ACL、Logon SID 和随机握手不能对抗已经控制同一用户会话的恶意进程。D-031 本地单用户管理员 Release 可显式 unsigned，但必须安装在管理员保护目录、禁止普通用户替换并验证客户端身份；未签名状态必须如实记录。公开或企业生产分发仍须通过未来决定建立真实签名门。安装目录普通用户可写、Broker 可替换或 IPC 身份验证缺失在任何模式下均为发布阻断。
 
 CP4 固定架构：
 
@@ -314,8 +316,8 @@ CP4 固定架构：
 - 非该机器时，服务、LocalSystem、自动启动、登录前执行、UAC、注销、重启、Program Files/ProgramData ACL 和签名系统测试停止；设计、实现、单元测试、非特权测试和静态审查继续。
 - 当前机器 `AGREELIN` 不是获准 VM。
 - VM 内只允许操作服务 `FolderSessionLockRecovery`；禁止修改其他服务或 SCM 全局配置。最多 3 次注销、3 次完整重启，每次前保存证据、确认目标只位于 `%TEMP%\FolderSessionLock.Tests\<Guid>`、记录已提交且无仓库或真实用户目录目标，并输出场景编号。
-- 测试账户：`FSL-Standard`（本地标准用户）和 `FSL-Admin`（本地管理员），由人工准备，不记录密码。
-- 阶段 4 使用 VM 内 `LocalMachine\My` 的不可导出自签名 Code Signing 测试证书，仅该 VM 信任；生产证书和生产签名流水线不属阶段 4。
+- 测试身份：仅使用当前本地管理员账户；不得创建 `FSL-Standard`、`FSL-Admin` 或替代专用测试账户。同账户 UAC consent 由当前用户人工确认。
+- 当前本地 Release 使用显式 unsigned 模式；不得创建测试签名证书。六个第一方 PE 的实际 Authenticode 状态必须为 `NotSigned` 且 signer 为 null。
 - 证据仓库目录：`docs\evidence\stage-4\<RunId>\`，RunId 为 `yyyyMMddTHHmmssZ-<short-guid>`。精确文件清单和 `manifest.json` 结构见 `D-026`；`TASKS.md`、`DEVLOG.md` 必须引用 RunId，reviewer 必须核验 manifest 与工件一致。
 - 登录前恢复只读取受保护记录、验证目录身份和精确 ACE、移除旧 ACE、验证恢复并删除已完成记录；不恢复旧任务、不创建 ACE、不访问网络、不读取目录内容、不扫描无关目录、不修改审计策略。
 
@@ -377,7 +379,8 @@ CP4 固定架构：
 - 每个 consent-broker 进程固定一个 listener、一个客户端、一次 ClientHello/ServerHello/CommandRequest/CommandResponse，响应后不再 Accept。ValidatePath/GetStatus/普通 UI RemoveLock 拒绝/CreateLock 副作用前失败在响应送达后 exit 0；GetStatus 不启动 scheduler。
 - CreateLock 成功响应后 Broker 保持运行，scheduler 持有唯一 Active task并在到期执行 Expiration Cleanup；安全完成 exit 0，Cleanup 或 RecoveryRequired 未安全收敛 exit 27。响应前断开：无副作用 exit 25；确定 Active task继续到期；未知副作用进入 RecoveryRequired。
 - production `BrokerCompositionRoot` 必须显式组合 D-029 列出的 Windows identity/path/ACL、recovery file/security/readiness、Replay、protocol/transport、task/scheduler/lifecycle、logging 与 clock 依赖。禁止 AllowAll verifier、fake identity/readiness、in-memory recovery、test cleanup hook、test path或 debug Broker path；缺少安全依赖 fail closed exit 28。
-- `AGREELIN` 只实现 wrapper、resolver、identity/bootstrap、exit mapping、race abstraction、production composition 与 fake tests；实际 UAC、跨账户凭据、elevated Broker、Program Files 安装与签名、FSL-Standard/FSL-Admin 场景仍只允许 `FSL-STAGE4-VM`。
+- 非 VM 环境只实现 wrapper、resolver、identity/bootstrap、exit mapping、race abstraction、production composition 与 fake tests；实际同账户 UAC、elevated Broker、Program Files 安装、SCM/LocalSystem 与恢复只允许 `FSL-STAGE4-VM`。真实跨账户凭据和专用账户场景已由 D-031 取消。
+- `BrokerPublisherThumbprint` 为 null 或精确空字符串时，App 使用显式 unsigned 本地模式且 Authenticode verifier 不调用 platform；固定 Program Files 路径、owner/DACL、普通文件、non-reparse、final path、identity、hash/TOCTOU 与安装不可替换门保持不变。仅空白或畸形非空 pin fail closed；有效 40 位 pin 保留原 signed 精确匹配。
 
 ## 23. D-030 生产路径分类与时长策略
 

@@ -91,7 +91,7 @@
 
 - 状态：已决定。
 - 开发：允许未签名构建用于本机测试，必须标识为非生产构建。
-- 生产：Broker 必须代码签名，安装到管理员保护目录，普通用户不得替换或修改；同一 Broker 的恢复专用模式由自动启动 Windows 服务托管；IPC 必须限制访问并验证客户端身份；只公开强类型最小 ACL 接口。
+- 公开/企业生产分发：Broker 必须代码签名。D-031 当前本地单用户管理员交付可显式 unsigned，但仍安装到管理员保护目录、普通用户不得替换或修改；同一 Broker 的恢复专用模式由自动启动 Windows 服务托管；IPC 必须限制访问并验证客户端身份；只公开强类型最小 ACL 接口。
 - 发布阻断：Broker 未签名、安装目录普通用户可写、Broker 可被普通用户替换、IPC 身份验证缺失、暴露任意命令/脚本/PowerShell/cmd/任意 ACL 描述符。
 
 ## D-016：仓库布局
@@ -580,26 +580,25 @@ public interface IRecoveryReadinessReader
 - 禁止在宿主物理机、公司生产设备、域控制器或含真实用户数据的 VM 执行上述特权测试。
 - 只允许创建、查询、配置、描述、设置 Automatic、设置 LocalSystem、启用服务 SID、启动、停止、重启、验证失败行为、删除并验证删除后的服务 `FolderSessionLockRecovery`。禁止修改其他服务、SCM 全局配置或调用方提供的任意 service name/binPath。
 - 登录前唯一业务动作：读取受保护恢复记录 → 验证目录身份 → 验证精确应用 ACE → 安全移除旧 ACE → 验证访问控制恢复 → 删除已完成恢复记录。禁止恢复任务、重启倒计时、创建新 ACE、访问网络、读取目录内容、扫描无关目录或修改审计策略。
-- 仅在该 VM 批准同账户 consent elevation、跨账户 over-the-shoulder 拒绝、最多 3 次注销、最多 3 次完整重启、UI 关闭后后台行为和服务启动前后状态测试。
+- 仅在该 VM、当前本地管理员账户下批准同账户 consent elevation、最多 3 次注销、最多 3 次完整重启、UI 关闭后后台行为和服务启动前后状态测试。跨账户路径仅保留不创建第二账户的 fail-closed 单元测试，不收集真实双账户 VM 证据。
 - 注销或重启前必须保存测试证据，确认目标仅为 `%TEMP%\FolderSessionLock.Tests\<Guid>`，恢复记录已原子提交，不存在仓库或真实用户目录目标，并输出场景编号。每轮前后必须恢复已知快照或完成清理验证。
 - 当前环境 `AGREELIN` 不是获准 VM；本决定记录轮不得执行任何上述系统操作。
 
-## D-026：阶段 4 签名与人工验证证据
+## D-026：阶段 4 本地 unsigned 发布与人工验证证据
 
-- 状态：已决定。
-- 阶段 4 VM 测试证书：`FSL-STAGE4-VM` 内生成的自签名 Code Signing 测试证书，位于 `LocalMachine\My`，私钥不可导出，信任范围仅该 VM，禁止生产使用。可将公开证书加入该 VM 的 Trusted Publishers 或 `TrustedPeople`；不得提交私钥或 PFX，不得将私钥复制出 VM。
-- 必须验证 Broker 原始文件签名、服务注册前签名、修改后签名失败、未签名二进制不能注册或启动、签名者指纹匹配允许测试证书；使用 Windows Authenticode/`WinVerifyTrust` 或经审查的等价 API。
-- 生产发布使用受信任 CA 签发的组织代码签名证书；采购、私钥托管和发布签名流水线不属阶段 4；阶段 4 不得生成或保存生产私钥。
-- VM 测试账户固定为 `FSL-Standard`（本地标准用户，不属于 Administrators）和 `FSL-Admin`（本地管理员，属于 Administrators）；由人工在 VM 内准备，项目文档不得保存密码、凭据或密码提示。
-- 自动构建、单元测试和非交互验证由 Codex/coder 执行；UAC、跨账户凭据、注销和重启由用户人工执行/批准；最终结果由用户与 reviewer 确认。Codex 不请求、读取、记录或回显密码。
-- 跨账户拒绝稳定错误码固定为 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`；必须在任何 ACL 写入前拒绝，且 UI 显示“不支持跨账户提升”。
+- 状态：已决定；schema v2 与 D-031 取代本决定旧的测试证书、双账户和 schema v1 完成条件。
+- 当前 Stage 4 run 不创建或使用测试签名证书，不要求 publisher pin。六个第一方 PE 必须逐一验证实际 Authenticode 状态为 `NotSigned` 且 signer 为 null；不得把 unsigned 记录为 signed。
+- App assembly metadata 的 `BrokerPublisherThumbprint` 为 null 或精确空字符串时表示显式本地 unsigned 模式，生产组合仍须先通过固定 Program Files 路径、owner/DACL、文件身份、hash/TOCTOU 与不可替换性门；该模式不调用 Authenticode platform。仅空白或其他非空畸形 pin 必须 fail closed。有效 40 位 pin 继续使用原有精确 signed fail-closed 合同。
+- 当前 run 的自动构建、测试和非交互验证由 Codex/coder 执行；同账户 UAC consent、注销和重启由当前本地管理员人工批准；最终结果由用户与 reviewer 确认。Codex 不请求、读取、记录或回显密码。
+- 跨账户拒绝稳定错误码和任何 ACL 写入前的 fail-closed 行为保留，但跨账户 elevation 不属于当前支持范围，且不创建第二账户、不收集真实双账户 VM 证据。
 - 证据仓库目录固定为 `docs\evidence\stage-4\<RunId>\`，`RunId` 格式为 `yyyyMMddTHHmmssZ-<short-guid>`。
-- 必需证据文件：`manifest.json`、`commands.txt`、`build-results.txt`、`test-results.trx`、`service-config.txt`、`service-status-before.txt`、`service-status-after.txt`、`signature-verification.txt`、`acl-before.txt`、`acl-locked.txt`、`acl-after-recovery.txt`、`recovery-record-transitions.txt`、`access-probe-results.json`、`application-events.txt`、`cleanup-results.txt`、`reviewer-verdict.md`。人工场景可附 `screenshots\uac-consent.png`、`screenshots\cross-account-rejection.png`、`screenshots\post-reboot-recovery.png`。
+- 必需证据文件：`manifest.json`、`commands.txt`、`build-results.txt`、`test-results.trx`、`service-config.txt`、`service-status-before.txt`、`service-status-after.txt`、`signature-verification.txt`、`acl-before.txt`、`acl-locked.txt`、`acl-after-recovery.txt`、`recovery-record-transitions.txt`、`access-probe-results.json`、`application-events.txt`、`cleanup-results.txt`、`reviewer-verdict.md`。人工场景可附 `screenshots\uac-consent.png` 与 `screenshots\post-reboot-recovery.png`。
+- `scenario-results.json` schema v2 顶层精确字段为 `schemaVersion`（Int32=2）、`runId`、`sameAccountConsentPassed`、`preLoginRecoveryPassed`、`aclRestored`、`temporaryDirectoriesRemoved`、`recoveryRecordsRemoved`、`remainingRisks`（string array）与非空 `scenarios`。每个 scenario 精确字段为 `scenarioId`、`description`、`expectedResult`、`actualResult`、`result`、`evidenceFiles`；result 仅 `PASS|FAIL|BLOCKED`，evidenceFiles 必须非空、位于本 RunId evidence 根内且实际存在。
 - `manifest.json` 精确字段：
 
 ```json
 {
-  "evidenceSchemaVersion": 1,
+  "evidenceSchemaVersion": 2,
   "runId": "string",
   "stage": 4,
   "gitCommit": "string",
@@ -608,6 +607,8 @@ public interface IRecoveryReadinessReader
   "startedUtc": "RFC3339 UTC",
   "completedUtc": "RFC3339 UTC",
   "executor": "human-and-codex",
+  "productScope": "LOCAL_SINGLE_USER_ADMINISTRATOR_ONLY",
+  "executorModel": "TRUSTED_SINGLE_USER_STAGE4_EXECUTOR_MODEL",
   "serviceName": "FolderSessionLockRecovery",
   "scenarios": [
     {
@@ -621,8 +622,8 @@ public interface IRecoveryReadinessReader
   ],
   "buildPassed": true,
   "testsPassed": true,
-  "signaturePassed": true,
-  "crossAccountElevationRejected": true,
+  "authenticodeStatus": "NotSigned",
+  "sameAccountConsentPassed": true,
   "preLoginRecoveryPassed": true,
   "aclRestored": true,
   "temporaryDirectoriesRemoved": true,
@@ -1010,7 +1011,7 @@ public sealed record InitiatingClientIdentity(
 
 - 新增固定错误：`FSL_E_BROKER_PATH_UNTRUSTED`、`FSL_E_ELEVATION_CANCELLED`、`FSL_E_ELEVATION_LAUNCH_FAILED`、`FSL_E_BROKER_LAUNCH_CONTRACT_INVALID`、`FSL_E_PIPE_INITIALIZATION_FAILED`、`FSL_E_BROKER_CONNECT_TIMEOUT`、`FSL_E_BROKER_EXITED_EARLY`、`FSL_E_BROKER_PROCESS_CLEANUP_FAILED`。全部 field=null；仅 elevation cancelled 与 connect timeout retryable=true，其余 false。
 - protected 日志可记录 requestId、broker/client PID、consent exit code、source/mapped error code、连接/响应/副作用/RecoveryRequired 标志；禁止 SID 原文、nonce、bindingProof、完整 path payload、DPAPI blob、SDDL、凭据、UAC 输入或向普通 UI 暴露 stack。
-- `AGREELIN` 允许 launcher interface、ShellExecuteExW wrapper、Win32 mapping、Broker path resolver、UI identity snapshot、bootstrap verifier、PID+creation time、exit mapper、fake UAC/process/Pipe race、production composition static check、tests/build/format/security scan/reviewer。实际 UAC、管理员凭据 UI、跨账户凭据、真实 elevated Broker、真实 Program Files/签名、UAC 人工取消和 FSL-Standard/FSL-Admin 只在 `FSL-STAGE4-VM` 验证。
+- 非 VM 环境允许 launcher interface、ShellExecuteExW wrapper、Win32 mapping、Broker path resolver、UI identity snapshot、bootstrap verifier、PID+creation time、exit mapper、fake UAC/process/Pipe race、production composition static check、tests/build/format/security scan/reviewer。实际同账户 UAC、真实 elevated Broker、Program Files、SCM/LocalSystem 与恢复只在 `FSL-STAGE4-VM` 验证；真实跨账户凭据、`FSL-Standard`/`FSL-Admin` 和测试签名场景由 D-031 取消。
 - CP9 必测矩阵覆盖身份分层、UI token/PID/creation time、UAC error/race/cleanup、production path、single connection/request、exit 0/26/27、response precedence、CreateLock long-lived lifecycle 与 production composition 禁止 fake/AllowAll。
 
 ## D-030：跨进程 Recovery Readiness、生产路径策略与受保护日志
@@ -1075,3 +1076,22 @@ public sealed record InitiatingClientIdentity(
 - provider写入/flush失败后永久 Failed。无副作用：停止请求，能响应则返回上述错误，最终 exit 28。已有确定副作用：继续既有 task lifecycle与Cleanup，最小 fixed diagnostic state留内存；Cleanup成功后 exit28，Cleanup失败或RecoveryRequired时exit27优先。合法 CommandResponse已送达后不得被后续exit28改写。
 - recovery-service启动前logger失败不得 SERVICE_RUNNING，直接 SERVICE_STOPPED并记录结构化错误。运行中永久失败时，如readiness仍可安全工作则立即发布 RecoveryBlocked，禁止CreateLock，完成ACL临界区后受控停止；readiness发布也失败时依靠stale fail closed。recovery-once使用既有exit15，不新增退出码。
 - `AGREELIN`允许 readiness接口/fake/TEMP原子快照、security failure injection、duration/scheduler单测、TEMP repository marker、Cloud Files/Known Folder fake、TEMP protected logger、rotation/retention/failure injection、生产组合静态扫描、build/test/format/reviewer。真实 ProgramData readiness/Logs ACL、service SID ACL、LocalSystem publisher、SCM Stop、真实跨进程普通用户读取、真实 OneDrive/Cloud Files矩阵、service/broker并发日志和重启后stale只允许 `FSL-STAGE4-VM`。
+
+## D-031：Local Single-User Administrator Deployment Scope
+
+- 状态：已决定。`LOCAL_SINGLE_USER_ADMINISTRATOR_ONLY` 是当前支持的唯一部署范围；本决定在账户、Stage 4 evidence、签名和发布范围上取代 D-025、D-026 及其他旧文档中的冲突条款。
+- Current supported deployment is local single-user administrator only.
+- `FSL-Standard` must not be created.
+- `FSL-Admin` must not be created.
+- No dedicated Windows test account may be created.
+- Cross-account elevation is outside the supported deployment scope.
+- Same-account UAC consent may be used.
+- SCM and LocalSystem operations may be initiated by the current administrator account.
+- Real dual-account VM evidence is not required.
+- Existing fail-closed cross-account rejection may remain and must continue to be unit-tested without creating a real account.
+- Lack of a real signing certificate does not block local unsigned release.
+- Unsigned status must be reported accurately as `Authenticode = NotSigned` with a null signer.
+- D-026 uses `TRUSTED_SINGLE_USER_STAGE4_EXECUTOR_MODEL`: the current local administrator, approved Codex automation, user-confirmed same-account UAC, and user-approved elevated PowerShell are trusted executors for this run.
+- The evidence integrity contract detects corruption, partial writes, WAL/journal/order/schema/hash/binding mismatches, false completion and incomplete cleanup. It does not claim protection against the same trusted user replacing keys or evidence, replaying a complete old evidence set, administrator/LocalSystem compromise, VM rollback, or the absence of an external witness, public seal, TPM anti-rollback or non-repudiation.
+- Multi-user, enterprise, hostile-same-user and public-distribution support require a future decision.
+- `CANCELLED / NOT REQUIRED`: Create `FSL-Standard`; create `FSL-Admin`; validate standard-user to separate-admin credential elevation; collect real dual-account evidence; block Stage 5 solely on missing dual-account evidence.

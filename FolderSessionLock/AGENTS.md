@@ -6,6 +6,7 @@
    - 技术栈：C#、.NET 8、WPF、MVVM。
    - 产品使用 Windows ACL 对当前登录会话实施用户态自我约束。
    - 产品不是管理员、SYSTEM、TrustedInstaller、内核组件、Windows 恢复环境、离线访问或同账户恶意程序的强安全边界。
+   - 当前支持范围由 `D-031` 固定为本地单用户管理员：不得创建 `FSL-Standard`、`FSL-Admin` 或任何专用 Windows 测试账户；真实双账户 elevation/evidence 不属于 Stage 4 完成门。
    - 所有 solution、源码、测试和项目文档必须位于 `FolderSessionLock/`；不得修改仓库无关项目。
 
    ## 项目文档唯一权威路径
@@ -122,7 +123,7 @@
    - v1 仅支持同一账户、同一交互会话的 consent elevation；身份不一致时显示“不支持跨账户提升”。
    - Broker 是唯一真实 ACL 写入主体。
    - Broker 恢复专用模式由自动启动 Windows 服务以 LocalSystem 身份在交互登录前托管；只清理旧 ACE，不创建或恢复任务。
-   - 生产 Broker 必须代码签名并安装于管理员保护目录；普通用户不得替换或修改。
+   - 当前 D-031 本地单用户管理员 Release 可显式 unsigned，但必须如实记录 `NotSigned`/null signer，并安装于管理员保护目录；普通用户不得替换或修改。有效 publisher pin 的 signed 模式继续严格 fail closed；公开或企业分发的签名合同需要未来决定。
    - IPC 只允许本机、最小 Pipe DACL、客户端身份验证和防重放。
    - 禁止任意命令、脚本、PowerShell、cmd、任意文件写入或调用方提供的任意 ACL 描述符。
 

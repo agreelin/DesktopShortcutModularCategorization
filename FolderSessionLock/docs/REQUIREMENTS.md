@@ -1,10 +1,12 @@
 # Folder Session Lock 需求规格
 
-状态：阶段 3 完成并通过 reviewer。阶段 4 CP1–CP9 当前 `AGREELIN` 允许范围已完成；同一 reviewer 最终输出 `PASS`，无 `BLOCKER` 或 `HIGH`。最终实际验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776，0 failed、0 skipped，Release build 0 warning、0 error，format、diff、文档一致性、静态扫描和清理检查通过。CP10 尚未开始且仅允许在 `FSL-STAGE4-VM` 执行；SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 UAC、真实 OneDrive/Cloud Files、重启、签名与 D-026 证据尚未执行，阶段 4 不得完成。审计功能尚未实现。
+状态：阶段 3 与阶段 4 CP1–CP9 已完成；CP10 工具实现的最近独立验证为 799/799、0 failed、0 skipped、Release 0 warning/0 error。D-031 已将当前交付范围修订为本地单用户管理员；CP10 的同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 证据尚未完成，阶段 4 不得完成。审计功能尚未实现。
 
 ## 1. 产品目标
 
 Folder Session Lock 是 Windows 当前交互登录会话中的用户态自我约束工具。用户选择本机文件夹并设置时长；应用验证安全条件后添加会话级 ACL 拒绝规则；到期后自动移除该规则。
+
+当前支持部署范围固定为 `LOCAL_SINGLE_USER_ADMINISTRATOR_ONLY`：仅由当前本地 Administrators 成员在本机使用，可使用同账户 UAC consent。多用户、跨账户 elevation、企业部署、远程使用、敌对同用户防护和公开分发不属于当前范围。
 
 产品不保存普通业务任务历史。为保证正常到期解除、异常退出恢复和新会话遗留 ACL 清理，架构保存最小、受保护、事务化恢复记录；恢复完成后尽快删除。
 
@@ -128,7 +130,7 @@ v1 只接受本机固定磁盘、NTFS 文件系统、普通目录和可安全规
 - `FR-034` Broker 必须验证 Account SID、Logon SID、Windows Session ID、连接进程身份、一次性握手值和请求重放状态。
 - `FR-035` Broker 必须独立重复全部路径和权限验证，不信任 UI 结果。
 - `FR-035A` Broker 令牌与 UI Account SID 或 Logon SID 不一致时必须拒绝；v1 不通过另一管理员账户代执行目标会话 ACL 操作。
-- `FR-035B` 生产 Broker 必须代码签名并安装在管理员保护目录；普通用户不得替换或修改 Broker。未签名、安装目录普通用户可写或 Broker 可替换均为发布阻断。
+- `FR-035B` 当前 D-031 本地 Release 可显式 unsigned，但 Broker 必须安装在管理员保护目录，普通用户不得替换或修改。unsigned 状态必须如实记录为 `NotSigned`/null signer；安装目录普通用户可写或 Broker 可替换始终阻断。公开/企业分发的真实签名门需要未来决定。
 - `FR-035C` IPC 必须只公开强类型最小 ACL 接口；禁止任意命令、脚本、PowerShell、cmd 和调用方提供的任意 ACL 描述符。
 - `FR-035D` 服务名必须为 `FolderSessionLockRecovery`，Display Name 为 `Folder Session Lock Recovery Service`，Description 为 `Removes verified Folder Session Lock ACL entries left by previous Windows logon sessions.`；服务账户为 `LocalSystem`，启动类型为 `Automatic`，`DelayedAutoStart = false`，启用服务 SID `NT SERVICE\FolderSessionLockRecovery`。
 - `FR-035E` 服务入口固定为 `FolderSessionLock.Broker.exe --mode recovery-service`；隔离 VM 一次性诊断入口固定为 `FolderSessionLock.Broker.exe --mode recovery-once`；交互 Broker 参数固定为 `--mode consent-broker --pipe-name FolderSessionLock.Broker.v1 --session-id <UInt32> --request-id <lowercase Guid D> --client-process-id <UInt32> --client-process-creation-filetime <UInt64 decimal>`。Account SID、Logon SID、用户名、角色、管理员标志或 Pipe SDDL 不得进入 CLI。未知参数、自定义恢复路径、任意 Pipe 名、任意 service name/binPath、任意 ACL 描述符和脚本参数必须安全失败。
@@ -204,9 +206,9 @@ v1 只接受本机固定磁盘、NTFS 文件系统、普通目录和可安全规
 - 恢复目录路径、容器头、字段、版本和 entropy purpose 不得从 IPC 或命令行输入。
 - 阶段 4 特权集成测试仅允许计算机名 `FSL-STAGE4-VM`、Windows 11 Pro/Enterprise、快照 `FolderSessionLock-Stage4-Clean` 的专用可丢弃 VM。机器名不匹配时，服务、LocalSystem、自动启动、登录前执行、UAC、注销、重启、Program Files/ProgramData ACL 和签名系统测试必须停止；设计、实现、单元测试、非特权测试和静态审查可继续。
 - ACL 测试目标仍只能为 `%TEMP%\FolderSessionLock.Tests\<Guid>`；ProgramData 和 Program Files 操作仅限获准 VM 的安装/恢复基础设施验证，不得作为锁定目标。
-- 阶段 4 测试账户为 `FSL-Standard` 和 `FSL-Admin`，由人工在 VM 内准备；Codex 不请求或记录密码。
-- 阶段 4 证据固定写入 `docs\evidence\stage-4\<RunId>\`，`RunId` 为 `yyyyMMddTHHmmssZ-<short-guid>`；必需文件及 `manifest.json` 精确结构以 `D-026` 为准。
-- 阶段 4 使用 VM 内 `LocalMachine\My` 的不可导出自签名 Code Signing 测试证书；生产证书、生产私钥和发布签名流水线不属阶段 4。
+- 不得创建 `FSL-Standard`、`FSL-Admin` 或任何专用 Windows 测试账户。真实双账户 credential elevation/evidence 不属于 Stage 4 完成门；现有跨账户拒绝继续以不创建账户的单元测试 fail closed。
+- 阶段 4 证据固定写入 `docs\evidence\stage-4\<RunId>\`，`RunId` 为 `yyyyMMddTHHmmssZ-<short-guid>`；`scenario-results.json` 与 `manifest.json` 必须使用 D-026 schema v2。
+- 当前本地 Release 允许 unsigned；六个第一方 PE 必须如实记录 `Authenticode = NotSigned` 和 null signer。不得创建自签名/测试证书冒充正式签名；真实签名证书缺失不阻止本地交付。
 
 ## 4. 非功能需求
 
@@ -240,4 +242,4 @@ ACL 对 ACE 生效后的新访问执行访问检查。它不撤销已打开句�
 
 ## 7. 决策状态与阶段实现状态
 
-`D-001` 至 `D-030` 均已决定。CP8 class 65 rename、FileDispositionInfoEx POSIX canonical 删除顺序和文件级安全实现已经通过最终 reviewer。D-029/D-030 的 CP9 当前 `AGREELIN` 实现、自动验证和最终 reviewer 复审均已完成，结论为 `PASS`，无 `BLOCKER` 或 `HIGH`；当前机器不是获准 VM，CP10 尚未开始且仅允许在 `FSL-STAGE4-VM` 执行，阶段 4 VM 专属验证仍未执行。
+`D-001` 至 `D-031` 均已决定。D-031 在当前部署范围上取代旧双账户与强制签名冲突条款。CP8 class 65 rename、FileDispositionInfoEx POSIX canonical 删除顺序和文件级安全实现已经通过最终 reviewer；CP10 的范围修订与剩余真实 VM 验证按固定串行 gate 推进。

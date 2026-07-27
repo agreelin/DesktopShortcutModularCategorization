@@ -6,6 +6,12 @@ restores, creates, or deletes VMware snapshots and it never accepts arbitrary
 service names, installation roots, ProgramData roots, pipe names, ACLs, or
 commands.
 
+The D-031 supported deployment is
+`LOCAL_SINGLE_USER_ADMINISTRATOR_ONLY`. Do not create `FSL-Standard`,
+`FSL-Admin`, any other dedicated Windows test account, or a test signing
+certificate. Use only the current local administrator account and same-account
+UAC consent.
+
 Run `Preflight` from a non-elevated Windows PowerShell. Its platform
 attestation sources are read-only: the fixed 64-bit registry value
 `HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State\UEFISecureBootEnabled`,
@@ -18,20 +24,20 @@ preserved in `prestate.json`; readiness remains `DeferredUntilElevated` with
 `SecureBootVerified=false`, `TpmPresentVerified=false`,
 `TpmReadyVerified=false`, and a null `PlatformReadinessVerifiedUtc`.
 
-Run `CreateTestCertificate` later from an elevated Windows PowerShell:
+Run `VerifyPlatformReadiness` later from an elevated Windows PowerShell:
 
 ```powershell
 $runId = '20260725T120000Z-0123abcd'
 .\eng\stage4\Invoke-Stage4.ps1 Preflight -RunId $runId
-.\eng\stage4\Invoke-Stage4.ps1 CreateTestCertificate -RunId $runId
+.\eng\stage4\Invoke-Stage4.ps1 VerifyPlatformReadiness -RunId $runId
 ```
 
-Before any certificate mutation, `CreateTestCertificate` repeats the fixed base
-gate, requires an administrator token, requires strict Boolean `true` from
+`VerifyPlatformReadiness` repeats the fixed base gate, requires an administrator
+token, requires strict Boolean `true` from
 `Confirm-SecureBootUEFI`, and requires strict Boolean `TpmPresent=true` and
 `TpmReady=true` from `Get-Tpm`. It revalidates the anchored preflight evidence,
-durably records `PlatformReadinessVerified`, then records
-`CertificateCreating`. Every other command rejects
+then durably records `PlatformReadinessVerified`. It does not create, import,
+trust, export, or delete a certificate. Every later command rejects
 `DeferredUntilElevated` before entering its handler or performing a mutation.
 Only the complete `VerifiedElevated` tuple with all three verification flags
 true and a round-trip verification timestamp can enter those handlers.
@@ -49,15 +55,10 @@ byte-for-byte unchanged. A complete unanchored journal record is rejected.
 Legacy anchored state with all five readiness properties absent is normalized
 to deferred only in memory; partial or invalid readiness state is rejected.
 
-`CreateTestCertificate` creates a seven-day, non-exportable, self-signed VM test
-certificate. It is explicitly not a production certificate. The public
-certificate may be trusted only inside the disposable VM. No PFX or private key
-is written to the repository.
-
 The supported commands, in order, are:
 
 1. `Preflight`
-2. `CreateTestCertificate`
+2. `VerifyPlatformReadiness`
 3. `Publish`
 4. `VerifySignature`
 5. `Install`
@@ -71,20 +72,20 @@ The supported commands, in order, are:
 `Publish` creates a Release, `win-x64`, framework-dependent, multi-file package
 outside the repository. App and Broker are staged separately and merged only
 after collision hashes agree. The App receives the non-secret
-`BrokerPublisherThumbprint` MSBuild property. When a signing thumbprint is
-provided (or this run created the VM test certificate), the fixed first-party PE
-set is signed and verified with SHA-256:
+`BrokerPublisherThumbprint` MSBuild property. Omit it or pass the exact empty
+string for the D-031 explicit unsigned local mode; whitespace or any malformed
+nonempty value fails. The fixed first-party PE set is verified as actual
+`NotSigned` with a null signer and recorded with SHA-256:
 `FolderSessionLock.App.exe`, `FolderSessionLock.App.dll`,
 `FolderSessionLock.Broker.exe`, `FolderSessionLock.Broker.dll`,
 `FolderSessionLock.Core.dll`, and `FolderSessionLock.Windows.dll`. The
 controller rejects a missing or additional `FolderSessionLock.*` executable or
-DLL. SignTool is accepted only from the x64 Windows Kits installation tree;
-`PATH` is not a trust source. Acceptance uses native `WinVerifyTrust` plus the
-approved Microsoft signing-key SPKI SHA-256 allowlist, never a certificate
-Subject string. The executable and every path ancestor through the volume root
-are opened by handle and bound to final path, non-reparse state, volume/file
-identity, owner, and effective mutation ACL. The complete descriptor must be
-unchanged after every SignTool invocation.
+DLL. The current run does not invoke SignTool. A future valid 40-hex publisher
+pin continues to use the existing signed fail-closed path and trusted Windows
+Kits SignTool location; `PATH` is not a trust source. In both modes, the
+executable and every path ancestor through the volume root are opened by handle
+and bound to final path, non-reparse state, volume/file identity, owner, and
+effective mutation ACL.
 
 The controller persists every legal transition in an append-only, write-through
 JSONL hash-chain journal plus an independently replaced anchor. `state.json` is
@@ -131,7 +132,9 @@ must already exist and be nonempty; the aggregate TRX must prove zero failed and
 zero not-executed tests; and an external reviewer verdict containing an explicit
 `PASS` or `FAIL` line must be supplied. The root verifier must also provide
 `scenario-results.json` from the actual VM commands and human observations. It
-contains `schemaVersion`, `runId`, the five D-026 boolean results,
+uses schema v2 and exact top-level fields: `schemaVersion`, `runId`,
+`sameAccountConsentPassed`, `preLoginRecoveryPassed`, `aclRestored`,
+`temporaryDirectoriesRemoved`, `recoveryRecordsRemoved`,
 `remainingRisks`, and nonempty `scenarios`; each scenario supplies
 `scenarioId`, `description`, `expectedResult`, `actualResult`, `result`, and
 existing `evidenceFiles`. A `FAIL`, `BLOCKED`, false completion boolean, missing
@@ -162,9 +165,10 @@ not created by the current run. It also binds cleanup to the recorded final
 path, NTFS file ID, SHA-256, release-manifest hash, and exact protected ACL.
 Unknown files, reparse points, replacements, identity drift, or ACL drift stop
 cleanup; product directories are never recursively deleted. A VM test
-certificate is removed from both `LocalMachine\My` and
-`LocalMachine\TrustedPeople` and cleanup succeeds only after proving that the
-run-specific subject is absent from both stores.
+current run creates no certificate. Cleanup and final residue checks prove that
+the run-specific subject is absent from `LocalMachine\My` and
+`LocalMachine\TrustedPeople`; unknown pre-existing certificates are never
+deleted.
 
 After preflight, repository changes are allowed only below the current RunId
 evidence directory. Service deletion requires an exact structured SCM snapshot

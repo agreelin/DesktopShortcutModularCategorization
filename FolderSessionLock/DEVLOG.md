@@ -1102,3 +1102,32 @@
 - This is a trusted-controller/executor recovery contract. It does not claim a
   boundary against malicious same-user code, administrators, LocalSystem,
   snapshot rollback, an external witness, or anti-rollback.
+
+## 2026-07-27 — CP10-SCOPE-LOCAL-SINGLE-ADMIN coder implementation
+
+- Adopted D-031 `LOCAL_SINGLE_USER_ADMINISTRATOR_ONLY` and the trusted
+  single-user Stage 4 executor model. Creating `FSL-Standard` or `FSL-Admin`,
+  separate-administrator credential elevation, dual-account evidence, and
+  blocking Stage 5 solely for absent dual-account evidence are
+  `CANCELLED / NOT REQUIRED`.
+- Reconciled the authority documents, Stage 4 controller, Broker
+  Authenticode verifier, evidence contract, and directly affected tests.
+  D-026 evidence is schema v2 with exact top-level and scenario fields.
+- The explicit unsigned mode is selected only when `publisherThumbprint` is
+  null or exactly empty. It performs no platform signature calls in the App
+  verifier. Whitespace and malformed non-empty values fail closed. A valid
+  40-hex publisher pin retains the existing signed, exact-pin, fail-closed
+  path.
+- The Stage 4 controller no longer exposes certificate creation. Its current
+  unsigned release verification requires all six first-party PE files to
+  report Authenticode `NotSigned` with a null signer certificate, records a
+  SHA-256 for each file, and preserves the remaining build, test, publish,
+  install, recovery, ACL, and evidence gates.
+- Coder verification passed: PowerShell parsing for the Stage 4 entry point,
+  module, and behavior tests; the complete Stage 4 tooling behavior suite;
+  Broker verifier tests 22/22; Release build with 0 warnings and 0 errors;
+  App tests excluding the privileged Stage4Vm category 490/490, failed 0,
+  skipped 0; and `dotnet format --verify-no-changes`.
+- No account or certificate was created. No UAC, SCM, LocalSystem, ACL,
+  signing, restart, logoff, VMware, push, or other system mutation was
+  performed. Full root verification and reviewer disposition remain pending.

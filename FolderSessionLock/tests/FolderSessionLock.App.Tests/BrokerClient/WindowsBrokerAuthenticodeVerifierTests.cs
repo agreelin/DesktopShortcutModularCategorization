@@ -12,15 +12,46 @@ public sealed class WindowsBrokerAuthenticodeVerifierTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
+    public void Verify_AllowsExplicitUnsignedLocalModeWithoutPlatformCalls(string? publisher)
+    {
+        var platform = new AuthenticodePlatform(false, null);
+        var verifier = new WindowsBrokerAuthenticodeVerifier(publisher, platform);
+
+        Result result = verifier.Verify(
+            @"C:\Program Files\FolderSessionLock\FolderSessionLock.Broker.exe");
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, platform.Calls);
+    }
+
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("\t")]
     [InlineData("001122")]
     [InlineData("00112233445566778899AABBCCDDEEFF0011223Z")]
     [InlineData("00 11 22 33 44 55 66 77 88 99 AA BB CC DD EE FF 00 11 22 33")]
-    public void Verify_FailsClosedForMissingOrMalformedPublisherPin(string? publisher)
+    public void Verify_FailsClosedForWhitespaceOrMalformedNonEmptyPublisherPin(
+        string publisher)
     {
         var platform = new AuthenticodePlatform(true, Publisher);
         var verifier = new WindowsBrokerAuthenticodeVerifier(publisher, platform);
 
         Result result = verifier.Verify(@"C:\Program Files\FolderSessionLock\FolderSessionLock.Broker.exe");
+
+        AssertPathFailure(result);
+        Assert.Equal(0, platform.Calls);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void Verify_RejectsMissingBrokerPathInEveryPublisherMode(string? publisher)
+    {
+        var platform = new AuthenticodePlatform(true, Publisher);
+        var verifier = new WindowsBrokerAuthenticodeVerifier(publisher, platform);
+
+        Result result = verifier.Verify(string.Empty);
 
         AssertPathFailure(result);
         Assert.Equal(0, platform.Calls);

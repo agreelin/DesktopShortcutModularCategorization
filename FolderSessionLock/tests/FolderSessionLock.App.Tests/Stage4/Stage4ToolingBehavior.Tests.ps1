@@ -516,6 +516,146 @@ if ($Slice -in @('All', 'Slice4')) {
             }
         }
     }
+
+    $publisherModes = & $module {
+        $unsignedNull = Resolve-FslPublisherMode $null 2
+        $unsignedEmpty = Resolve-FslPublisherMode '' 2
+        $pinned = Resolve-FslPublisherMode `
+            '00112233445566778899aabbccddeeff00112233' 2
+        $invalid = @()
+        foreach ($value in @(' ', "`t", '001122', (
+            '00112233445566778899AABBCCDDEEFF0011223Z'))) {
+            try {
+                [void](Resolve-FslPublisherMode $value 2)
+                $invalid += -1
+            }
+            catch {
+                $invalid += [int]$_.Exception.Data['FslStage4ExitCode']
+            }
+        }
+        return [pscustomobject]@{
+            UnsignedNull = $unsignedNull
+            UnsignedEmpty = $unsignedEmpty
+            Pinned = $pinned
+            Invalid = $invalid
+        }
+    }
+    Assert-True (
+        $publisherModes.UnsignedNull.Mode -ceq 'UnsignedLocal' -and
+        $null -eq $publisherModes.UnsignedNull.Pin -and
+        $publisherModes.UnsignedEmpty.Mode -ceq 'UnsignedLocal' -and
+        $null -eq $publisherModes.UnsignedEmpty.Pin -and
+        $publisherModes.Pinned.Mode -ceq 'PinnedPublisher' -and
+        $publisherModes.Pinned.Pin -ceq
+            '00112233445566778899AABBCCDDEEFF00112233' -and
+        @($publisherModes.Invalid | Where-Object { $_ -ne 2 }).Count -eq 0) (
+        'Publisher mode did not distinguish null/empty, valid pin, and ' +
+        'whitespace or malformed nonempty values.')
+
+    $schemaRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        'FolderSessionLock.Stage4.Tooling.SchemaV2.' +
+        [Guid]::NewGuid().ToString('D'))
+    [System.IO.Directory]::CreateDirectory($schemaRoot) | Out-Null
+    try {
+        $schemaContract = & $module {
+            param($Root)
+
+            $scenario = [pscustomobject][ordered]@{
+                scenarioId = 'same-account-consent'
+                description = 'Same-account UAC consent'
+                expectedResult = 'PASS'
+                actualResult = 'PASS'
+                result = 'PASS'
+                evidenceFiles = @('commands.txt')
+            }
+            $top = [pscustomobject][ordered]@{
+                schemaVersion = [int]2
+                runId = '20260727T000000Z-0123abcd'
+                sameAccountConsentPassed = $true
+                preLoginRecoveryPassed = $true
+                aclRestored = $true
+                temporaryDirectoriesRemoved = $true
+                recoveryRecordsRemoved = $true
+                remainingRisks = @('Unsigned local release')
+                scenarios = @($scenario)
+            }
+            Assert-FslExactJsonProperties $top @(
+                'schemaVersion',
+                'runId',
+                'sameAccountConsentPassed',
+                'preLoginRecoveryPassed',
+                'aclRestored',
+                'temporaryDirectoriesRemoved',
+                'recoveryRecordsRemoved',
+                'remainingRisks',
+                'scenarios') 'Scenario evidence'
+            Assert-FslExactJsonProperties $scenario @(
+                'scenarioId',
+                'description',
+                'expectedResult',
+                'actualResult',
+                'result',
+                'evidenceFiles') 'A scenario result'
+
+            $evidencePath = Join-Path $Root 'signature-verification.txt'
+            $builder = [System.Text.StringBuilder]::new()
+            foreach ($name in $script:FirstPartyPortableExecutables) {
+                [void]$builder.AppendLine("File=$name")
+                [void]$builder.AppendLine('Status=NotSigned')
+                [void]$builder.AppendLine('SignerThumbprint=null')
+                [void]$builder.AppendLine(('SHA256=' + ('A' * 64)))
+            }
+            Write-FslUtf8NoBom $evidencePath $builder.ToString()
+            Assert-FslUnsignedAuthenticodeEvidence $evidencePath
+
+            Add-Member -InputObject $top -NotePropertyName extra -NotePropertyValue $true
+            $extraRejected = $false
+            try {
+                Assert-FslExactJsonProperties $top @(
+                    'schemaVersion',
+                    'runId',
+                    'sameAccountConsentPassed',
+                    'preLoginRecoveryPassed',
+                    'aclRestored',
+                    'temporaryDirectoriesRemoved',
+                    'recoveryRecordsRemoved',
+                    'remainingRisks',
+                    'scenarios') 'Scenario evidence'
+            }
+            catch {
+                $extraRejected =
+                    $_.Exception.Data['FslStage4ExitCode'] -eq 8
+            }
+
+            [System.IO.File]::WriteAllText(
+                $evidencePath,
+                [System.IO.File]::ReadAllText($evidencePath).
+                    Replace('SignerThumbprint=null', 'SignerThumbprint=BAD'),
+                [System.Text.UTF8Encoding]::new($false))
+            $signedAliasRejected = $false
+            try {
+                Assert-FslUnsignedAuthenticodeEvidence $evidencePath
+            }
+            catch {
+                $signedAliasRejected =
+                    $_.Exception.Data['FslStage4ExitCode'] -eq 8
+            }
+            return [pscustomobject]@{
+                ExtraRejected = $extraRejected
+                SignedAliasRejected = $signedAliasRejected
+            }
+        } $schemaRoot
+        Assert-True (
+            $schemaContract.ExtraRejected -and
+            $schemaContract.SignedAliasRejected) (
+            'D-026 schema v2 or unsigned evidence accepted an extra field ' +
+            'or non-null signer.')
+    }
+    finally {
+        if (Test-Path -LiteralPath $schemaRoot) {
+            [System.IO.Directory]::Delete($schemaRoot, $true)
+        }
+    }
 }
 
 if ($Slice -in @('All', 'Slice5')) {
@@ -523,8 +663,8 @@ if ($Slice -in @('All', 'Slice5')) {
         [pscustomobject]@{
             Name = 'AllMissing'
             Mode = 'AllMissing'
-            ExpectedMutationCount = 1
-            ExpectedExit = 5
+            ExpectedMutationCount = 0
+            ExpectedExit = 0
         },
         [pscustomobject]@{
             Name = 'Partial'
@@ -680,7 +820,7 @@ if ($Slice -in @('All', 'Slice5')) {
                 Write-FslState `
                     $script:FslLegacyContext $state 'PreflightCaptured'
                 $exitCode = Invoke-FslStage4Command `
-                    -Command CreateTestCertificate `
+                    -Command VerifyPlatformReadiness `
                     -RunId $script:FslLegacyContext.RunId
                 return [pscustomobject]@{
                     ExitCode = $exitCode
@@ -831,8 +971,18 @@ if ($Slice -in @('All', 'Slice6')) {
             Write-FslState `
                 $script:FslOrderingContext $state 'PreflightCaptured'
             $exitCode = Invoke-FslStage4Command `
-                -Command CreateTestCertificate `
+                -Command VerifyPlatformReadiness `
                 -RunId $script:FslOrderingContext.RunId
+            $script:FslOrderingMutationState =
+                Get-Content `
+                    -LiteralPath $script:FslOrderingContext.StatePath `
+                    -Raw | ConvertFrom-Json
+            $script:FslOrderingTransitions = @(
+                [IO.File]::ReadAllLines(
+                    $script:FslOrderingContext.JournalPath) |
+                    ForEach-Object {
+                        ($_ | ConvertFrom-Json).transition
+                    })
             return [pscustomobject]@{
                 ExitCode = $exitCode
                 Events = @($script:FslOrderingEvents)
@@ -841,28 +991,26 @@ if ($Slice -in @('All', 'Slice6')) {
             }
         } $caseRoot $repository
 
-        Assert-True ($result.ExitCode -eq 5) (
-            'The isolated certificate mutation boundary did not stop Create.')
+        Assert-True ($result.ExitCode -eq 0) (
+            'Elevated platform readiness verification did not succeed.')
         Assert-True (
             ($result.Events -join ',') -ceq
-                'base,admin,confirm-secure-boot,get-tpm,' +
-                'certificate-mutation') (
-            'CreateTestCertificate platform verification order was invalid.')
+                'base,admin,confirm-secure-boot,get-tpm') (
+            'VerifyPlatformReadiness platform verification order was invalid.')
         Assert-True (
-            $result.MutationState.transition -ceq 'CertificateCreating' -and
+            $result.MutationState.transition -ceq 'PlatformReadinessVerified' -and
             $result.MutationState.PlatformReadinessStatus -ceq
                 'VerifiedElevated' -and
             $result.MutationState.SecureBootVerified -eq $true -and
             $result.MutationState.TpmPresentVerified -eq $true -and
             $result.MutationState.TpmReadyVerified -eq $true -and
             $result.MutationState.PlatformReadinessVerifiedUtc -is [string]) (
-            'Certificate mutation preceded persisted readiness verification.')
+            'Platform readiness verification was not persisted.')
         $transitionTail = @($result.Transitions |
-            Select-Object -Last 2) -join ','
+            Select-Object -Last 1) -join ','
         Assert-True (
-            $transitionTail -ceq
-                'PlatformReadinessVerified,CertificateCreating') (
-            'Readiness and certificate transitions were not durably ordered.')
+            $transitionTail -ceq 'PlatformReadinessVerified') (
+            'Platform readiness was not durably ordered before handoff.')
     }
     finally {
         if (Test-Path -LiteralPath $caseRoot) {
@@ -1028,7 +1176,7 @@ if ($Slice -in @('All', 'Slice7')) {
                 Write-FslState `
                     $script:FslFailureContext $state 'PreflightCaptured'
                 $exitCode = Invoke-FslStage4Command `
-                    -Command CreateTestCertificate `
+                    -Command VerifyPlatformReadiness `
                     -RunId $script:FslFailureContext.RunId
                 $after = Get-Content `
                     -LiteralPath $script:FslFailureContext.StatePath `
@@ -1044,7 +1192,7 @@ if ($Slice -in @('All', 'Slice7')) {
                 $result.ExitCode -eq 3 -and
                 $result.MutationCount -eq 0 -and
                 $result.Transition -ceq 'PreflightCaptured') (
-                "Create failure $failureCase did not fail before mutation.")
+                "Readiness failure $failureCase did not fail before mutation.")
         }
         finally {
             if (Test-Path -LiteralPath $caseRoot) {

@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet(
         'Preflight',
-        'CreateTestCertificate',
+        'VerifyPlatformReadiness',
         'Publish',
         'VerifySignature',
         'Install',
@@ -45,7 +45,11 @@ foreach ($name in @(
     'TestTarget',
     'ReviewerVerdictPath')) {
     $value = Get-Variable -Name $name -ValueOnly
-    if (-not [string]::IsNullOrWhiteSpace($value)) {
+    if ($name -ceq 'PublisherThumbprint' -and
+        $PSBoundParameters.ContainsKey($name)) {
+        $arguments[$name] = $value
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($value)) {
         $arguments[$name] = $value
     }
 }

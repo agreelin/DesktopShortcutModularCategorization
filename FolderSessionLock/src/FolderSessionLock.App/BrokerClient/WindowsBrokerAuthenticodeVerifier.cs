@@ -58,8 +58,17 @@ internal sealed class WindowsBrokerAuthenticodeVerifier : IBrokerAuthenticodeVer
 
     public Result Verify(string brokerPath)
     {
-        if (!TryNormalizeThumbprint(_publisherThumbprint, out string? expected)
-            || string.IsNullOrWhiteSpace(brokerPath))
+        if (string.IsNullOrWhiteSpace(brokerPath))
+        {
+            return Failure();
+        }
+
+        if (_publisherThumbprint is null || _publisherThumbprint.Length == 0)
+        {
+            return Result.Success();
+        }
+
+        if (!TryNormalizeThumbprint(_publisherThumbprint, out string? expected))
         {
             return Failure();
         }

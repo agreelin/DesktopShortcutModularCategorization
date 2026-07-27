@@ -1,6 +1,6 @@
 # Folder Session Lock 安全边界
 
-状态：阶段 3 与阶段 4 CP1–CP9 基线已完成；同一 reviewer 最终输出 `PASS`，无 `BLOCKER` 或 `HIGH`。基线验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped，Release build 0 warning、0 error，format、diff、禁止 API、文档一致性与残留检查通过。CP10 当前正在 `FSL-STAGE4-VM` 按串行流程实施；R5 的非特权 WAL partial-write/reconcile 聚焦验证已通过，但 SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 UAC、真实 OneDrive/Cloud Files、重启、签名和 D-026 安全证据仍未执行，阶段 4 不得完成。
+状态：阶段 3 与阶段 4 CP1–CP9 基线已完成；CP10 工具实现最近验证为 799/799、0 failed、0 skipped、Release 0 warning/0 error。D-031 将当前范围修订为本地单用户管理员和显式 unsigned 本地发布；同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 安全证据仍未完成，阶段 4 不得完成。
 
 ## 1. 安全定位
 
@@ -121,7 +121,7 @@ Prepared 必须 postApply/error=null、count=0；Applied 必须实际 postApply 
 - Broker 只接受 `ValidatePath`、`CreateLock`、`RemoveLock`、`GetStatus`。
 - 禁止任意命令、脚本、shell、任意文件写入和任意 ACL 描述符。
 - Broker 对所有输入重新验证；UI 结果不是安全依据。
-- Broker 与 UI 的 Account SID、Logon SID 或 Session ID 不一致时拒绝；v1 不支持另一管理员账户凭据提升。
+- Broker 与 UI 的 Account SID、Logon SID 或 Session ID 不一致时拒绝；跨账户 elevation 不属于 D-031 支持范围，只用合成身份单元测试证明 fail closed。
 - 身份不一致时用户可见错误固定为“不支持跨账户提升”。
 - bootstrap 跨账户拒绝稳定错误码固定为 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`；必须在 Pipe、Replay、恢复记录、路径或 ACL 操作前拒绝。已连接 Pipe 的 `FSL_E_ACCOUNT_SID_MISMATCH` 保持握手层诊断，仅在 UI elevation 边界转换；其他 identity 错误不得转换。
 - 服务名固定为 `FolderSessionLockRecovery`；账户 `LocalSystem`；启动类型 `Automatic`；`DelayedAutoStart = false`；唯一服务 SID `NT SERVICE\FolderSessionLockRecovery`。
@@ -227,22 +227,23 @@ Prepared 必须 postApply/error=null、count=0；Applied 必须实际 postApply 
 
 限制：已控制同一用户会话的恶意进程也具有相同 Account SID 和 Logon SID。
 
-开发构建可未签名，仅用于本机测试。生产 Broker 及托管其恢复模式的自动启动服务必须位于管理员保护目录；Broker 必须代码签名；普通用户不得替换或修改。生产 IPC 必须限制本机访问、使用最小 Pipe DACL、验证客户端身份并防重放。
+当前 D-031 本地单用户管理员 Release 可显式 unsigned；它仍必须位于管理员保护目录，普通用户不得替换或修改，IPC 必须限制本机访问、使用最小 Pipe DACL、验证客户端身份并防重放。unsigned 不提供 publisher 身份保证，且不得宣称适用于公开或企业分发。
 
-WPF 应用的受信任 Broker publisher 指纹由非秘密 MSBuild 属性
-`BrokerPublisherThumbprint` 写入应用 assembly metadata。生产发布必须显式提供
-40 位十六进制证书 thumbprint；空值或格式错误一律 fail closed。应用在任何 UAC、
+WPF 应用的 Broker publisher 指纹由非秘密 MSBuild 属性
+`BrokerPublisherThumbprint` 写入 assembly metadata。null 或精确空字符串表示 D-031
+显式 unsigned 本地模式，Authenticode verifier 不调用 platform；仅空白或其他畸形
+非空值 fail closed。有效 40 位十六进制 thumbprint 进入原 signed 模式。应用在任何 UAC、
 Pipe、replay、恢复记录或 ACL 副作用前，先完成固定 Program Files 路径、安装目录
 ACL、普通文件/non-reparse、final path 与文件 identity 验证，再使用无 UI
-`WinVerifyTrust` 验证 Authenticode、提取 signer thumbprint 并与 pin 精确匹配，最后
-重新验证 final path 与文件 identity。签名无效、无 signer、publisher 不匹配或
-identity 改变均只返回 `FSL_E_BROKER_PATH_UNTRUSTED` /
+`WinVerifyTrust`（仅 signed 模式）验证 Authenticode、提取 signer thumbprint 并与 pin
+精确匹配，最后重新验证 final path 与文件 identity。signed 模式的签名无效、无
+signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `FSL_E_BROKER_PATH_UNTRUSTED` /
 `The elevated broker installation could not be verified.` / `retryable=false` /
 `field=null`，不得启动 Broker。
 
 阶段 4 的 Broker/Service 安装根固定为 `%ProgramFiles%\FolderSessionLock`，ACL 为 `SYSTEM: FullControl`、`Administrators: FullControl`、`Users: ReadAndExecute`，不为 `Authenticated Users` 额外授予写权限。禁止从仓库 `bin`、`obj`、TEMP、用户目录或网络路径注册服务。
 
-阶段 4 测试证书只允许在 `FSL-STAGE4-VM` 的 `LocalMachine\My` 创建不可导出自签名 Code Signing 证书，仅该 VM 信任。不得提交私钥或 PFX。必须使用 Authenticode/`WinVerifyTrust` 或经审查等价 API 验证原始签名、篡改失败、未签名拒绝和允许证书指纹。生产证书采购、托管和发布签名流水线不属阶段 4。
+当前 Stage 4 run 不创建或信任测试证书。发布、安装和 D-026 证据必须逐一确认固定六 PE 为实际 `NotSigned` 且 signer 为 null。真实签名证书采购、托管、公开发布和企业签名流水线需要未来决定；若未来提供有效 pin，原 signed fail-closed 路径仍保留。
 
 ## 10. 路径安全
 
@@ -286,7 +287,7 @@ identity 改变均只返回 `FSL_E_BROKER_PATH_UNTRUSTED` /
 - 非获准 VM 只能进行设计、代码实现、单元测试、非特权测试和静态审查；不得创建/删除服务、使用 LocalSystem、配置自动启动、执行登录前测试、UAC、注销、重启、Program Files/ProgramData ACL 或签名系统测试。
 - VM 只允许操作服务 `FolderSessionLockRecovery`；禁止修改其他服务或 SCM 全局配置。最多 3 次注销和 3 次完整重启。
 - 注销/重启前必须保存证据、输出场景编号、确认目标仅为 `%TEMP%\FolderSessionLock.Tests\<Guid>`、恢复记录已原子提交、不存在仓库或真实用户目录目标。每轮后验证 ACL、服务、记录、证书信任和临时目录清理。
-- 阶段 4 测试账户固定为 `FSL-Standard` 与 `FSL-Admin`，由人工准备；Codex 不请求、读取、记录或回显密码。
+- 阶段 4 仅使用当前本地管理员账户。明确禁止创建 `FSL-Standard`、`FSL-Admin` 或其他专用测试账户；真实双账户证据不属于完成门。
 - 证据保存于 `docs\evidence\stage-4\<RunId>\`；不得包含密码、凭据、私钥、令牌、未脱敏用户名或敏感测试内容。精确工件与 manifest 字段以 `D-026` 为准。
 
 ## 13. 残余风险
@@ -303,9 +304,9 @@ identity 改变均只返回 `FSL_E_BROKER_PATH_UNTRUSTED` /
 - UAC 被拒绝导致残留 ACE 无法立即清理。
 - 审计事件量、延迟、缺失和通知洪泛。
 
-## 14. 生产发布阻断条件
+## 14. 公开或企业生产发布阻断条件
 
-以下任一项存在时禁止生产发布：
+以下任一项存在时禁止公开或企业生产发布；它们不把 D-031 的本地如实 unsigned Release 改写为 signed：
 
 - Broker 未代码签名。
 - Broker 或托管恢复模式的自动启动服务位于普通用户可修改目录。
@@ -326,8 +327,10 @@ identity 改变均只返回 `FSL_E_BROKER_PATH_UNTRUSTED` /
   `FolderSessionLock.Broker.exe`、`FolderSessionLock.Broker.dll`、
   `FolderSessionLock.Core.dll`、`FolderSessionLock.Windows.dll`。缺少任何一个，
   或发布目录出现额外 `FolderSessionLock.*` executable/DLL，均阻止发布。
-- 六个 PE 必须全部 Authenticode 签名并由 Windows Kits x64 SignTool 验证；
-  `PATH` 不作为 SignTool 信任来源。VM 自签名证书只属于测试证据，不能表示生产签名。
+- 当前本地 run 的六个 PE 必须全部由 `Get-AuthenticodeSignature` 实测为
+  `NotSigned` 且 signer null；`signature-verification.txt` 逐文件绑定 SHA-256。
+  不调用 SignTool、不创建测试证书。未来有效 pin 的 signed 模式仍使用受信 Windows
+  Kits x64 SignTool 与原 `WinVerifyTrust` 合同，`PATH` 不作为信任来源。
 - UI 对 Broker 的验证使用单一 `WinVerifyTrust` provider state：在同一已验证
   state 中取得 signer 证书和 thumbprint，完成后执行 state close。不得通过第二次文件
   打开或独立证书解析替代 signer 绑定。
@@ -344,8 +347,8 @@ identity 改变均只返回 `FSL_E_BROKER_PATH_UNTRUSTED` /
 - 卸载和清理绑定预先记录的 final path、NTFS file ID、SHA-256、release manifest
   hash 与精确 ACL。出现 reparse、替换对象、identity/ACL 漂移或未知文件即拒绝清理；
   产品安装目录和 ProgramData 目录不得递归删除。
-- VM 测试证书清理覆盖 `LocalMachine\My` 和
-  `LocalMachine\TrustedPeople`，并以 run-specific subject 在两处均为 0 作为成功条件。
+- 当前 run 不创建证书；pre-state、cleanup 与残留检查必须证明没有 run-specific
+  certificate，且不得把既有未知证书纳入删除范围。
 - Release descriptor 在 Publish 后冻结精确、区分大小写的完整文件集合，并绑定
   manifest、SHA256SUMS、每个 payload 的长度和 SHA-256；后续验证和复制不得重写或
   重新认可已变化的发布目录，复制前后均复核源与目标。

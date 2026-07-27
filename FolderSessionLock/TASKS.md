@@ -141,7 +141,7 @@
 - [x] 用户确认恢复记录的精确存储路径、格式、字段、版本、原子提交、机器范围保护 API 和访问 ACL；已记录为 `D-022`、`D-023`。
 - [x] 用户批准阶段 4 测试环境与系统操作范围：仅 `FSL-STAGE4-VM`；服务、LocalSystem、自动启动、登录前执行、UAC、注销/重启、保护安装目录和签名；已记录为 `D-025`。
 - [x] 用户确认服务名、恢复模式入口、项目/安装标识符和启动参数；禁止 planner 静默改名；已记录为 `D-024`。
-- [x] 用户确认重启/登录、首次访问、UAC 跨账户拒绝、签名验证的人工执行与结果采集方案；已记录为 `D-026`。
+- [x] 历史：用户曾确认重启/登录、首次访问、UAC 跨账户拒绝、签名验证的人工执行与结果采集方案；其双账户/强制签名完成条件现由 D-031 与 D-026 schema v2 取代。
 - [x] 同步更新 `docs/DECISIONS.md`、`docs/ARCHITECTURE.md`、`docs/SECURITY.md`、`docs/REQUIREMENTS.md`、`PLAN.md`、`ACCEPTANCE.md`、`TASKS.md`、`DEVLOG.md`。
 - [x] 确认当前机器名为 `AGREELIN`，不是获准 VM `FSL-STAGE4-VM`；本轮未执行服务、LocalSystem、UAC、注销、重启、Program Files/ProgramData ACL 或签名系统操作。
 - [x] 八份权威文档一致性验证通过：精确路径、字段、服务名、参数、环境门、Markdown 围栏、尾随空白、禁止术语和 `git diff --check` 均通过；根主线程准备调用只读 `stage_director`。
@@ -292,9 +292,15 @@
   - [x] reviewer修复轮2/6实现完成：新增`IKnownFolderManager::GetFolderIds` COM wrapper、S_OK/GUID二进制注册检查、`KnownFolderNotRegistered`原因、固定flags0 SH调用、调用前null pointer与全路径pointer释放；精确允许`0x80070002`/`0x80070003`，其他HRESULT fail closed。最低矩阵28/28通过，禁止flags/mask/raw值静态测试通过。
   - [x] reviewer修复轮2/6完整验证：restore退出0；Release build0 warning、0 error；全量串行Core174/174、App462/462、Windows140/140，总计776/776、failed0、skipped0；format、diff、八文档UTF-8/围栏/尾空白/合同覆盖、静态扫描与残留检查全部通过。
   - [x] 同一 reviewer 完成 CP9 当前环境实现的最终只读复审并输出 `PASS`，无 `BLOCKER` 或 `HIGH`；第 1/6 与第 2/6 修复轮全部关闭。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped；CP9 当前 `AGREELIN` 范围完成，CP10 尚未开始。
-  - [ ] `FSL-STAGE4-VM` 特权系统验证与 `D-026` 证据完成；当前保持环境阻塞。
+  - [ ] `CP10-SCOPE-LOCAL-SINGLE-ADMIN` 权威范围修订。
+    - [x] 用户决定 `LOCAL_SINGLE_USER_ADMINISTRATOR_ONLY`，旧双账户与证书阻塞标记为 `RESOLVED BY PRODUCT SCOPE DECISION`；D-031 编号获批准。
+    - [x] `stage_director` 返回 `READY`，只读 planner 给出文档、controller、verifier、schema v2 与测试的最小实施计划。
+    - [x] coder 已实现 D-031、D-026 schema v2、显式 unsigned verifier/controller 路径及直接测试；coder checks 通过。
+    - [ ] root verification 与 reviewer `PASS`。
+    - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
+  - [ ] `FSL-STAGE4-VM` 当前单一管理员账户的同账户 UAC、SCM、LocalSystem、recovery/readiness/ACL、必要重启或注销、unsigned Release 与 `D-026` schema v2 证据完成。
 - [ ] 阶段 5：WPF 前端。
 - [ ] 阶段 6：可选访问审计与警告。
 - [ ] 阶段 7：端到端测试与安全加固。
 
-阶段 4 已通过启动阶段门。未取得 `FSL-STAGE4-VM` 完整特权证据前，禁止将阶段 4 标记完成或进入阶段 5。
+阶段 4 已通过启动阶段门。未取得仍适用的 `FSL-STAGE4-VM` 完整特权证据前，禁止将阶段 4 标记完成或进入阶段 5；缺少第二账户、`FSL-Standard`、`FSL-Admin`、真实双账户 evidence 或真实签名证书不得单独构成阻塞。
