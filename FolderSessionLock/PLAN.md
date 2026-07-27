@@ -162,7 +162,7 @@ Checkpoint：
    - 非 VM 环境只实现 wrapper、resolver、identity/bootstrap、exit mapping、race abstraction、composition、fakes 与自动测试；真实同账户 UAC、elevated Broker、Program Files、SCM/LocalSystem 和恢复为 VM-only。真实跨账户凭据和专用测试账户已取消。
 10. VM 内验证 unsigned 本地 Release、服务注册/启动、发布安全与 D-026 schema v2 证据；生产证书流水线为非目标。CP8 已负责的 owner/DACL/verifier 安全矩阵不得在此重复定义为可选项。
     - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
-    - null 或精确空 `BrokerPublisherThumbprint` 为显式 unsigned 本地模式；空白/畸形非空失败，有效 pin 保留 signed fail-closed。当前 run 不创建测试证书、不调用 SignTool，逐一验证六个第一方 PE 为 `NotSigned`/null signer。
+    - 当前 Stage 4 控制器不公开 publisher pin 或 signing certificate 参数，固定写入精确空 `BrokerPublisherThumbprint`，不创建测试证书、不调用 SignTool，并逐一验证六个第一方 PE 为 `NotSigned`/null signer。App runtime verifier 的有效 pin signed fail-closed 单元合同保留，但当前控制器不可选择。
     - D-026 使用 `TRUSTED_SINGLE_USER_STAGE4_EXECUTOR_MODEL`，scenario-results 与 manifest 均为 schema v2，记录同账户 consent 而非跨账户场景。
 
 验收：

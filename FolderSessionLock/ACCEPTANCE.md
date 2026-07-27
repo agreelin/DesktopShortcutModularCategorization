@@ -188,10 +188,10 @@ dotnet format --verify-no-changes
 - Broker/Service 只从 `%ProgramFiles%\FolderSessionLock` 注册；安装目录 ACL 为 `SYSTEM: FullControl`、`Administrators: FullControl`、`Users: ReadAndExecute`，不为 `Authenticated Users` 增加写权限。
 - 特权集成验证只在 `FSL-STAGE4-VM`、快照 `FolderSessionLock-Stage4-Clean` 执行。非该机器的服务、LocalSystem、登录前、UAC、注销、重启、安装 ACL 和签名场景必须为 `BLOCKED`，不得标记通过。
 - 明确禁止创建 `FSL-Standard`、`FSL-Admin` 或任何专用 Windows 测试账户；缺少第二账户或真实双账户 evidence 不得阻塞 Stage 4/Stage 5。
-- 当前 VM run 不创建测试证书、不要求 publisher pin。固定六个第一方 PE 的实际状态逐一为 `NotSigned`、signer null并绑定 SHA-256；有效 pin 的 signed fail-closed 单元合同保持通过。
+- 当前 VM 控制器不公开 publisher pin 或 signing certificate 参数，不创建测试证书且不调用 SignTool。固定六个第一方 PE 的实际状态逐一为 `NotSigned`、signer null并绑定 SHA-256；App runtime verifier 的有效 pin signed fail-closed 单元合同保持通过，但当前控制器不可选择。
 - `docs\evidence\stage-4\<RunId>\` 包含 `D-026` 规定的全部文件；`scenario-results.json` 和 `manifest.json` 使用精确 schema v2，productScope、executorModel、sameAccountConsentPassed 与实际证据一致；`TASKS.md`、`DEVLOG.md` 引用 RunId。
 - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
-- 每轮服务/UAC/注销/重启测试后，目标 ACL 已恢复、恢复记录已删除、服务状态已清理、临时目录可访问且可删除；任何未知状态阻止完成。
+- 每轮服务/UAC/注销/重启测试后，目标 ACL 已恢复、恢复记录已删除、服务状态已清理、临时目录可访问且可删除；`cleanup-results.txt` 必须包含精确 `CertificatesRemaining=0` 且 FinalizeEvidence 强制验证；任何未知状态阻止完成。
 - `recovery-once` 参数错误在 D-023/枚举/ACL 前返回 exit 2 与 `FSL_E_INVALID_ARGUMENTS`；受保护路径失败返回 10；目录枚举不完整返回 11；总条目 4097 或规范记录 1025 返回 12 且零 ACL 写入；任一记录/构件阻塞返回 13；纯取消且临界区安全完成返回 14；无法映射的顶层内部故障返回 15；无记录和全部安全清理均返回 0。
 - exit code 优先级测试精确覆盖 `InvalidArguments → ProtectedStorageSecurityFailure → RecoveryEnumerationFailure → RecoveryRecordLimitExceeded → RecoveryBlocked → Cancelled → InternalFailure → Success`；scheduler error 不覆盖记录主错误或成功结果。
 - Records 只顶层枚举，不递归、不跟随 reparse、不边枚举边清理。规范 `.fslr` 文件名满足小写 Guid D 正则并按完整文件名 `StringComparer.Ordinal` 升序；文件名/payload id mismatch 返回 `FSL_E_RECOVERY_RECORD_ID_MISMATCH` 并继续。

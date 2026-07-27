@@ -380,7 +380,7 @@ CP4 固定架构：
 - CreateLock 成功响应后 Broker 保持运行，scheduler 持有唯一 Active task并在到期执行 Expiration Cleanup；安全完成 exit 0，Cleanup 或 RecoveryRequired 未安全收敛 exit 27。响应前断开：无副作用 exit 25；确定 Active task继续到期；未知副作用进入 RecoveryRequired。
 - production `BrokerCompositionRoot` 必须显式组合 D-029 列出的 Windows identity/path/ACL、recovery file/security/readiness、Replay、protocol/transport、task/scheduler/lifecycle、logging 与 clock 依赖。禁止 AllowAll verifier、fake identity/readiness、in-memory recovery、test cleanup hook、test path或 debug Broker path；缺少安全依赖 fail closed exit 28。
 - 非 VM 环境只实现 wrapper、resolver、identity/bootstrap、exit mapping、race abstraction、production composition 与 fake tests；实际同账户 UAC、elevated Broker、Program Files 安装、SCM/LocalSystem 与恢复只允许 `FSL-STAGE4-VM`。真实跨账户凭据和专用账户场景已由 D-031 取消。
-- `BrokerPublisherThumbprint` 为 null 或精确空字符串时，App 使用显式 unsigned 本地模式且 Authenticode verifier 不调用 platform；固定 Program Files 路径、owner/DACL、普通文件、non-reparse、final path、identity、hash/TOCTOU 与安装不可替换门保持不变。仅空白或畸形非空 pin fail closed；有效 40 位 pin 保留原 signed 精确匹配。
+- 当前 Stage 4 控制器不公开 publisher pin 或 signing certificate 参数，固定写入精确空 `BrokerPublisherThumbprint`，且无 signed/SignTool 分支；六个第一方 PE 必须为 `NotSigned`/null signer。固定 Program Files 路径、owner/DACL、普通文件、non-reparse、final path、identity、hash/TOCTOU 与安装不可替换门保持不变。App runtime verifier 仍对空白/畸形非空 pin fail closed，并为未来 runtime configuration 保留有效 40 位 pin 的原 signed 精确匹配；当前控制器不可选择。
 
 ## 23. D-030 生产路径分类与时长策略
 

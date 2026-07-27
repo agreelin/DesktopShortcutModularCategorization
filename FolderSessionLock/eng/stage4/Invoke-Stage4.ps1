@@ -5,7 +5,7 @@ param(
         'Preflight',
         'VerifyPlatformReadiness',
         'Publish',
-        'VerifySignature',
+        'VerifyAuthenticode',
         'Install',
         'Verify',
         'PrepareLogout',
@@ -19,8 +19,6 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RunId,
 
-    [string]$PublisherThumbprint,
-    [string]$SigningCertificateThumbprint,
     [string]$ReleaseRoot,
     [string]$ScenarioId,
     [string]$TestTarget,
@@ -38,18 +36,12 @@ $arguments = @{
 }
 
 foreach ($name in @(
-    'PublisherThumbprint',
-    'SigningCertificateThumbprint',
     'ReleaseRoot',
     'ScenarioId',
     'TestTarget',
     'ReviewerVerdictPath')) {
     $value = Get-Variable -Name $name -ValueOnly
-    if ($name -ceq 'PublisherThumbprint' -and
-        $PSBoundParameters.ContainsKey($name)) {
-        $arguments[$name] = $value
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($value)) {
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
         $arguments[$name] = $value
     }
 }

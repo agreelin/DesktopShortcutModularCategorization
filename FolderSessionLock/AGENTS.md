@@ -123,7 +123,7 @@
    - v1 仅支持同一账户、同一交互会话的 consent elevation；身份不一致时显示“不支持跨账户提升”。
    - Broker 是唯一真实 ACL 写入主体。
    - Broker 恢复专用模式由自动启动 Windows 服务以 LocalSystem 身份在交互登录前托管；只清理旧 ACE，不创建或恢复任务。
-   - 当前 D-031 本地单用户管理员 Release 可显式 unsigned，但必须如实记录 `NotSigned`/null signer，并安装于管理员保护目录；普通用户不得替换或修改。有效 publisher pin 的 signed 模式继续严格 fail closed；公开或企业分发的签名合同需要未来决定。
+   - 当前 D-031 Stage 4 控制器固定为 unsigned：不公开 publisher pin 或 signing certificate 参数，不调用 SignTool，必须如实记录六个第一方 PE 的 `NotSigned`/null signer，并安装于管理员保护目录。App runtime verifier 的有效 publisher pin 路径继续严格 fail closed，但当前控制器不可选择该路径；公开或企业分发的签名合同需要未来决定。
    - IPC 只允许本机、最小 Pipe DACL、客户端身份验证和防重放。
    - 禁止任意命令、脚本、PowerShell、cmd、任意文件写入或调用方提供的任意 ACL 描述符。
 

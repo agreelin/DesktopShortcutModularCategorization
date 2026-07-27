@@ -1131,3 +1131,37 @@
 - No account or certificate was created. No UAC, SCM, LocalSystem, ACL,
   signing, restart, logoff, VMware, push, or other system mutation was
   performed. Full root verification and reviewer disposition remain pending.
+
+## 2026-07-27 — CP10 unsigned controller contract repair
+
+- Root verification returned three focused contract gaps: the public
+  Authenticode command/state names were still signature-oriented, the current
+  controller still exposed optional publisher/signing inputs and a signed
+  branch, and cleanup evidence did not explicitly bind certificate residue to
+  zero.
+- The public command is now `VerifyAuthenticode`; the current function and
+  produced transition are `Invoke-FslVerifyAuthenticode` and
+  `AuthenticodePolicyVerified`. The legacy transition token remains accepted
+  only by state parsing and uninstall/cleanup compatibility and is never
+  produced by a current command.
+- `Invoke-Stage4.ps1` and `Invoke-FslStage4Command` expose neither
+  `PublisherThumbprint` nor `SigningCertificateThumbprint`. Publish always
+  embeds an exact empty `BrokerPublisherThumbprint`; Publish,
+  VerifyAuthenticode, Install, and Verify have no reachable signed or SignTool
+  branch and require all six first-party PE files to be `NotSigned` with a
+  null signer. The App runtime verifier's separately tested valid-pin
+  fail-closed capability remains unchanged for a future runtime configuration.
+- Cleanup now writes exact `CertificatesRemaining=0`.
+  `FinalizeEvidence` requires exactly one such zero line, and direct behavior
+  tests reject a nonzero replacement.
+- Repair verification passed: PowerShell parser 3/3; focused Stage4 Slice4;
+  complete Stage4 Slice All; Release build with 0 warnings and 0 errors;
+  Broker Authenticode verifier 22/22, failed 0, skipped 0; public-controller
+  static contract, strict UTF-8/Markdown, `git diff --check`, and
+  `dotnet format --verify-no-changes`.
+- Final residue was zero for related product/test processes, repository dotnet
+  processes, recovery service, `FSL-Standard`/`FSL-Admin`, Stage4 certificates,
+  and `%TEMP%\FolderSessionLock.Tests` entries. Release, Program Files, and
+  ProgramData product roots were absent. No UAC, SCM, LocalSystem, ACL,
+  certificate, signing, restart, logoff, VMware, push, or other system
+  mutation was performed. Root re-verification and reviewer remain pending.

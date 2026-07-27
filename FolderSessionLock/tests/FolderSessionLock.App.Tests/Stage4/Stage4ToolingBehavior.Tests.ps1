@@ -517,40 +517,50 @@ if ($Slice -in @('All', 'Slice4')) {
         }
     }
 
-    $publisherModes = & $module {
-        $unsignedNull = Resolve-FslPublisherMode $null 2
-        $unsignedEmpty = Resolve-FslPublisherMode '' 2
-        $pinned = Resolve-FslPublisherMode `
-            '00112233445566778899aabbccddeeff00112233' 2
-        $invalid = @()
-        foreach ($value in @(' ', "`t", '001122', (
-            '00112233445566778899AABBCCDDEEFF0011223Z'))) {
-            try {
-                [void](Resolve-FslPublisherMode $value 2)
-                $invalid += -1
-            }
-            catch {
-                $invalid += [int]$_.Exception.Data['FslStage4ExitCode']
-            }
-        }
+    $entryCommand = Get-Command (
+        Join-Path $repository 'eng\stage4\Invoke-Stage4.ps1')
+    $controllerContract = & $module {
+        $dispatcher = Get-Command Invoke-FslStage4Command
+        $commandValidation = @(
+            $dispatcher.Parameters['Command'].Attributes |
+            Where-Object {
+                $_ -is [System.Management.Automation.ValidateSetAttribute]
+            } |
+            Select-Object -ExpandProperty ValidValues)
         return [pscustomobject]@{
-            UnsignedNull = $unsignedNull
-            UnsignedEmpty = $unsignedEmpty
-            Pinned = $pinned
-            Invalid = $invalid
+            DispatcherParameters = @($dispatcher.Parameters.Keys)
+            CommandValidation = $commandValidation
+            PublishBody = (Get-Command Invoke-FslPublish).Definition
+            AuthenticodeBody =
+                (Get-Command Invoke-FslVerifyAuthenticode).Definition
+            InstallBody = (Get-Command Invoke-FslInstall).Definition
+            VerifyBody = (Get-Command Invoke-FslVerify).Definition
         }
     }
     Assert-True (
-        $publisherModes.UnsignedNull.Mode -ceq 'UnsignedLocal' -and
-        $null -eq $publisherModes.UnsignedNull.Pin -and
-        $publisherModes.UnsignedEmpty.Mode -ceq 'UnsignedLocal' -and
-        $null -eq $publisherModes.UnsignedEmpty.Pin -and
-        $publisherModes.Pinned.Mode -ceq 'PinnedPublisher' -and
-        $publisherModes.Pinned.Pin -ceq
-            '00112233445566778899AABBCCDDEEFF00112233' -and
-        @($publisherModes.Invalid | Where-Object { $_ -ne 2 }).Count -eq 0) (
-        'Publisher mode did not distinguish null/empty, valid pin, and ' +
-        'whitespace or malformed nonempty values.')
+        -not $entryCommand.Parameters.ContainsKey('PublisherThumbprint') -and
+        -not $entryCommand.Parameters.ContainsKey(
+            'SigningCertificateThumbprint') -and
+        $controllerContract.DispatcherParameters -cnotcontains
+            'PublisherThumbprint' -and
+        $controllerContract.DispatcherParameters -cnotcontains
+            'SigningCertificateThumbprint' -and
+        $controllerContract.CommandValidation -ccontains
+            'VerifyAuthenticode' -and
+        $controllerContract.CommandValidation -cnotcontains
+            'VerifySignature' -and
+        $controllerContract.PublishBody -match
+            '(?m)^\s*\$pin = ''''\s*$' -and
+        $controllerContract.PublishBody -notmatch
+            'SignTool|SigningCertificate|\$PublisherThumbprint' -and
+        $controllerContract.AuthenticodeBody -notmatch
+            'SignTool|\$PublisherThumbprint|SignatureStatus\]::Valid' -and
+        $controllerContract.InstallBody -notmatch
+            '\$PublisherThumbprint|SignatureStatus\]::Valid' -and
+        $controllerContract.VerifyBody -notmatch
+            '\$PublisherThumbprint|SignatureStatus\]::Valid') (
+        'The public Stage 4 controller is not fixed to the D-031 unsigned ' +
+        'Authenticode policy.')
 
     $schemaRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
         'FolderSessionLock.Stage4.Tooling.SchemaV2.' +
@@ -608,6 +618,26 @@ if ($Slice -in @('All', 'Slice4')) {
             Write-FslUtf8NoBom $evidencePath $builder.ToString()
             Assert-FslUnsignedAuthenticodeEvidence $evidencePath
 
+            $cleanupText = @(
+                'RunId=20260727T000000Z-0123abcd',
+                'ServiceRemaining=0',
+                'InstallDirectoryRemaining=0',
+                'ProgramDataRootRemaining=0',
+                'ProductProcessesRemaining=0',
+                'CertificatesRemaining=0') -join "`r`n"
+            Assert-FslCleanupEvidence ($cleanupText + "`r`n")
+            $missingCertificateResidueRejected = $false
+            try {
+                Assert-FslCleanupEvidence (
+                    $cleanupText.Replace(
+                        "CertificatesRemaining=0",
+                        "CertificatesRemaining=1"))
+            }
+            catch {
+                $missingCertificateResidueRejected =
+                    $_.Exception.Data['FslStage4ExitCode'] -eq 8
+            }
+
             Add-Member -InputObject $top -NotePropertyName extra -NotePropertyValue $true
             $extraRejected = $false
             try {
@@ -643,13 +673,16 @@ if ($Slice -in @('All', 'Slice4')) {
             return [pscustomobject]@{
                 ExtraRejected = $extraRejected
                 SignedAliasRejected = $signedAliasRejected
+                CertificateResidueRejected =
+                    $missingCertificateResidueRejected
             }
         } $schemaRoot
         Assert-True (
             $schemaContract.ExtraRejected -and
-            $schemaContract.SignedAliasRejected) (
+            $schemaContract.SignedAliasRejected -and
+            $schemaContract.CertificateResidueRejected) (
             'D-026 schema v2 or unsigned evidence accepted an extra field ' +
-            'or non-null signer.')
+            'or non-null signer, or cleanup accepted certificate residue.')
     }
     finally {
         if (Test-Path -LiteralPath $schemaRoot) {
@@ -1251,7 +1284,7 @@ if ($Slice -in @('All', 'Slice8')) {
             function Invoke-FslPublish {
                 Invoke-FslDispatchHandlerSentinel
             }
-            function Invoke-FslVerifySignature {
+            function Invoke-FslVerifyAuthenticode {
                 Invoke-FslDispatchHandlerSentinel
             }
             function Invoke-FslInstall {
@@ -1730,12 +1763,11 @@ if ($Slice -in @('All', 'Slice8')) {
                 }
             }
 
-            $pin = '00112233445566778899AABBCCDDEEFF00112233'
             $commands = @(
-                @{ Command = 'Publish'; PublisherThumbprint = $pin },
-                @{ Command = 'VerifySignature'; PublisherThumbprint = $pin },
-                @{ Command = 'Install'; PublisherThumbprint = $pin },
-                @{ Command = 'Verify'; PublisherThumbprint = $pin },
+                @{ Command = 'Publish' },
+                @{ Command = 'VerifyAuthenticode' },
+                @{ Command = 'Install' },
+                @{ Command = 'Verify' },
                 @{
                     Command = 'PrepareLogout'
                     ScenarioId = 'deferred'

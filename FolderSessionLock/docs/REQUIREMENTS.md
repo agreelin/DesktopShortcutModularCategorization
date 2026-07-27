@@ -130,7 +130,7 @@ v1 只接受本机固定磁盘、NTFS 文件系统、普通目录和可安全规
 - `FR-034` Broker 必须验证 Account SID、Logon SID、Windows Session ID、连接进程身份、一次性握手值和请求重放状态。
 - `FR-035` Broker 必须独立重复全部路径和权限验证，不信任 UI 结果。
 - `FR-035A` Broker 令牌与 UI Account SID 或 Logon SID 不一致时必须拒绝；v1 不通过另一管理员账户代执行目标会话 ACL 操作。
-- `FR-035B` 当前 D-031 本地 Release 可显式 unsigned，但 Broker 必须安装在管理员保护目录，普通用户不得替换或修改。unsigned 状态必须如实记录为 `NotSigned`/null signer；安装目录普通用户可写或 Broker 可替换始终阻断。公开/企业分发的真实签名门需要未来决定。
+- `FR-035B` 当前 D-031 Stage 4 公共控制器固定为 unsigned，不公开 publisher pin 或 signing certificate 参数且不得调用 SignTool；Broker 必须安装在管理员保护目录，普通用户不得替换或修改。六个第一方 PE 必须如实记录为 `NotSigned`/null signer；安装目录普通用户可写或 Broker 可替换始终阻断。App runtime verifier 的有效 pin fail-closed 能力保留，但当前控制器不可选择；公开/企业分发的真实签名门需要未来决定。
 - `FR-035C` IPC 必须只公开强类型最小 ACL 接口；禁止任意命令、脚本、PowerShell、cmd 和调用方提供的任意 ACL 描述符。
 - `FR-035D` 服务名必须为 `FolderSessionLockRecovery`，Display Name 为 `Folder Session Lock Recovery Service`，Description 为 `Removes verified Folder Session Lock ACL entries left by previous Windows logon sessions.`；服务账户为 `LocalSystem`，启动类型为 `Automatic`，`DelayedAutoStart = false`，启用服务 SID `NT SERVICE\FolderSessionLockRecovery`。
 - `FR-035E` 服务入口固定为 `FolderSessionLock.Broker.exe --mode recovery-service`；隔离 VM 一次性诊断入口固定为 `FolderSessionLock.Broker.exe --mode recovery-once`；交互 Broker 参数固定为 `--mode consent-broker --pipe-name FolderSessionLock.Broker.v1 --session-id <UInt32> --request-id <lowercase Guid D> --client-process-id <UInt32> --client-process-creation-filetime <UInt64 decimal>`。Account SID、Logon SID、用户名、角色、管理员标志或 Pipe SDDL 不得进入 CLI。未知参数、自定义恢复路径、任意 Pipe 名、任意 service name/binPath、任意 ACL 描述符和脚本参数必须安全失败。
@@ -209,6 +209,7 @@ v1 只接受本机固定磁盘、NTFS 文件系统、普通目录和可安全规
 - 不得创建 `FSL-Standard`、`FSL-Admin` 或任何专用 Windows 测试账户。真实双账户 credential elevation/evidence 不属于 Stage 4 完成门；现有跨账户拒绝继续以不创建账户的单元测试 fail closed。
 - 阶段 4 证据固定写入 `docs\evidence\stage-4\<RunId>\`，`RunId` 为 `yyyyMMddTHHmmssZ-<short-guid>`；`scenario-results.json` 与 `manifest.json` 必须使用 D-026 schema v2。
 - 当前本地 Release 允许 unsigned；六个第一方 PE 必须如实记录 `Authenticode = NotSigned` 和 null signer。不得创建自签名/测试证书冒充正式签名；真实签名证书缺失不阻止本地交付。
+- Cleanup 必须在 `cleanup-results.txt` 写入精确 `CertificatesRemaining=0`，且 FinalizeEvidence 必须把缺失、重复或非零值作为完成阻断。
 
 ## 4. 非功能需求
 

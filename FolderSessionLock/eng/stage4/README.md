@@ -60,7 +60,7 @@ The supported commands, in order, are:
 1. `Preflight`
 2. `VerifyPlatformReadiness`
 3. `Publish`
-4. `VerifySignature`
+4. `VerifyAuthenticode`
 5. `Install`
 6. `Verify`
 7. `PrepareLogout` or `PrepareRestart`
@@ -72,17 +72,17 @@ The supported commands, in order, are:
 `Publish` creates a Release, `win-x64`, framework-dependent, multi-file package
 outside the repository. App and Broker are staged separately and merged only
 after collision hashes agree. The App receives the non-secret
-`BrokerPublisherThumbprint` MSBuild property. Omit it or pass the exact empty
-string for the D-031 explicit unsigned local mode; whitespace or any malformed
-nonempty value fails. The fixed first-party PE set is verified as actual
+`BrokerPublisherThumbprint` MSBuild property with an exact empty value. The
+public controller exposes no publisher-pin or signing-certificate parameter
+and has no signed execution branch. The fixed first-party PE set is verified as actual
 `NotSigned` with a null signer and recorded with SHA-256:
 `FolderSessionLock.App.exe`, `FolderSessionLock.App.dll`,
 `FolderSessionLock.Broker.exe`, `FolderSessionLock.Broker.dll`,
 `FolderSessionLock.Core.dll`, and `FolderSessionLock.Windows.dll`. The
 controller rejects a missing or additional `FolderSessionLock.*` executable or
-DLL. The current run does not invoke SignTool. A future valid 40-hex publisher
-pin continues to use the existing signed fail-closed path and trusted Windows
-Kits SignTool location; `PATH` is not a trust source. In both modes, the
+DLL. The current controller never invokes SignTool. The App runtime verifier
+retains its separately tested valid-pin fail-closed capability for a future
+runtime configuration, but Stage 4 cannot select it. The
 executable and every path ancestor through the volume root are opened by handle
 and bound to final path, non-reparse state, volume/file identity, owner, and
 effective mutation ACL.
@@ -151,7 +151,7 @@ Exit codes are fixed:
 | 2 | Invalid arguments |
 | 3 | Environment or authorization gate |
 | 4 | Pre-existing conflict |
-| 5 | Signing or publisher verification |
+| 5 | Authenticode policy verification |
 | 6 | Installation or ACL |
 | 7 | SCM or service |
 | 8 | Validation or evidence |
@@ -168,13 +168,14 @@ cleanup; product directories are never recursively deleted. A VM test
 current run creates no certificate. Cleanup and final residue checks prove that
 the run-specific subject is absent from `LocalMachine\My` and
 `LocalMachine\TrustedPeople`; unknown pre-existing certificates are never
-deleted.
+deleted. `cleanup-results.txt` records `CertificatesRemaining=0`, and
+`FinalizeEvidence` requires that exact line.
 
 After preflight, repository changes are allowed only below the current RunId
 evidence directory. Service deletion requires an exact structured SCM snapshot
-in the stopped state. SignTool is also bound to its final path, non-reparse
-ancestors, trusted owner/DACL, Microsoft signer, and unchanged file identity.
-Reviewer evidence must contain exactly one uppercase `PASS` or `FAIL` token;
+in the stopped state. Dormant signing-tool trust helpers are not reachable from
+the fixed unsigned public controller. Reviewer evidence must contain exactly
+one uppercase `PASS` or `FAIL` token;
 only `PASS` can finalize.
 
 The non-privileged WAL contract uses real Windows PowerShell 5.1 worker

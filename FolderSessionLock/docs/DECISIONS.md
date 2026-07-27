@@ -588,11 +588,11 @@ public interface IRecoveryReadinessReader
 
 - 状态：已决定；schema v2 与 D-031 取代本决定旧的测试证书、双账户和 schema v1 完成条件。
 - 当前 Stage 4 run 不创建或使用测试签名证书，不要求 publisher pin。六个第一方 PE 必须逐一验证实际 Authenticode 状态为 `NotSigned` 且 signer 为 null；不得把 unsigned 记录为 signed。
-- App assembly metadata 的 `BrokerPublisherThumbprint` 为 null 或精确空字符串时表示显式本地 unsigned 模式，生产组合仍须先通过固定 Program Files 路径、owner/DACL、文件身份、hash/TOCTOU 与不可替换性门；该模式不调用 Authenticode platform。仅空白或其他非空畸形 pin 必须 fail closed。有效 40 位 pin 继续使用原有精确 signed fail-closed 合同。
+- 当前 Stage 4 公共控制器不公开 publisher pin 或 signing certificate 参数，固定把精确空 `BrokerPublisherThumbprint` 写入 App assembly metadata，且无 signed/SignTool 执行分支。生产组合仍须先通过固定 Program Files 路径、owner/DACL、文件身份、hash/TOCTOU 与不可替换性门。App runtime verifier 对 null/精确空值不调用 Authenticode platform，对空白/畸形非空 pin fail closed，并为未来 runtime configuration 保留有效 40 位 pin 的精确 signed fail-closed 合同；当前 Stage 4 控制器不可选择该路径。
 - 当前 run 的自动构建、测试和非交互验证由 Codex/coder 执行；同账户 UAC consent、注销和重启由当前本地管理员人工批准；最终结果由用户与 reviewer 确认。Codex 不请求、读取、记录或回显密码。
 - 跨账户拒绝稳定错误码和任何 ACL 写入前的 fail-closed 行为保留，但跨账户 elevation 不属于当前支持范围，且不创建第二账户、不收集真实双账户 VM 证据。
 - 证据仓库目录固定为 `docs\evidence\stage-4\<RunId>\`，`RunId` 格式为 `yyyyMMddTHHmmssZ-<short-guid>`。
-- 必需证据文件：`manifest.json`、`commands.txt`、`build-results.txt`、`test-results.trx`、`service-config.txt`、`service-status-before.txt`、`service-status-after.txt`、`signature-verification.txt`、`acl-before.txt`、`acl-locked.txt`、`acl-after-recovery.txt`、`recovery-record-transitions.txt`、`access-probe-results.json`、`application-events.txt`、`cleanup-results.txt`、`reviewer-verdict.md`。人工场景可附 `screenshots\uac-consent.png` 与 `screenshots\post-reboot-recovery.png`。
+- 必需证据文件：`manifest.json`、`commands.txt`、`build-results.txt`、`test-results.trx`、`service-config.txt`、`service-status-before.txt`、`service-status-after.txt`、`signature-verification.txt`、`acl-before.txt`、`acl-locked.txt`、`acl-after-recovery.txt`、`recovery-record-transitions.txt`、`access-probe-results.json`、`application-events.txt`、`cleanup-results.txt`、`reviewer-verdict.md`。`cleanup-results.txt` 必须包含精确 `CertificatesRemaining=0`，且 FinalizeEvidence 必须验证。人工场景可附 `screenshots\uac-consent.png` 与 `screenshots\post-reboot-recovery.png`。
 - `scenario-results.json` schema v2 顶层精确字段为 `schemaVersion`（Int32=2）、`runId`、`sameAccountConsentPassed`、`preLoginRecoveryPassed`、`aclRestored`、`temporaryDirectoriesRemoved`、`recoveryRecordsRemoved`、`remainingRisks`（string array）与非空 `scenarios`。每个 scenario 精确字段为 `scenarioId`、`description`、`expectedResult`、`actualResult`、`result`、`evidenceFiles`；result 仅 `PASS|FAIL|BLOCKED`，evidenceFiles 必须非空、位于本 RunId evidence 根内且实际存在。
 - `manifest.json` 精确字段：
 

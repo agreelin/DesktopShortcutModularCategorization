@@ -126,6 +126,8 @@ $script:KnownTransitions = @(
     'CertificateReady',
     'CertificateRolledBack',
     'PublishCompleted',
+    'AuthenticodePolicyVerified',
+    # Legacy transition below is parsed only for backward-state cleanup.
     'SignatureVerified',
     'InstallStarted',
     'PlatformReadinessVerified',
@@ -508,27 +510,6 @@ function ConvertTo-FslThumbprint {
     }
 
     return $Thumbprint.ToUpperInvariant()
-}
-
-function Resolve-FslPublisherMode {
-    param(
-        [AllowNull()]
-        [AllowEmptyString()]
-        [string]$PublisherThumbprint,
-        [int]$FailureCode = 2
-    )
-
-    if ($null -eq $PublisherThumbprint -or $PublisherThumbprint.Length -eq 0) {
-        return [pscustomobject]@{
-            Mode = 'UnsignedLocal'
-            Pin = $null
-        }
-    }
-
-    return [pscustomobject]@{
-        Mode = 'PinnedPublisher'
-        Pin = ConvertTo-FslThumbprint $PublisherThumbprint $FailureCode
-    }
 }
 
 function Get-FslPathProof {
@@ -2213,17 +2194,11 @@ function Invoke-FslCheckedProcess {
 }
 
 function Invoke-FslPublish {
-    param(
-        [Parameter(Mandatory = $true)][psobject]$Context,
-        [AllowNull()][AllowEmptyString()][string]$PublisherThumbprint,
-        [string]$SigningCertificateThumbprint
-    )
+    param([Parameter(Mandatory = $true)][psobject]$Context)
 
     Assert-FslMachineGate
     Assert-FslRepositoryGate $Context
-    $publisher = Resolve-FslPublisherMode `
-        $PublisherThumbprint $script:ExitCodes.Signing
-    $pin = [string]$publisher.Pin
+    $pin = ''
     $state = Read-FslState $Context
     Assert-FslTransition $state @(
         'PreflightCaptured',
@@ -2277,32 +2252,6 @@ function Invoke-FslPublish {
             }
             else {
                 Copy-Item -LiteralPath $file.FullName -Destination $destination
-            }
-        }
-
-        $signingPin = $SigningCertificateThumbprint
-        if ($publisher.Mode -ceq 'UnsignedLocal') {
-            if ($null -ne $signingPin -and $signingPin.Length -ne 0) {
-                Stop-FslStage4 $script:ExitCodes.Signing (
-                    'Unsigned local mode cannot use a signing certificate.')
-            }
-        }
-        else {
-            if ([string]::IsNullOrWhiteSpace($signingPin)) {
-                $signingPin = [string]$state.CreatedCertificateThumbprint
-            }
-        }
-        if ($publisher.Mode -ceq 'PinnedPublisher' -and
-            -not [string]::IsNullOrWhiteSpace($signingPin)) {
-            $signingPin = ConvertTo-FslThumbprint $signingPin $script:ExitCodes.Signing
-            if ($signingPin -cne $pin) {
-                Stop-FslStage4 $script:ExitCodes.Signing 'The signing certificate and App publisher pin must match.'
-            }
-            $signTool = Get-FslSignTool
-            foreach ($portableExecutable in Get-FslFirstPartyPePaths $Context.ReleaseRoot) {
-                Invoke-FslTrustedSignTool $signTool @(
-                    'sign', '/sm', '/sha1', $signingPin, '/fd', 'SHA256', $portableExecutable
-                ) $script:ExitCodes.Signing 'signtool sign' $Context | Out-Null
             }
         }
 
@@ -2615,18 +2564,16 @@ function Copy-FslFrozenRelease {
     return $destinationDescriptor
 }
 
-function Invoke-FslVerifySignature {
-    param(
-        [Parameter(Mandatory = $true)][psobject]$Context,
-        [AllowNull()][AllowEmptyString()][string]$PublisherThumbprint
-    )
+function Invoke-FslVerifyAuthenticode {
+    param([Parameter(Mandatory = $true)][psobject]$Context)
 
     Assert-FslMachineGate
-    $publisher = Resolve-FslPublisherMode `
-        $PublisherThumbprint $script:ExitCodes.Signing
-    $pin = [string]$publisher.Pin
     $state = Read-FslState $Context
-    Assert-FslTransition $state @('PublishCompleted', 'SignatureVerified', 'Installed', 'Verified')
+    Assert-FslTransition $state @(
+        'PublishCompleted',
+        'AuthenticodePolicyVerified',
+        'Installed',
+        'Verified')
     if ([string]::IsNullOrWhiteSpace([string]$state.ReleaseRoot) -or
         -not (Test-Path -LiteralPath $state.ReleaseRoot -PathType Container)) {
         Stop-FslStage4 $script:ExitCodes.Signing 'The published release is unavailable.'
@@ -2638,41 +2585,21 @@ function Invoke-FslVerifySignature {
     $evidence = [System.Text.StringBuilder]::new()
     foreach ($executable in Get-FslFirstPartyPePaths $state.ReleaseRoot) {
         $signature = Get-AuthenticodeSignature -LiteralPath $executable
-        if ($publisher.Mode -ceq 'UnsignedLocal') {
-            if ($signature.Status -ne
-                    [System.Management.Automation.SignatureStatus]::NotSigned -or
-                $null -ne $signature.SignerCertificate) {
-                Stop-FslStage4 $script:ExitCodes.Signing (
-                    "Unsigned local Authenticode verification failed for $([System.IO.Path]::GetFileName($executable)).")
-            }
-            $signerThumbprint = 'null'
-        }
-        else {
-            $signTool = Get-FslSignTool
-            $verification = Invoke-FslTrustedSignTool $signTool @(
-                'verify', '/pa', '/all', '/v', $executable
-            ) $script:ExitCodes.Signing 'signtool verify' $Context
-            if ($signature.Status -ne
-                    [System.Management.Automation.SignatureStatus]::Valid -or
-                $null -eq $signature.SignerCertificate -or
-                $signature.SignerCertificate.Thumbprint.ToUpperInvariant() -cne
-                    $pin) {
-                Stop-FslStage4 $script:ExitCodes.Signing (
-                    "Authenticode publisher verification failed for $([System.IO.Path]::GetFileName($executable)).")
-            }
-            $signerThumbprint =
-                $signature.SignerCertificate.Thumbprint.ToUpperInvariant()
+        if ($signature.Status -ne
+                [System.Management.Automation.SignatureStatus]::NotSigned -or
+            $null -ne $signature.SignerCertificate) {
+            Stop-FslStage4 $script:ExitCodes.Signing (
+                "Unsigned local Authenticode verification failed for $([System.IO.Path]::GetFileName($executable)).")
         }
         [void]$evidence.AppendLine("File=$([System.IO.Path]::GetFileName($executable))")
         [void]$evidence.AppendLine("Status=$($signature.Status)")
-        [void]$evidence.AppendLine("SignerThumbprint=$signerThumbprint")
+        [void]$evidence.AppendLine('SignerThumbprint=null')
         [void]$evidence.AppendLine("SHA256=$((Get-FileHash $executable -Algorithm SHA256).Hash)")
-        if ($publisher.Mode -ceq 'PinnedPublisher') {
-            [void]$evidence.AppendLine($verification.TrimEnd())
-        }
     }
     Write-FslUtf8NoBom (Join-Path $Context.EvidenceRoot 'signature-verification.txt') $evidence.ToString()
-    Write-FslState $Context $state 'SignatureVerified'
+    Write-FslState $Context $state 'AuthenticodePolicyVerified'
+    Add-FslCommandEvidence $Context (
+        "VerifyAuthenticode -RunId $($Context.RunId)")
 }
 
 function Get-FslDirectorySecurityForGrants {
@@ -4521,10 +4448,7 @@ function Get-FslInstallProof {
 }
 
 function Invoke-FslInstall {
-    param(
-        [Parameter(Mandatory = $true)][psobject]$Context,
-        [AllowNull()][AllowEmptyString()][string]$PublisherThumbprint
-    )
+    param([Parameter(Mandatory = $true)][psobject]$Context)
 
     Assert-FslMachineGate
     Assert-FslAdministrator
@@ -4567,10 +4491,12 @@ function Invoke-FslInstall {
         return
     }
     if ($state.transition -cne 'InstallStarted') {
-        Invoke-FslVerifySignature $Context $PublisherThumbprint
+        Invoke-FslVerifyAuthenticode $Context
         $state = Read-FslState $Context
     }
-    Assert-FslTransition $state @('SignatureVerified', 'InstallStarted')
+    Assert-FslTransition $state @(
+        'AuthenticodePolicyVerified',
+        'InstallStarted')
     if ((Test-FslServiceExists) -or
         (Test-Path -LiteralPath $Context.InstallDirectory) -or
         (Test-Path -LiteralPath $Context.ProgramDataRoot)) {
@@ -4589,23 +4515,11 @@ function Invoke-FslInstall {
 
     [void](Read-FslFrozenReleaseDescriptor `
         $Context.InstallDirectory ([string]$state.ReleaseDescriptorSha256))
-    $publisher = Resolve-FslPublisherMode `
-        $PublisherThumbprint $script:ExitCodes.Signing
     foreach ($installedPe in Get-FslFirstPartyPePaths $Context.InstallDirectory) {
         $signature = Get-AuthenticodeSignature -LiteralPath $installedPe
-        $signatureInvalid = if ($publisher.Mode -ceq 'UnsignedLocal') {
-            $signature.Status -ne
+        if ($signature.Status -ne
                 [System.Management.Automation.SignatureStatus]::NotSigned -or
-            $null -ne $signature.SignerCertificate
-        }
-        else {
-            $signature.Status -ne
-                [System.Management.Automation.SignatureStatus]::Valid -or
-            $null -eq $signature.SignerCertificate -or
-            $signature.SignerCertificate.Thumbprint.ToUpperInvariant() -cne
-                $publisher.Pin
-        }
-        if ($signatureInvalid) {
+            $null -ne $signature.SignerCertificate) {
             Stop-FslStage4 $script:ExitCodes.Signing (
                 "Installed first-party Authenticode state is invalid: " +
                 [System.IO.Path]::GetFileName($installedPe))
@@ -4622,16 +4536,13 @@ function Invoke-FslInstall {
 }
 
 function Invoke-FslVerify {
-    param(
-        [Parameter(Mandatory = $true)][psobject]$Context,
-        [AllowNull()][AllowEmptyString()][string]$PublisherThumbprint
-    )
+    param([Parameter(Mandatory = $true)][psobject]$Context)
 
     Assert-FslMachineGate
     Assert-FslAdministrator
-    Invoke-FslVerifySignature $Context $PublisherThumbprint
+    Invoke-FslVerifyAuthenticode $Context
     $state = Read-FslState $Context
-    Assert-FslTransition $state @('SignatureVerified')
+    Assert-FslTransition $state @('AuthenticodePolicyVerified')
     if (-not (Test-FslServiceExists)) {
         Stop-FslStage4 $script:ExitCodes.Service 'The fixed recovery service is missing.'
     }
@@ -4654,13 +4565,11 @@ function Invoke-FslVerify {
     Write-FslUtf8NoBom (Join-Path $Context.EvidenceRoot 'service-status-after.txt') (
         (($statusAfter | ConvertTo-Json -Depth 4) + [Environment]::NewLine))
 
-    $publisher = Resolve-FslPublisherMode `
-        $PublisherThumbprint $script:ExitCodes.Signing
     $environment = @{
         FSL_STAGE4_BROKER_PATH = $Context.BrokerPath
         FSL_STAGE4_INSTALL_DIRECTORY = $Context.InstallDirectory
         FSL_STAGE4_PROGRAMDATA_ROOT = $Context.ProgramDataRoot
-        FSL_STAGE4_PUBLISHER_THUMBPRINT = [string]$publisher.Pin
+        FSL_STAGE4_PUBLISHER_THUMBPRINT = ''
     }
     foreach ($entry in $environment.GetEnumerator()) {
         [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
@@ -4671,7 +4580,7 @@ function Invoke-FslVerify {
         (Join-Path $Context.RepositoryRoot 'FolderSessionLock.sln'),
         '-c', 'Release',
         '--no-restore',
-        "-p:BrokerPublisherThumbprint=$([string]$publisher.Pin)") `
+        '-p:BrokerPublisherThumbprint=') `
         $script:ExitCodes.ValidationEvidence 'dotnet build Stage4 verification' $Context
     $buildEvidencePath = Join-Path $Context.EvidenceRoot 'build-results.txt'
     $existingBuildLog = [System.IO.File]::ReadAllText($buildEvidencePath)
@@ -4978,7 +4887,8 @@ function Invoke-FslUninstall {
     }
     Assert-FslTransition $state @(
         'PreflightCaptured', 'CertificateCreating', 'CertificateReady',
-        'CertificateRolledBack', 'PublishCompleted', 'SignatureVerified',
+        'CertificateRolledBack', 'PublishCompleted',
+        'AuthenticodePolicyVerified', 'SignatureVerified',
         'InstallStarted', 'ServiceCreated', 'Installed', 'Verified',
         'LogoutPrepared', 'RestartPrepared', 'Resumed', 'Uninstalled',
         'CleanupCompleted')
@@ -5095,7 +5005,8 @@ function Invoke-FslCleanup {
     Write-FslUtf8NoBom (Join-Path $Context.EvidenceRoot 'cleanup-results.txt') (
         "RunId=$($Context.RunId)`r`n" +
         "ServiceRemaining=0`r`nInstallDirectoryRemaining=0`r`n" +
-        "ProgramDataRootRemaining=0`r`nProductProcessesRemaining=0`r`n")
+        "ProgramDataRootRemaining=0`r`nProductProcessesRemaining=0`r`n" +
+        "CertificatesRemaining=0`r`n")
     Write-FslState $Context $state 'CleanupCompleted'
     Add-FslCommandEvidence $Context "Cleanup -RunId $($Context.RunId)"
 }
@@ -5173,6 +5084,24 @@ function Assert-FslUnsignedAuthenticodeEvidence {
             $lines[$offset + 3] -cnotmatch '^SHA256=[0-9A-F]{64}$') {
             Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
                 'Unsigned Authenticode evidence contains an invalid status, signer, or hash.')
+        }
+    }
+}
+
+function Assert-FslCleanupEvidence {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $requiredLines = @(
+        'ServiceRemaining=0',
+        'InstallDirectoryRemaining=0',
+        'ProgramDataRootRemaining=0',
+        'ProductProcessesRemaining=0',
+        'CertificatesRemaining=0')
+    $lines = @($Text -split '\r?\n' | Where-Object { $_.Length -ne 0 })
+    foreach ($requiredLine in $requiredLines) {
+        if (@($lines | Where-Object { $_ -ceq $requiredLine }).Count -ne 1) {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                "Cleanup evidence must contain exactly one $requiredLine line.")
         }
     }
 }
@@ -5282,14 +5211,8 @@ function Invoke-FslFinalizeEvidence {
     $buildPassed = ([regex]::Matches($buildText, '(?m)^ExitCode=0\r?$').Count -ge 2)
     Assert-FslUnsignedAuthenticodeEvidence (
         Join-Path $Context.EvidenceRoot 'signature-verification.txt')
-    $cleanupPassed = @(
-        'ServiceRemaining=0',
-        'InstallDirectoryRemaining=0',
-        'ProgramDataRootRemaining=0',
-        'ProductProcessesRemaining=0') |
-        ForEach-Object { $cleanupText.IndexOf($_, [StringComparison]::Ordinal) -ge 0 }
+    Assert-FslCleanupEvidence $cleanupText
     if (-not $buildPassed -or
-        ($cleanupPassed -contains $false) -or
         (@($scenarioResults.scenarios).result -contains 'FAIL') -or
         (@($scenarioResults.scenarios).result -contains 'BLOCKED')) {
         Stop-FslStage4 $script:ExitCodes.ValidationEvidence 'Evidence does not support a completed Stage 4 run.'
@@ -5365,7 +5288,7 @@ function Invoke-FslStage4Command {
             'Preflight',
             'VerifyPlatformReadiness',
             'Publish',
-            'VerifySignature',
+            'VerifyAuthenticode',
             'Install',
             'Verify',
             'PrepareLogout',
@@ -5376,8 +5299,6 @@ function Invoke-FslStage4Command {
             'FinalizeEvidence')]
         [string]$Command,
         [Parameter(Mandatory = $true)][string]$RunId,
-        [string]$PublisherThumbprint,
-        [string]$SigningCertificateThumbprint,
         [string]$ReleaseRoot,
         [string]$ScenarioId,
         [string]$TestTarget,
@@ -5389,9 +5310,6 @@ function Invoke-FslStage4Command {
         if ($Command -cne 'Preflight') {
             Assert-FslRepositoryGate $context
             Assert-FslRepositoryMutationGate $context
-        }
-        if ($Command -cin @('Publish', 'VerifySignature', 'Install', 'Verify')) {
-            [void](Resolve-FslPublisherMode $PublisherThumbprint 2)
         }
         if ($Command -cnotin @('Preflight', 'VerifyPlatformReadiness')) {
             $snapshot = Get-FslAuthoritativeStage4Snapshot $context
@@ -5419,16 +5337,16 @@ function Invoke-FslStage4Command {
                 Invoke-FslVerifyPlatformReadiness $context
             }
             'Publish' {
-                Invoke-FslPublish $context $PublisherThumbprint $SigningCertificateThumbprint
+                Invoke-FslPublish $context
             }
-            'VerifySignature' {
-                Invoke-FslVerifySignature $context $PublisherThumbprint
+            'VerifyAuthenticode' {
+                Invoke-FslVerifyAuthenticode $context
             }
             'Install' {
-                Invoke-FslInstall $context $PublisherThumbprint
+                Invoke-FslInstall $context
             }
             'Verify' {
-                Invoke-FslVerify $context $PublisherThumbprint
+                Invoke-FslVerify $context
             }
             'PrepareLogout' {
                 if ([string]::IsNullOrWhiteSpace($ScenarioId) -or

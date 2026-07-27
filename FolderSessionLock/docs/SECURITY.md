@@ -229,10 +229,11 @@ Prepared 必须 postApply/error=null、count=0；Applied 必须实际 postApply 
 
 当前 D-031 本地单用户管理员 Release 可显式 unsigned；它仍必须位于管理员保护目录，普通用户不得替换或修改，IPC 必须限制本机访问、使用最小 Pipe DACL、验证客户端身份并防重放。unsigned 不提供 publisher 身份保证，且不得宣称适用于公开或企业分发。
 
-WPF 应用的 Broker publisher 指纹由非秘密 MSBuild 属性
-`BrokerPublisherThumbprint` 写入 assembly metadata。null 或精确空字符串表示 D-031
-显式 unsigned 本地模式，Authenticode verifier 不调用 platform；仅空白或其他畸形
-非空值 fail closed。有效 40 位十六进制 thumbprint 进入原 signed 模式。应用在任何 UAC、
+当前 Stage 4 控制器不公开 publisher pin 或 signing certificate 参数，固定把精确空
+`BrokerPublisherThumbprint` 写入 assembly metadata，且无 signed/SignTool 执行分支。
+App runtime verifier 对 null/精确空值不调用 platform，对空白或其他畸形非空值
+fail closed，并为未来 runtime configuration 保留有效 40 位十六进制 thumbprint 的
+原 signed 模式；当前控制器不可选择。应用在任何 UAC、
 Pipe、replay、恢复记录或 ACL 副作用前，先完成固定 Program Files 路径、安装目录
 ACL、普通文件/non-reparse、final path 与文件 identity 验证，再使用无 UI
 `WinVerifyTrust`（仅 signed 模式）验证 Authenticode、提取 signer thumbprint 并与 pin
@@ -243,7 +244,7 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
 
 阶段 4 的 Broker/Service 安装根固定为 `%ProgramFiles%\FolderSessionLock`，ACL 为 `SYSTEM: FullControl`、`Administrators: FullControl`、`Users: ReadAndExecute`，不为 `Authenticated Users` 额外授予写权限。禁止从仓库 `bin`、`obj`、TEMP、用户目录或网络路径注册服务。
 
-当前 Stage 4 run 不创建或信任测试证书。发布、安装和 D-026 证据必须逐一确认固定六 PE 为实际 `NotSigned` 且 signer 为 null。真实签名证书采购、托管、公开发布和企业签名流水线需要未来决定；若未来提供有效 pin，原 signed fail-closed 路径仍保留。
+当前 Stage 4 run 不创建或信任测试证书。发布、安装和 D-026 证据必须逐一确认固定六 PE 为实际 `NotSigned` 且 signer 为 null。真实签名证书采购、托管、公开发布和企业签名流水线需要未来决定；App runtime verifier 的原 signed fail-closed 路径保留，但当前 Stage 4 控制器不能进入。
 
 ## 10. 路径安全
 
@@ -329,8 +330,8 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
   或发布目录出现额外 `FolderSessionLock.*` executable/DLL，均阻止发布。
 - 当前本地 run 的六个 PE 必须全部由 `Get-AuthenticodeSignature` 实测为
   `NotSigned` 且 signer null；`signature-verification.txt` 逐文件绑定 SHA-256。
-  不调用 SignTool、不创建测试证书。未来有效 pin 的 signed 模式仍使用受信 Windows
-  Kits x64 SignTool 与原 `WinVerifyTrust` 合同，`PATH` 不作为信任来源。
+  当前控制器不公开 pin/certificate 参数、不调用 SignTool、不创建测试证书。App
+  runtime verifier 的未来有效 pin 模式保留原 `WinVerifyTrust` 合同，但控制器不可选择。
 - UI 对 Broker 的验证使用单一 `WinVerifyTrust` provider state：在同一已验证
   state 中取得 signer 证书和 thumbprint，完成后执行 state close。不得通过第二次文件
   打开或独立证书解析替代 signer 绑定。
@@ -348,7 +349,8 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
   hash 与精确 ACL。出现 reparse、替换对象、identity/ACL 漂移或未知文件即拒绝清理；
   产品安装目录和 ProgramData 目录不得递归删除。
 - 当前 run 不创建证书；pre-state、cleanup 与残留检查必须证明没有 run-specific
-  certificate，且不得把既有未知证书纳入删除范围。
+  certificate，且不得把既有未知证书纳入删除范围。`cleanup-results.txt` 必须写入
+  精确 `CertificatesRemaining=0`，FinalizeEvidence 必须验证。
 - Release descriptor 在 Publish 后冻结精确、区分大小写的完整文件集合，并绑定
   manifest、SHA256SUMS、每个 payload 的长度和 SHA-256；后续验证和复制不得重写或
   重新认可已变化的发布目录，复制前后均复核源与目标。
@@ -360,12 +362,9 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
 - Preflight 后仓库只允许当前 RunId evidence 精确变化；tracked 源码变化、其他
   untracked 文件和 other-run evidence 均阻止命令。
 - 服务删除前必须用结构化 SCM snapshot 精确验证全部固定字段和 Stopped 状态。
-- Windows Kits SignTool 的 final path、non-reparse ancestors、owner、DACL、
-  Microsoft signer 和执行前后 file identity 全部属于信任门。
-- CP10 SignTool 信任使用经批准的 Microsoft SPKI SHA-256 allowlist，而不是
-  certificate Subject 文本。Native WinTrust 提供已验证 signer chain；executable
-  及直到卷根的每一级祖先，在执行前后均以 handle 绑定 final path、non-reparse、
-  file identity、owner 与有效 mutation ACL。
+- Dormant Windows Kits SignTool trust helpers 不可由当前固定 unsigned 公共控制器
+  到达；若未来另行批准签名控制器，必须重新审查其 final path、non-reparse
+  ancestors、owner、DACL、Microsoft signer、SPKI allowlist 与执行前后 file identity。
 - CP10 在仓库外 LocalApplicationData 下维护 current-user DPAPI 保护的随机 HMAC
   key 与双槽 anchor，绑定 run/machine/repository/branch/commit 以及 prestate、
   journal、WAL、state 和内部 anchor 的精确 length/hash。Finalization 删除 key、
