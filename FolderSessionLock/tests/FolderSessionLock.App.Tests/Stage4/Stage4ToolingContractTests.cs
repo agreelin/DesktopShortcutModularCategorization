@@ -57,6 +57,25 @@ public sealed class Stage4ToolingContractTests
     }
 
     [Fact]
+    public void PowerShell51_PublishOverlapsHaveIdenticalContent()
+    {
+        ProcessResult result = RunPowerShellWithTimeout(
+            Path.Combine(
+                FindSolutionRoot(),
+                "tests",
+                "FolderSessionLock.App.Tests",
+                "Stage4",
+                "Stage4PublishOverlapBehavior.Tests.ps1"),
+            120_000);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains(
+            "STAGE4_PUBLISH_OVERLAP_BEHAVIOR_PASS",
+            result.Output,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EntryPointReturnsFixedInvalidArgumentsExitCode()
     {
         ProcessResult result = RunPowerShell(
@@ -74,6 +93,14 @@ public sealed class Stage4ToolingContractTests
     }
 
     private static ProcessResult RunPowerShell(string script, params string[] arguments)
+    {
+        return RunPowerShellWithTimeout(script, 30_000, arguments);
+    }
+
+    private static ProcessResult RunPowerShellWithTimeout(
+        string script,
+        int timeoutMilliseconds,
+        params string[] arguments)
     {
         var start = new ProcessStartInfo
         {
@@ -101,7 +128,9 @@ public sealed class Stage4ToolingContractTests
         using Process process = Process.Start(start)!;
         string standardOutput = process.StandardOutput.ReadToEnd();
         string standardError = process.StandardError.ReadToEnd();
-        Assert.True(process.WaitForExit(30_000), "Windows PowerShell 5.1 did not exit.");
+        Assert.True(
+            process.WaitForExit(timeoutMilliseconds),
+            "Windows PowerShell 5.1 did not exit.");
         return new ProcessResult(
             process.ExitCode,
             standardOutput + Environment.NewLine + standardError);
