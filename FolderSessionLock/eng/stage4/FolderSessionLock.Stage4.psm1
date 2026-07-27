@@ -478,21 +478,105 @@ function Assert-FslRepositoryGate {
 function Assert-FslRepositoryMutationGate {
     param([Parameter(Mandatory = $true)][psobject]$Context)
 
+    $gitTopOutput = & git.exe -C $Context.RepositoryRoot `
+        rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'The Git top level could not be determined.')
+    }
+    try {
+        $gitTop = [System.IO.Path]::GetFullPath(
+            (($gitTopOutput | Out-String).Trim()))
+        $projectRoot = [System.IO.Path]::GetFullPath(
+            [string]$Context.RepositoryRoot)
+        $expectedEvidenceRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $projectRoot (
+                'docs\evidence\stage-4\' + $Context.RunId)))
+        $evidenceRootValue = $expectedEvidenceRoot
+        if ($null -ne $Context.PSObject.Properties['EvidenceRoot'] -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$Context.EvidenceRoot)) {
+            $evidenceRootValue = [string]$Context.EvidenceRoot
+        }
+        $evidenceRoot = [System.IO.Path]::GetFullPath(
+            $evidenceRootValue)
+        $resolvedGitTop = (Resolve-Path -LiteralPath $gitTop).ProviderPath
+        $resolvedProjectRoot =
+            (Resolve-Path -LiteralPath $projectRoot).ProviderPath
+    }
+    catch {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'The repository path relationship is invalid.')
+    }
+    if (-not [string]::Equals(
+            $gitTop.TrimEnd('\'),
+            $resolvedGitTop.TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals(
+            $projectRoot.TrimEnd('\'),
+            $resolvedProjectRoot.TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'The repository path relationship is not canonical.')
+    }
+    $gitTopPrefix = $gitTop.TrimEnd('\') + '\'
+    $projectPrefix = ''
+    if (-not [string]::Equals(
+            $projectRoot.TrimEnd('\'),
+            $gitTop.TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not $projectRoot.StartsWith(
+                $gitTopPrefix,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+                'The project root is outside the Git top level.')
+        }
+        $relativeProject = $projectRoot.Substring(
+            $gitTopPrefix.Length).Replace('\', '/')
+        $projectSegments = @($relativeProject -split '/')
+        if ($projectSegments.Count -eq 0 -or
+            @($projectSegments | Where-Object {
+                [string]::IsNullOrEmpty($_) -or $_ -in @('.', '..')
+            }).Count -ne 0) {
+            Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+                'The project prefix relative to the Git top level is invalid.')
+        }
+        $projectPrefix = $relativeProject + '/'
+    }
+    if (-not [string]::Equals(
+            $evidenceRoot.TrimEnd('\'),
+            $expectedEvidenceRoot.TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'The evidence root does not match the current project and RunId.')
+    }
+
     $raw = & git.exe -C $Context.RepositoryRoot status `
         --porcelain=v1 -z --untracked-files=all 2>$null
     if ($LASTEXITCODE -ne 0) {
         Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
             'The repository mutation set could not be determined.')
     }
-    $allowedPrefix = (
-        'docs/evidence/stage-4/' + $Context.RunId + '/')
+    $allowedPrefix = $projectPrefix +
+        'docs/evidence/stage-4/' + $Context.RunId + '/'
     foreach ($record in @($raw -split "`0" | Where-Object { $_.Length -gt 0 })) {
-        if ($record.Length -lt 4) {
+        if ($record.Length -lt 4 -or $record[2] -cne ' ') {
             Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
                 'The repository mutation record is invalid.')
         }
         $path = $record.Substring(3).Replace('\', '/')
-        if (-not $path.StartsWith($allowedPrefix, [StringComparison]::Ordinal)) {
+        $segments = @($path -split '/')
+        if ($record.Substring(0, 2) -cne '??' -or
+            [System.IO.Path]::IsPathRooted($path) -or
+            $path.Contains(':') -or
+            $segments.Count -eq 0 -or
+            @($segments | Where-Object {
+                [string]::IsNullOrEmpty($_) -or $_ -in @('.', '..')
+            }).Count -ne 0 -or
+            $path.Length -le $allowedPrefix.Length -or
+            -not $path.StartsWith(
+                $allowedPrefix,
+                [StringComparison]::Ordinal)) {
             Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
                 "Only current-Run evidence may mutate after preflight: $path.")
         }

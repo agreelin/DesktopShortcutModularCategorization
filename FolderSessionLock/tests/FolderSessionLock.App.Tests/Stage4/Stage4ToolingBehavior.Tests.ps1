@@ -2728,6 +2728,142 @@ if ($Slice -in @('All', 'Slice8')) {
 }
 
 if ($Slice -in @('All', 'Slice1')) {
+    $mutationGateRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        'FolderSessionLock.Stage4.Tooling.MutationGate.' +
+        [Guid]::NewGuid().ToString('D'))
+    [System.IO.Directory]::CreateDirectory($mutationGateRoot) | Out-Null
+    try {
+        $mutationGateResults = @()
+        foreach ($layout in @('TopLevel', 'NestedProject')) {
+            $gitTop = Join-Path $mutationGateRoot $layout
+            $projectRoot = if ($layout -ceq 'TopLevel') {
+                $gitTop
+            }
+            else {
+                Join-Path $gitTop 'FolderSessionLock'
+            }
+            [System.IO.Directory]::CreateDirectory($projectRoot) | Out-Null
+            $trackedPath = Join-Path $projectRoot 'tracked.txt'
+            [System.IO.File]::WriteAllText(
+                $trackedPath,
+                'baseline',
+                [System.Text.UTF8Encoding]::new($false))
+            & git.exe -C $gitTop init --quiet
+            if ($LASTEXITCODE -ne 0) {
+                throw "Mutation fixture git init failed: $layout"
+            }
+            & git.exe -C $gitTop config user.name 'FSL Stage4 Tooling'
+            & git.exe -C $gitTop config user.email 'stage4@example.invalid'
+            & git.exe -C $gitTop add -- .
+            & git.exe -C $gitTop commit --quiet --no-gpg-sign -m baseline
+            if ($LASTEXITCODE -ne 0) {
+                throw "Mutation fixture baseline commit failed: $layout"
+            }
+
+            $runId = '20260727T130000Z-0123abcd'
+            $evidenceRoot = Join-Path $projectRoot (
+                'docs\evidence\stage-4\' + $runId)
+            [System.IO.Directory]::CreateDirectory($evidenceRoot) | Out-Null
+            [System.IO.File]::WriteAllText(
+                (Join-Path $evidenceRoot 'commands.txt'),
+                'current-run',
+                [System.Text.UTF8Encoding]::new($false))
+            $mutationGateResults += & $module {
+                param(
+                    $Layout,
+                    $GitTop,
+                    $ProjectRoot,
+                    $EvidenceRoot,
+                    $TrackedPath,
+                    $RunId)
+
+                $context = [pscustomobject]@{
+                    RepositoryRoot = $ProjectRoot
+                    EvidenceRoot = $EvidenceRoot
+                    RunId = $RunId
+                }
+                function Invoke-FslMutationGateProbe {
+                    try {
+                        Assert-FslRepositoryMutationGate $context
+                        return 0
+                    }
+                    catch {
+                        return [int]$_.Exception.Data[
+                            'FslStage4ExitCode']
+                    }
+                }
+
+                $currentRun = Invoke-FslMutationGateProbe
+
+                $otherRoot = Join-Path $ProjectRoot (
+                    'docs\evidence\stage-4\' +
+                    '20260727T130001Z-fedcba98')
+                [System.IO.Directory]::CreateDirectory($otherRoot) |
+                    Out-Null
+                [System.IO.File]::WriteAllText(
+                    (Join-Path $otherRoot 'commands.txt'),
+                    'other-run',
+                    [System.Text.UTF8Encoding]::new($false))
+                $otherRun = Invoke-FslMutationGateProbe
+                [System.IO.Directory]::Delete($otherRoot, $true)
+
+                $outsidePath = Join-Path $GitTop 'outside.txt'
+                [System.IO.File]::WriteAllText(
+                    $outsidePath,
+                    'outside',
+                    [System.Text.UTF8Encoding]::new($false))
+                $outside = Invoke-FslMutationGateProbe
+                [System.IO.File]::Delete($outsidePath)
+
+                [System.IO.File]::WriteAllText(
+                    $TrackedPath,
+                    'tracked-change',
+                    [System.Text.UTF8Encoding]::new($false))
+                $tracked = Invoke-FslMutationGateProbe
+                & git.exe -C $ProjectRoot add -- tracked.txt
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Mutation fixture staging failed: $Layout"
+                }
+                $staged = Invoke-FslMutationGateProbe
+
+                return [pscustomobject]@{
+                    Layout = $Layout
+                    CurrentRun = $currentRun
+                    OtherRun = $otherRun
+                    Outside = $outside
+                    Tracked = $tracked
+                    Staged = $staged
+                }
+            } $layout $gitTop $projectRoot $evidenceRoot `
+                $trackedPath $runId
+        }
+        $badMutationGateResults = @(
+            $mutationGateResults | Where-Object {
+                $_.CurrentRun -ne 0 -or
+                $_.OtherRun -ne 3 -or
+                $_.Outside -ne 3 -or
+                $_.Tracked -ne 3 -or
+                $_.Staged -ne 3
+            })
+        Assert-True (
+            $mutationGateResults.Count -eq 2 -and
+            @($mutationGateResults | Where-Object {
+                $_.Layout -ceq 'TopLevel'
+            }).Count -eq 1 -and
+            @($mutationGateResults | Where-Object {
+                $_.Layout -ceq 'NestedProject'
+            }).Count -eq 1 -and
+            $badMutationGateResults.Count -eq 0) (
+            'Repository mutation gate did not distinguish current-run ' +
+            'evidence from other-run, outside, tracked, or staged changes ' +
+            'in top-level and nested project layouts.')
+    }
+    finally {
+        if (Test-Path -LiteralPath $mutationGateRoot) {
+            Remove-Item -LiteralPath $mutationGateRoot -Recurse -Force
+        }
+    }
+
     $sliceRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
         'FolderSessionLock.Stage4.Tooling.PreflightDeferred.' +
         [Guid]::NewGuid().ToString('D'))
