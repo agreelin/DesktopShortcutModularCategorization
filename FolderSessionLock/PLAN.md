@@ -116,9 +116,9 @@ Checkpoint：
 
 ## 阶段 4：提升 Broker、IPC 与恢复生命周期
 
-前置决定：用户已确认 `D-022` 至 `D-030` 及 D-022.10/D-022.11/D-023.1/D-024.1/D-024.2，并批准 class 65 rename 与 canonical POSIX delete 关闭顺序勘误。CP1–CP9 当前 `AGREELIN` 允许范围的实现已完成；CP9 reviewer 第 1/6 与第 2/6 修复轮均已关闭，同一 reviewer 最终结论为 `PASS`，无 `BLOCKER` 或 `HIGH`。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped，Release build 0 warning、0 error，format、diff、文档、静态扫描和清理检查通过。CP10 尚未开始；真实 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 OneDrive/Cloud Files、签名、注销/重启及 `FSL-STAGE4-VM` 证据仍未执行并继续阻止阶段 4 完成。
+前置决定：用户已确认 `D-022` 至 `D-030` 及 D-022.10/D-022.11/D-023.1/D-024.1/D-024.2，并批准 class 65 rename 与 canonical POSIX delete 关闭顺序勘误。CP1–CP9 当前 `AGREELIN` 允许范围的实现已完成；CP9 reviewer 第 1/6 与第 2/6 修复轮均已关闭，同一 reviewer 最终结论为 `PASS`，无 `BLOCKER` 或 `HIGH`。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped，Release build 0 warning、0 error，format、diff、文档、静态扫描和清理检查通过。CP10 尚未开始；真实 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 OneDrive/Cloud Files、unsigned Authenticode 证据、注销/重启及 `FSL-STAGE4-VM` 证据仍未执行并继续阻止阶段 4 完成。缺少真实签名证书或签名流水线不阻止 D-031 本地 unsigned Stage 4 或 Stage 5。
 
-环境门：唯一获准特权集成环境为 `FSL-STAGE4-VM`，Windows 11 Pro/Enterprise 专用可丢弃 VM，快照 `FolderSessionLock-Stage4-Clean`。机器名不匹配时，允许完成设计、代码、单元测试、非特权测试和静态审查；服务、LocalSystem、自动启动、登录前、UAC、注销、重启、Program Files/ProgramData ACL 和签名系统验证必须标记 `BLOCKED`，阶段 4 不得完成。当前机器 `AGREELIN` 不满足特权环境门。
+环境门：唯一获准特权集成环境为 `FSL-STAGE4-VM`，Windows 11 Pro/Enterprise 专用可丢弃 VM，快照 `FolderSessionLock-Stage4-Clean`。机器名不匹配时，允许完成设计、代码、单元测试、非特权测试和静态审查；服务、LocalSystem、自动启动、登录前、UAC、注销、重启和 Program Files/ProgramData ACL 验证必须标记 `BLOCKED`，阶段 4 不得完成。当前机器 `AGREELIN` 不满足特权环境门。公开/企业签名系统验证不是当前 D-031 Stage 4 完成门。
 
 Checkpoint：
 
@@ -213,7 +213,7 @@ Checkpoint：
 - 恢复记录与 ACL 不一致时停止自动删除，不覆盖 DACL。
 - 启动恢复清理失败时保留记录并产生明确诊断。
 - 当前本地 Release 明确允许 unsigned，安装目录权限、普通用户不可替换、identity/hash/TOCTOU 门仍须验证；不得扩张为公开或企业分发。
-- 隔离 VM 逐一验证固定六 PE 的实际状态为 `NotSigned`、signer null并绑定 SHA-256；不创建测试证书，不伪造签名。
+- 隔离 VM 逐一验证固定六 PE 的实际状态为 `NotSigned`、signer null并记录 SHA-256；Finalize 通过受保护 state 的 ReleaseRoot/ReleaseDescriptorSha256 重新验证 frozen descriptor、精确六 PE 集合和实际文件 hash，并要求 evidence hash 精确相等；不创建测试证书，不伪造签名。
 - Broker 正常退出尝试清理全部任务。
 - 全部集成测试仅修改临时目录。
 - 证据目录、必需文件、`scenario-results.json` 与 `manifest.json` 精确结构符合 D-026 schema v2；`TASKS.md`、`DEVLOG.md` 引用 RunId，reviewer 核验 manifest 与实际工件一致。
@@ -290,8 +290,8 @@ Checkpoint：
 - 无父目录 ACE；无 SYSTEM、Administrators、TrustedInstaller 修改。
 - 无任意 IPC 命令；无用户内容记录。
 - TOCTOU 测试安全失败；通知无洪泛。
-- Broker 已签名；Broker 和托管恢复模式的自动启动服务位于管理员保护目录；普通用户不能替换或修改 Broker。
+- 未来 Stage 7 的公开/企业/签名 checkpoint 当前不激活；只有另一个明确的公开/企业/签名产品决定才能激活。未激活或缺少签名不得阻止 D-031 本地 unsigned Stage 4 完成或进入 Stage 5；若未来激活，才要求公开/企业 Broker 签名有效。Broker 和托管恢复模式的自动启动服务仍须位于管理员保护目录，普通用户不能替换或修改 Broker。
 - IPC 为本机最小权限、调用方身份已验证、请求不可重放、无任意命令接口。
-- 任一发布阻断条件存在时，产物不得标记为生产发布。
+- 只有上述未来 checkpoint 经独立决定激活后，公开/企业发布阻断条件才适用；当前本地 unsigned 产物不得被标记为公开/企业发布。
 - reviewer 无 `BLOCKER` 或 `HIGH`，并输出 `PASS`。
 - `FolderSessionLock/README.md` 和 `FolderSessionLock/docs/SECURITY.md` 记录全部已知限制。

@@ -313,11 +313,11 @@ CP4 固定架构：
 ## 17. 阶段 4 环境与证据合同
 
 - 唯一特权集成环境：计算机名 `FSL-STAGE4-VM`，Windows 11 Pro/Enterprise 专用可丢弃 VM，快照 `FolderSessionLock-Stage4-Clean`。
-- 非该机器时，服务、LocalSystem、自动启动、登录前执行、UAC、注销、重启、Program Files/ProgramData ACL 和签名系统测试停止；设计、实现、单元测试、非特权测试和静态审查继续。
+- 非该机器时，服务、LocalSystem、自动启动、登录前执行、UAC、注销、重启和 Program Files/ProgramData ACL 测试停止；设计、实现、单元测试、非特权测试和静态审查继续。公开/企业签名系统验证为未来 Stage 7 checkpoint，当前不激活且不阻止 D-031 本地 unsigned Stage 4/Stage 5。
 - 当前机器 `AGREELIN` 不是获准 VM。
 - VM 内只允许操作服务 `FolderSessionLockRecovery`；禁止修改其他服务或 SCM 全局配置。最多 3 次注销、3 次完整重启，每次前保存证据、确认目标只位于 `%TEMP%\FolderSessionLock.Tests\<Guid>`、记录已提交且无仓库或真实用户目录目标，并输出场景编号。
 - 测试身份：仅使用当前本地管理员账户；不得创建 `FSL-Standard`、`FSL-Admin` 或替代专用测试账户。同账户 UAC consent 由当前用户人工确认。
-- 当前本地 Release 使用显式 unsigned 模式；不得创建测试签名证书。六个第一方 PE 的实际 Authenticode 状态必须为 `NotSigned` 且 signer 为 null。
+- 当前本地 Release 使用显式 unsigned 模式；不得创建测试签名证书。六个第一方 PE 的实际 Authenticode 状态必须为 `NotSigned` 且 signer 为 null。Finalize 通过受保护 state 的 ReleaseRoot/ReleaseDescriptorSha256 重验 frozen descriptor、精确六 PE 集合和实际 SHA-256，再与有序 evidence 逐项精确比较。
 - 证据仓库目录：`docs\evidence\stage-4\<RunId>\`，RunId 为 `yyyyMMddTHHmmssZ-<short-guid>`。精确文件清单和 `manifest.json` 结构见 `D-026`；`TASKS.md`、`DEVLOG.md` 必须引用 RunId，reviewer 必须核验 manifest 与工件一致。
 - 登录前恢复只读取受保护记录、验证目录身份和精确 ACE、移除旧 ACE、验证恢复并删除已完成记录；不恢复旧任务、不创建 ACE、不访问网络、不读取目录内容、不扫描无关目录、不修改审计策略。
 

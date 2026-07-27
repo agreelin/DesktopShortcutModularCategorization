@@ -568,7 +568,21 @@ if ($Slice -in @('All', 'Slice4')) {
     [System.IO.Directory]::CreateDirectory($schemaRoot) | Out-Null
     try {
         $schemaContract = & $module {
-            param($Root)
+            param($Root, $Repository)
+
+            $releaseRoot = Join-Path $Root 'release'
+            [System.IO.Directory]::CreateDirectory($releaseRoot) | Out-Null
+            foreach ($name in $script:FirstPartyPortableExecutables) {
+                [System.IO.File]::WriteAllBytes(
+                    (Join-Path $releaseRoot $name),
+                    [System.Text.Encoding]::UTF8.GetBytes(
+                        "unsigned-fixture:$name"))
+            }
+            $releaseContext = [pscustomobject]@{
+                ReleaseRoot = $releaseRoot
+                RepositoryRoot = $Repository
+            }
+            $descriptorSha256 = New-FslReleaseMetadata $releaseContext
 
             $scenario = [pscustomobject][ordered]@{
                 scenarioId = 'same-account-consent'
@@ -613,10 +627,16 @@ if ($Slice -in @('All', 'Slice4')) {
                 [void]$builder.AppendLine("File=$name")
                 [void]$builder.AppendLine('Status=NotSigned')
                 [void]$builder.AppendLine('SignerThumbprint=null')
-                [void]$builder.AppendLine(('SHA256=' + ('A' * 64)))
+                [void]$builder.AppendLine(
+                    'SHA256=' + (
+                        Get-FileHash -LiteralPath (
+                            Join-Path $releaseRoot $name) `
+                            -Algorithm SHA256).Hash)
             }
             Write-FslUtf8NoBom $evidencePath $builder.ToString()
-            Assert-FslUnsignedAuthenticodeEvidence $evidencePath
+            Assert-FslUnsignedAuthenticodeEvidence `
+                $evidencePath $releaseRoot $descriptorSha256
+            $validEvidence = [System.IO.File]::ReadAllText($evidencePath)
 
             $cleanupText = @(
                 'RunId=20260727T000000Z-0123abcd',
@@ -657,32 +677,71 @@ if ($Slice -in @('All', 'Slice4')) {
                     $_.Exception.Data['FslStage4ExitCode'] -eq 8
             }
 
+            $firstHash = (
+                Get-FileHash -LiteralPath (
+                    Join-Path $releaseRoot `
+                        $script:FirstPartyPortableExecutables[0]) `
+                    -Algorithm SHA256).Hash
+            $differentValidHash = if ($firstHash -ceq ('F' * 64)) {
+                'E' * 64
+            }
+            else {
+                'F' * 64
+            }
             [System.IO.File]::WriteAllText(
                 $evidencePath,
-                [System.IO.File]::ReadAllText($evidencePath).
+                $validEvidence.Replace(
+                    "SHA256=$firstHash",
+                    "SHA256=$differentValidHash"),
+                [System.Text.UTF8Encoding]::new($false))
+            $differentValidHashRejected = $false
+            try {
+                Assert-FslUnsignedAuthenticodeEvidence `
+                    $evidencePath $releaseRoot $descriptorSha256
+            }
+            catch {
+                $differentValidHashRejected =
+                    $_.Exception.Data['FslStage4ExitCode'] -eq 8
+            }
+
+            [System.IO.File]::WriteAllText(
+                $evidencePath,
+                $validEvidence.
                     Replace('SignerThumbprint=null', 'SignerThumbprint=BAD'),
                 [System.Text.UTF8Encoding]::new($false))
             $signedAliasRejected = $false
             try {
-                Assert-FslUnsignedAuthenticodeEvidence $evidencePath
+                Assert-FslUnsignedAuthenticodeEvidence `
+                    $evidencePath $releaseRoot $descriptorSha256
             }
             catch {
                 $signedAliasRejected =
                     $_.Exception.Data['FslStage4ExitCode'] -eq 8
             }
+            $finalizeBody =
+                (Get-Command Invoke-FslFinalizeEvidence).Definition
             return [pscustomobject]@{
                 ExtraRejected = $extraRejected
                 SignedAliasRejected = $signedAliasRejected
+                DifferentValidHashRejected =
+                    $differentValidHashRejected
                 CertificateResidueRejected =
                     $missingCertificateResidueRejected
+                FinalizeUsesFrozenBinding =
+                    $finalizeBody.Contains(
+                        '([string]$state.ReleaseRoot)') -and
+                    $finalizeBody.Contains(
+                        '([string]$state.ReleaseDescriptorSha256)')
             }
-        } $schemaRoot
+        } $schemaRoot $repository
         Assert-True (
             $schemaContract.ExtraRejected -and
             $schemaContract.SignedAliasRejected -and
-            $schemaContract.CertificateResidueRejected) (
+            $schemaContract.DifferentValidHashRejected -and
+            $schemaContract.CertificateResidueRejected -and
+            $schemaContract.FinalizeUsesFrozenBinding) (
             'D-026 schema v2 or unsigned evidence accepted an extra field ' +
-            'or non-null signer, or cleanup accepted certificate residue.')
+            'or non-null signer, a valid-but-wrong hash, or certificate residue.')
     }
     finally {
         if (Test-Path -LiteralPath $schemaRoot) {

@@ -204,11 +204,11 @@ v1 只接受本机固定磁盘、NTFS 文件系统、普通目录和可安全规
 
 - `lastErrorMessage` 必须脱敏，不得包含凭据、文件内容或敏感用户数据。
 - 恢复目录路径、容器头、字段、版本和 entropy purpose 不得从 IPC 或命令行输入。
-- 阶段 4 特权集成测试仅允许计算机名 `FSL-STAGE4-VM`、Windows 11 Pro/Enterprise、快照 `FolderSessionLock-Stage4-Clean` 的专用可丢弃 VM。机器名不匹配时，服务、LocalSystem、自动启动、登录前执行、UAC、注销、重启、Program Files/ProgramData ACL 和签名系统测试必须停止；设计、实现、单元测试、非特权测试和静态审查可继续。
+- 阶段 4 特权集成测试仅允许计算机名 `FSL-STAGE4-VM`、Windows 11 Pro/Enterprise、快照 `FolderSessionLock-Stage4-Clean` 的专用可丢弃 VM。机器名不匹配时，服务、LocalSystem、自动启动、登录前执行、UAC、注销、重启和 Program Files/ProgramData ACL 测试必须停止；设计、实现、单元测试、非特权测试和静态审查可继续。公开/企业签名系统验证为未来 Stage 7 checkpoint，当前不激活且不阻止 D-031 本地 unsigned Stage 4/Stage 5。
 - ACL 测试目标仍只能为 `%TEMP%\FolderSessionLock.Tests\<Guid>`；ProgramData 和 Program Files 操作仅限获准 VM 的安装/恢复基础设施验证，不得作为锁定目标。
 - 不得创建 `FSL-Standard`、`FSL-Admin` 或任何专用 Windows 测试账户。真实双账户 credential elevation/evidence 不属于 Stage 4 完成门；现有跨账户拒绝继续以不创建账户的单元测试 fail closed。
 - 阶段 4 证据固定写入 `docs\evidence\stage-4\<RunId>\`，`RunId` 为 `yyyyMMddTHHmmssZ-<short-guid>`；`scenario-results.json` 与 `manifest.json` 必须使用 D-026 schema v2。
-- 当前本地 Release 允许 unsigned；六个第一方 PE 必须如实记录 `Authenticode = NotSigned` 和 null signer。不得创建自签名/测试证书冒充正式签名；真实签名证书缺失不阻止本地交付。
+- 当前本地 Release 允许 unsigned；六个第一方 PE 必须如实记录 `Authenticode = NotSigned`、null signer 和 SHA-256。Finalize 必须使用受保护 state 的 ReleaseRoot/ReleaseDescriptorSha256 重验 frozen descriptor、精确六 PE 集合和实际文件 hash，并逐项拒绝 evidence 中任何不相等的自报 hash。不得创建自签名/测试证书冒充正式签名；真实签名证书缺失不阻止本地交付。
 - Cleanup 必须在 `cleanup-results.txt` 写入精确 `CertificatesRemaining=0`，且 FinalizeEvidence 必须把缺失、重复或非零值作为完成阻断。
 
 ## 4. 非功能需求

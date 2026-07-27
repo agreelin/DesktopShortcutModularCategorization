@@ -186,9 +186,9 @@ dotnet format --verify-no-changes
 - `D-027` 最低协议验收矩阵全部通过：正确请求、command 大小写/未知、重复/多余/缺失/null、Guid、日期、replay、过期、Session mismatch、payload 类型、长度/UTF-8/尾随数据、duration 类型/范围、禁止输入、UI RemoveLock、跨账户 status、CreateLock 幂等/冲突、错误脱敏和 response null 不变量。
 - CP4 补充矩阵全部通过：正常/畸形握手；CLI/request/session/PID/Account/Logon/Session 绑定；identity unavailable；nonce、connectionId、bindingProof；协议顺序；并发 replay、lease/TTL、owner 崩溃、Abandoned、RolledBack、RecoveryRequired、普通用户 Replay 目录拒绝和并发过期清理唯一所有者。
 - Broker/Service 只从 `%ProgramFiles%\FolderSessionLock` 注册；安装目录 ACL 为 `SYSTEM: FullControl`、`Administrators: FullControl`、`Users: ReadAndExecute`，不为 `Authenticated Users` 增加写权限。
-- 特权集成验证只在 `FSL-STAGE4-VM`、快照 `FolderSessionLock-Stage4-Clean` 执行。非该机器的服务、LocalSystem、登录前、UAC、注销、重启、安装 ACL 和签名场景必须为 `BLOCKED`，不得标记通过。
+- 特权集成验证只在 `FSL-STAGE4-VM`、快照 `FolderSessionLock-Stage4-Clean` 执行。非该机器的服务、LocalSystem、登录前、UAC、注销、重启和安装 ACL 场景必须为 `BLOCKED`，不得标记通过。公开/企业签名场景当前不激活，不属于 D-031 本地 unsigned Stage 4 完成门。
 - 明确禁止创建 `FSL-Standard`、`FSL-Admin` 或任何专用 Windows 测试账户；缺少第二账户或真实双账户 evidence 不得阻塞 Stage 4/Stage 5。
-- 当前 VM 控制器不公开 publisher pin 或 signing certificate 参数，不创建测试证书且不调用 SignTool。固定六个第一方 PE 的实际状态逐一为 `NotSigned`、signer null并绑定 SHA-256；App runtime verifier 的有效 pin signed fail-closed 单元合同保持通过，但当前控制器不可选择。
+- 当前 VM 控制器不公开 publisher pin 或 signing certificate 参数，不创建测试证书且不调用 SignTool。固定六个第一方 PE 的实际状态逐一为 `NotSigned`、signer null并记录 SHA-256；Finalize 必须从受保护 state 重验 frozen descriptor/精确 PE 集合/实际文件 hash，并与 evidence hash 逐项精确比较。App runtime verifier 的有效 pin signed fail-closed 单元合同保持通过，但当前控制器不可选择。
 - `docs\evidence\stage-4\<RunId>\` 包含 `D-026` 规定的全部文件；`scenario-results.json` 和 `manifest.json` 使用精确 schema v2，productScope、executorModel、sameAccountConsentPassed 与实际证据一致；`TASKS.md`、`DEVLOG.md` 引用 RunId。
 - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
 - 每轮服务/UAC/注销/重启测试后，目标 ACL 已恢复、恢复记录已删除、服务状态已清理、临时目录可访问且可删除；`cleanup-results.txt` 必须包含精确 `CertificatesRemaining=0` 且 FinalizeEvidence 强制验证；任何未知状态阻止完成。
@@ -246,11 +246,11 @@ dotnet format --verify-no-changes
 - 无真实用户目录测试；无父目录 ACE；无 SYSTEM、Administrators、TrustedInstaller 修改。
 - 无任意 IPC 命令；无用户内容日志。
 - TOCTOU、ACL 漂移、Broker 崩溃、UAC 拒绝和通知洪泛均有结果。
-- 生产 Broker 签名有效。
+- 未来 Stage 7 的公开/企业/签名 checkpoint 当前不激活；只有另一个明确产品决定才能激活。缺少该决定或签名不得阻止 D-031 本地 unsigned Stage 4 完成或 Stage 5 entry；若未来激活，才要求公开/企业 Broker 签名有效。
 - Broker 和托管恢复模式的自动启动服务位于管理员保护目录；普通用户不能替换或修改 Broker。
 - IPC 仅本机、DACL 最小、客户端身份验证和防重放通过。
 - 不存在任意命令、脚本、PowerShell、cmd 或任意 ACL 描述符接口。
-- 任一 `FolderSessionLock/docs/SECURITY.md` 发布阻断条件存在时验收失败。
+- 只有未来 checkpoint 经独立决定激活后，`FolderSessionLock/docs/SECURITY.md` 的公开/企业发布阻断条件才适用；当前本地 unsigned 产物不得宣称为公开/企业发布。
 - reviewer 无 `BLOCKER` 或 `HIGH`，输出 `PASS`。
 - `FolderSessionLock/README.md` 和 `FolderSessionLock/docs/SECURITY.md` 记录已知限制。
 

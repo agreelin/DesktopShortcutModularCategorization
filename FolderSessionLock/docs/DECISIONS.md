@@ -91,8 +91,8 @@
 
 - 状态：已决定。
 - 开发：允许未签名构建用于本机测试，必须标识为非生产构建。
-- 公开/企业生产分发：Broker 必须代码签名。D-031 当前本地单用户管理员交付可显式 unsigned，但仍安装到管理员保护目录、普通用户不得替换或修改；同一 Broker 的恢复专用模式由自动启动 Windows 服务托管；IPC 必须限制访问并验证客户端身份；只公开强类型最小 ACL 接口。
-- 发布阻断：Broker 未签名、安装目录普通用户可写、Broker 可被普通用户替换、IPC 身份验证缺失、暴露任意命令/脚本/PowerShell/cmd/任意 ACL 描述符。
+- 公开/企业生产分发：作为未来 Stage 7 checkpoint，当前不激活；必须由另一个明确的公开/企业/签名产品决定激活。若未来激活，Broker 必须代码签名。D-031 当前本地单用户管理员交付固定允许如实 unsigned，缺少真实签名证书或签名流水线不得阻止 Stage 4 完成或 Stage 5 entry；它仍安装到管理员保护目录、普通用户不得替换或修改，恢复专用模式由自动启动 Windows 服务托管，IPC 必须限制访问并验证客户端身份，只公开强类型最小 ACL 接口。
+- 发布阻断：只有未来公开/企业 checkpoint 被独立决定激活后，Broker 未签名才是该分发方式的阻断；安装目录普通用户可写、Broker 可被普通用户替换、IPC 身份验证缺失、暴露任意命令/脚本/PowerShell/cmd/任意 ACL 描述符在当前本地范围仍始终阻断。
 
 ## D-016：仓库布局
 
@@ -587,7 +587,7 @@ public interface IRecoveryReadinessReader
 ## D-026：阶段 4 本地 unsigned 发布与人工验证证据
 
 - 状态：已决定；schema v2 与 D-031 取代本决定旧的测试证书、双账户和 schema v1 完成条件。
-- 当前 Stage 4 run 不创建或使用测试签名证书，不要求 publisher pin。六个第一方 PE 必须逐一验证实际 Authenticode 状态为 `NotSigned` 且 signer 为 null；不得把 unsigned 记录为 signed。
+- 当前 Stage 4 run 不创建或使用测试签名证书，不要求 publisher pin。六个第一方 PE 必须逐一验证实际 Authenticode 状态为 `NotSigned` 且 signer 为 null；不得把 unsigned 记录为 signed。Finalize 必须使用受保护 state 的 ReleaseRoot 与 ReleaseDescriptorSha256 重新验证 frozen descriptor、精确六 PE 集合与实际文件 SHA-256，并要求 `signature-verification.txt` 的有序记录逐项精确相等；不得信任 evidence 自报 hash。
 - 当前 Stage 4 公共控制器不公开 publisher pin 或 signing certificate 参数，固定把精确空 `BrokerPublisherThumbprint` 写入 App assembly metadata，且无 signed/SignTool 执行分支。生产组合仍须先通过固定 Program Files 路径、owner/DACL、文件身份、hash/TOCTOU 与不可替换性门。App runtime verifier 对 null/精确空值不调用 Authenticode platform，对空白/畸形非空 pin fail closed，并为未来 runtime configuration 保留有效 40 位 pin 的精确 signed fail-closed 合同；当前 Stage 4 控制器不可选择该路径。
 - 当前 run 的自动构建、测试和非交互验证由 Codex/coder 执行；同账户 UAC consent、注销和重启由当前本地管理员人工批准；最终结果由用户与 reviewer 确认。Codex 不请求、读取、记录或回显密码。
 - 跨账户拒绝稳定错误码和任何 ACL 写入前的 fail-closed 行为保留，但跨账户 elevation 不属于当前支持范围，且不创建第二账户、不收集真实双账户 VM 证据。

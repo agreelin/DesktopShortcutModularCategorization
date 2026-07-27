@@ -1165,3 +1165,36 @@
   ProgramData product roots were absent. No UAC, SCM, LocalSystem, ACL,
   certificate, signing, restart, logoff, VMware, push, or other system
   mutation was performed. Root re-verification and reviewer remain pending.
+
+## 2026-07-27 — CP10 reviewer HIGH repair: signing scope and frozen evidence
+
+- Reviewer returned two `HIGH` findings. PLAN and ACCEPTANCE still contained
+  unqualified signed-Broker gates that could be applied to the D-031 local
+  scope, and Finalize accepted any uppercase 64-hex SHA-256 value reported by
+  `signature-verification.txt`.
+- The future Stage 7 public/enterprise/signing checkpoint is now explicitly
+  inactive until a separate product decision activates it. Missing signing
+  credentials, certificates, or a signing pipeline cannot block the D-031
+  local unsigned Stage 4 or Stage 5 entry. Actual conflicting current wording
+  was reconciled in PLAN, ACCEPTANCE, D-015, SECURITY, REQUIREMENTS,
+  ARCHITECTURE, and historical TASKS; historical execution facts remain.
+- Finalize now passes protected state `ReleaseRoot` and
+  `ReleaseDescriptorSha256` to unsigned evidence validation. Validation
+  re-reads the frozen descriptor, revalidates its metadata, exact file set and
+  payload hashes, requires the exact ordered six-PE set, computes each actual
+  frozen PE SHA-256, and requires the evidence record to match exactly.
+- The direct behavior fixture creates a frozen release and proves the valid
+  evidence path, non-null-signer rejection, and rejection of a different but
+  otherwise valid uppercase 64-hex hash. It also verifies that Finalize wires
+  both protected state values into the gate.
+- Verification passed: PowerShell parser 3/3; focused Stage4 Slice4; complete
+  Stage4 Slice All; Release build with 0 warnings and 0 errors; Broker
+  Authenticode verifier 22/22, failed 0, skipped 0; frozen-binding and signing
+  scope scans; strict UTF-8/Markdown; `git diff --check`; and
+  `dotnet format --verify-no-changes`.
+- Final residue was zero for related product/test and repository dotnet
+  processes, recovery service, test accounts, Stage4 certificates, and
+  `%TEMP%\FolderSessionLock.Tests` entries. Release, Program Files, and
+  ProgramData product roots were absent. No account, UAC, SCM, LocalSystem,
+  ACL, certificate, signing, restart, logoff, VMware, push, or other system
+  mutation was performed. Root re-verification and reviewer remain pending.

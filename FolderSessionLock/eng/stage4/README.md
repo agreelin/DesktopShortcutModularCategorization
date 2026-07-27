@@ -143,6 +143,12 @@ text is UTF-8 without BOM. After final state and command evidence are durable,
 finalization retires the DPAPI key and both external-anchor slots and requires
 the run-specific external anchor directory to be absent.
 
+Finalization also re-reads the frozen release through the protected state's
+`ReleaseRoot` and `ReleaseDescriptorSha256`, revalidates its exact file set and
+payload hashes, requires the exact six first-party PE files, and compares every
+ordered `signature-verification.txt` SHA-256 with the actual frozen PE. A
+different value is rejected even when it is a well-formed uppercase 64-hex hash.
+
 Exit codes are fixed:
 
 | Code | Meaning |

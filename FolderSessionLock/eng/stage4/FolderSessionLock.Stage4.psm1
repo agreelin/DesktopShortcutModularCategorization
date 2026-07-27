@@ -5067,8 +5067,15 @@ function Test-FslJsonArray {
 }
 
 function Assert-FslUnsignedAuthenticodeEvidence {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedDescriptorSha256
+    )
 
+    [void](Read-FslFrozenReleaseDescriptor `
+        $ReleaseRoot $ExpectedDescriptorSha256)
+    $portableExecutables = @(Get-FslFirstPartyPePaths $ReleaseRoot)
     $lines = @([System.IO.File]::ReadAllLines($Path) |
         Where-Object { $_.Length -ne 0 })
     if ($lines.Count -ne ($script:FirstPartyPortableExecutables.Count * 4)) {
@@ -5077,13 +5084,16 @@ function Assert-FslUnsignedAuthenticodeEvidence {
     }
     for ($index = 0; $index -lt $script:FirstPartyPortableExecutables.Count; $index++) {
         $offset = $index * 4
+        $expectedHash = (
+            Get-FileHash -LiteralPath $portableExecutables[$index] `
+                -Algorithm SHA256).Hash
         if ($lines[$offset] -cne
                 "File=$($script:FirstPartyPortableExecutables[$index])" -or
             $lines[$offset + 1] -cne 'Status=NotSigned' -or
             $lines[$offset + 2] -cne 'SignerThumbprint=null' -or
-            $lines[$offset + 3] -cnotmatch '^SHA256=[0-9A-F]{64}$') {
+            $lines[$offset + 3] -cne "SHA256=$expectedHash") {
             Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
-                'Unsigned Authenticode evidence contains an invalid status, signer, or hash.')
+                'Unsigned Authenticode evidence does not match the frozen release.')
         }
     }
 }
@@ -5210,7 +5220,9 @@ function Invoke-FslFinalizeEvidence {
         (Join-Path $Context.EvidenceRoot 'cleanup-results.txt'))
     $buildPassed = ([regex]::Matches($buildText, '(?m)^ExitCode=0\r?$').Count -ge 2)
     Assert-FslUnsignedAuthenticodeEvidence (
-        Join-Path $Context.EvidenceRoot 'signature-verification.txt')
+        Join-Path $Context.EvidenceRoot 'signature-verification.txt') `
+        ([string]$state.ReleaseRoot) `
+        ([string]$state.ReleaseDescriptorSha256)
     Assert-FslCleanupEvidence $cleanupText
     if (-not $buildPassed -or
         (@($scenarioResults.scenarios).result -contains 'FAIL') -or

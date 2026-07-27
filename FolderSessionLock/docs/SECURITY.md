@@ -305,9 +305,9 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
 - UAC 被拒绝导致残留 ACE 无法立即清理。
 - 审计事件量、延迟、缺失和通知洪泛。
 
-## 14. 公开或企业生产发布阻断条件
+## 14. 未来 Stage 7 公开或企业生产发布 checkpoint
 
-以下任一项存在时禁止公开或企业生产发布；它们不把 D-031 的本地如实 unsigned Release 改写为 signed：
+该 checkpoint 当前不激活，只有另一个明确的公开/企业/签名产品决定才能激活。未激活、缺少真实签名证书或缺少签名流水线不得阻止 D-031 本地如实 unsigned Stage 4 完成或 Stage 5 entry。若未来激活，以下任一项存在时禁止公开或企业生产发布；这些条件不把当前本地 Release 改写为 signed：
 
 - Broker 未代码签名。
 - Broker 或托管恢复模式的自动启动服务位于普通用户可修改目录。
@@ -330,6 +330,9 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
   或发布目录出现额外 `FolderSessionLock.*` executable/DLL，均阻止发布。
 - 当前本地 run 的六个 PE 必须全部由 `Get-AuthenticodeSignature` 实测为
   `NotSigned` 且 signer null；`signature-verification.txt` 逐文件绑定 SHA-256。
+  Finalize 从受保护 state 取得 ReleaseRoot/ReleaseDescriptorSha256，重验 frozen
+  descriptor、精确六 PE 集合和实际文件 hash，再与有序 evidence hash 精确比较；
+  任意格式合法但不相等的 64-hex hash 必须拒绝。
   当前控制器不公开 pin/certificate 参数、不调用 SignTool、不创建测试证书。App
   runtime verifier 的未来有效 pin 模式保留原 `WinVerifyTrust` 合同，但控制器不可选择。
 - UI 对 Broker 的验证使用单一 `WinVerifyTrust` provider state：在同一已验证

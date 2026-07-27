@@ -37,7 +37,7 @@
 - [x] 将 `D-002` 至 `D-019` 更新为 `已决定`。
 - [x] 固化 `FolderSessionLock/` 产品根、最小恢复记录、UI/Broker 生命周期和路径范围。
 - [x] 固化最小 Deny 权限矩阵、DACL 稳定性边界和同句柄 ACL 事务。
-- [x] 固化生产 Broker 签名/安装/IPC 发布阻断及同账户 consent elevation。
+- [x] 历史：曾固化生产 Broker 签名/安装/IPC 发布阻断及同账户 consent elevation；D-031 已使签名门对当前本地 unsigned Stage 4/Stage 5 不适用，未来 Stage 7 公开/企业 checkpoint 需另一个明确产品决定才能激活。
 - [x] 固化 Broker 恢复专用模式只清理、不恢复旧任务的规则。
 - [x] 固化阶段 6 审计独立批准门。
 - [x] 新增并确认 `D-020`：八份项目文档全部迁入 `FolderSessionLock/`，根目录不保留同名副本。
@@ -298,6 +298,8 @@
     - [x] coder 已实现 D-031、D-026 schema v2、显式 unsigned verifier/controller 路径及直接测试；coder checks 通过。
     - [x] root verification 首轮识别并交回三个合同缺口：公共 `VerifyAuthenticode`/`AuthenticodePolicyVerified` 命名、当前控制器固定 unsigned 且无 pin/certificate/SignTool 路径、cleanup/finalize 精确 `CertificatesRemaining=0` 门。
     - [x] coder 聚焦修复已实现上述三个缺口并更新直接行为测试；parser、Slice4、Stage4 Slice All、Release build 0 warning/0 error 与 Broker verifier 22/22 通过。
+    - [x] reviewer 修复轮识别两个 `HIGH`：Stage 7 文档仍存在可误用到当前本地范围的无条件签名门；Finalize 接受 evidence 自报的任意格式合法 64-hex hash。
+    - [x] coder 已把未来公开/企业/签名 checkpoint 固定为需另一个明确产品决定才激活且不得阻止 D-031 Stage 4/Stage 5，并把 unsigned evidence hash 绑定受保护 state、frozen descriptor、精确六 PE 和实际文件 SHA-256；不同但格式合法 hash 的直接拒绝测试通过。
     - [ ] root re-verification 与 reviewer `PASS`。
     - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
   - [ ] `FSL-STAGE4-VM` 当前单一管理员账户的同账户 UAC、SCM、LocalSystem、recovery/readiness/ACL、必要重启或注销、unsigned Release 与 `D-026` schema v2 证据完成。
