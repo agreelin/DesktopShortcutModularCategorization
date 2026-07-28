@@ -10,24 +10,44 @@ namespace FolderSessionLock.App.BrokerClient;
 
 internal interface IBrokerAuthenticodeVerifier
 {
-    Result Verify(string brokerPath);
+    /// <summary>
+/// Verifies the Authenticode signatures of the broker installation files.
+/// </summary>
+/// <param name="brokerPath">The path to the broker installation.</param>
+/// <returns>A successful result when all required files are signed by the configured publisher; otherwise, a failure result.</returns>
+Result Verify(string brokerPath);
 }
 
 internal interface IBrokerAuthenticodePlatform
 {
-    Result<string> VerifyAndGetSignerThumbprint(string brokerPath);
+    /// <summary>
+/// Verifies a broker file's Authenticode signature and obtains its signer thumbprint.
+/// </summary>
+/// <param name="brokerPath">The path to the broker file to verify.</param>
+/// <returns>The signer's certificate thumbprint when verification succeeds; otherwise, a failure result.</returns>
+Result<string> VerifyAndGetSignerThumbprint(string brokerPath);
 }
 
 internal interface IAuthenticodeTrustSession : IDisposable
 {
     bool IsTrusted { get; }
 
-    Result<string> GetSignerThumbprint();
+    /// <summary>
+/// Obtains the thumbprint of the file's signing certificate.
+/// </summary>
+/// <returns>The signer's certificate thumbprint, or a failure result if the file is not trusted or the thumbprint cannot be obtained.</returns>
+/// <exception cref="ObjectDisposedException">The trust session has been disposed.</exception>
+Result<string> GetSignerThumbprint();
 }
 
 internal interface IAuthenticodeTrustSessionFactory
 {
-    IAuthenticodeTrustSession Open(string brokerPath);
+    /// <summary>
+/// Opens an Authenticode trust session for the specified broker file.
+/// </summary>
+/// <param name="brokerPath">The path to the broker file to verify.</param>
+/// <returns>The Authenticode trust session for the specified broker file.</returns>
+IAuthenticodeTrustSession Open(string brokerPath);
 }
 
 internal sealed class WindowsBrokerAuthenticodeVerifier : IBrokerAuthenticodeVerifier
@@ -43,11 +63,20 @@ internal sealed class WindowsBrokerAuthenticodeVerifier : IBrokerAuthenticodeVer
     private readonly string? _publisherThumbprint;
     private readonly IBrokerAuthenticodePlatform _platform;
 
+    /// <summary>
+    /// Initializes the verifier using the configured publisher thumbprint and Windows Authenticode verification.
+    /// </summary>
     internal WindowsBrokerAuthenticodeVerifier()
         : this(ReadPublisherThumbprint(), new WindowsBrokerAuthenticodePlatform())
     {
     }
 
+    /// <summary>
+    /// Initializes a broker Authenticode verifier with the expected publisher thumbprint and verification platform.
+    /// </summary>
+    /// <param name="publisherThumbprint">The expected publisher certificate thumbprint, or <see langword="null"/> if no publisher is configured.</param>
+    /// <param name="platform">The platform used to verify broker files.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="platform"/> is <see langword="null"/>.</exception>
     internal WindowsBrokerAuthenticodeVerifier(
         string? publisherThumbprint,
         IBrokerAuthenticodePlatform platform)
@@ -56,6 +85,11 @@ internal sealed class WindowsBrokerAuthenticodeVerifier : IBrokerAuthenticodeVer
         _platform = platform ?? throw new ArgumentNullException(nameof(platform));
     }
 
+    /// <summary>
+    /// Verifies that all trusted broker files are signed by the configured publisher.
+    /// </summary>
+    /// <param name="brokerPath">The path to the broker installation.</param>
+    /// <returns>A successful result when verification succeeds or no publisher thumbprint is configured; otherwise, a failure result.</returns>
     public Result Verify(string brokerPath)
     {
         if (string.IsNullOrWhiteSpace(brokerPath))
@@ -94,6 +128,12 @@ internal sealed class WindowsBrokerAuthenticodeVerifier : IBrokerAuthenticodeVer
         return Result.Success();
     }
 
+    /// <summary>
+    /// Validates and normalizes a certificate thumbprint.
+    /// </summary>
+    /// <param name="value">The thumbprint to validate.</param>
+    /// <param name="normalized">The uppercase normalized thumbprint when validation succeeds; otherwise, <c>null</c>.</param>
+    /// <returns><c>true</c> if the value contains exactly 40 hexadecimal characters; <c>false</c> otherwise.</returns>
     internal static bool TryNormalizeThumbprint(string? value, out string? normalized)
     {
         normalized = null;
@@ -118,14 +158,22 @@ internal sealed class WindowsBrokerAuthenticodeVerifier : IBrokerAuthenticodeVer
         return true;
     }
 
-    internal static string? ReadPublisherThumbprint() =>
+    /// <summary>
+            /// Reads the configured broker publisher thumbprint from assembly metadata.
+            /// </summary>
+            /// <returns>The configured publisher thumbprint, or <see langword="null"/> when it is not defined.</returns>
+            internal static string? ReadPublisherThumbprint() =>
         typeof(WindowsBrokerAuthenticodeVerifier).Assembly
             .GetCustomAttributes<AssemblyMetadataAttribute>()
             .SingleOrDefault(attribute =>
                 string.Equals(attribute.Key, MetadataName, StringComparison.Ordinal))
             ?.Value;
 
-    internal static Error PathUntrustedError() => new(
+    /// <summary>
+        /// Creates the error reported when the elevated broker installation cannot be verified.
+        /// </summary>
+        /// <returns>The broker path untrusted error.</returns>
+        internal static Error PathUntrustedError() => new(
         BrokerErrorCodes.FSL_E_BROKER_PATH_UNTRUSTED,
         "The elevated broker installation could not be verified.",
         ErrorCategory.UnrecoverableError);
@@ -142,11 +190,21 @@ internal sealed class WindowsBrokerAuthenticodePlatform : IBrokerAuthenticodePla
     {
     }
 
+    /// <summary>
+    /// Initializes a platform authenticode verifier with the specified trust session factory.
+    /// </summary>
+    /// <param name="sessions">The factory used to create authenticode trust sessions.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="sessions"/> is <see langword="null"/>.</exception>
     internal WindowsBrokerAuthenticodePlatform(IAuthenticodeTrustSessionFactory sessions)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
     }
 
+    /// <summary>
+    /// Verifies the broker file and retrieves its signer certificate thumbprint.
+    /// </summary>
+    /// <param name="brokerPath">The path to the broker file.</param>
+    /// <returns>The signer certificate thumbprint when verification succeeds; otherwise, a failure result.</returns>
     public Result<string> VerifyAndGetSignerThumbprint(string brokerPath)
     {
         try
@@ -174,7 +232,12 @@ internal sealed class WindowsBrokerAuthenticodePlatform : IBrokerAuthenticodePla
 internal sealed class WindowsAuthenticodeTrustSessionFactory
     : IAuthenticodeTrustSessionFactory
 {
-    public IAuthenticodeTrustSession Open(string brokerPath) =>
+    /// <summary>
+        /// Opens an Authenticode trust session for the specified broker file.
+        /// </summary>
+        /// <param name="brokerPath">The path to the broker file to verify.</param>
+        /// <returns>An Authenticode trust session for the specified broker file.</returns>
+        public IAuthenticodeTrustSession Open(string brokerPath) =>
         new WindowsAuthenticodeTrustSession(brokerPath);
 }
 
@@ -196,6 +259,11 @@ internal sealed class WindowsAuthenticodeTrustSession : IAuthenticodeTrustSessio
     private WintrustData _trustData;
     private bool _disposed;
 
+    /// <summary>
+    /// Creates an Authenticode trust session for the specified broker file.
+    /// </summary>
+    /// <param name="brokerPath">The path to the broker file to verify.</param>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="brokerPath"/> is null, empty, or consists only of whitespace.</exception>
     internal WindowsAuthenticodeTrustSession(string brokerPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(brokerPath);
@@ -236,6 +304,11 @@ internal sealed class WindowsAuthenticodeTrustSession : IAuthenticodeTrustSessio
 
     public bool IsTrusted { get; }
 
+    /// <summary>
+    /// Retrieves the thumbprint of the trusted signer certificate.
+    /// </summary>
+    /// <returns>The signer's certificate thumbprint, or a failure result if the session is untrusted or signer information is unavailable.</returns>
+    /// <exception cref="ObjectDisposedException">The trust session has been disposed.</exception>
     public Result<string> GetSignerThumbprint()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -278,6 +351,9 @@ internal sealed class WindowsAuthenticodeTrustSession : IAuthenticodeTrustSessio
             : Result<string>.Success(thumbprint);
     }
 
+    /// <summary>
+    /// Releases the resources associated with the Authenticode trust session.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed)
@@ -385,16 +461,36 @@ internal sealed class WindowsAuthenticodeTrustSession : IAuthenticodeTrustSessio
         internal nint ChainElement;
     }
 
-    [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
+    /// <summary>
+        /// Verifies a file using the Windows trust provider and updates the trust state.
+        /// </summary>
+        /// <param name="windowHandle">The window handle associated with the verification request.</param>
+        /// <param name="actionId">The trust provider action to perform.</param>
+        /// <param name="trustData">The trust data used for verification.</param>
+        /// <returns>The Windows trust verification status code.</returns>
+        [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
     private static extern int WinVerifyTrust(
         nint windowHandle,
         in Guid actionId,
         ref WintrustData trustData);
 
+    /// <summary>
+    /// Retrieves provider data from a WinTrust verification state.
+    /// </summary>
+    /// <param name="stateData">The WinTrust state data handle.</param>
+    /// <returns>A pointer to the associated provider data.</returns>
     [DllImport("wintrust.dll", ExactSpelling = true)]
     private static extern nint WTHelperProvDataFromStateData(nint stateData);
 
-    [DllImport("wintrust.dll", ExactSpelling = true)]
+    /// <summary>
+        /// Retrieves signer information from a WinTrust provider data structure.
+        /// </summary>
+        /// <param name="providerData">A pointer to the provider data.</param>
+        /// <param name="signerIndex">The signer index to retrieve.</param>
+        /// <param name="counterSigner">Whether to retrieve a counter-signer.</param>
+        /// <param name="counterSignerIndex">The counter-signer index to retrieve.</param>
+        /// <returns>A pointer to the requested signer information, or zero if it cannot be retrieved.</returns>
+        [DllImport("wintrust.dll", ExactSpelling = true)]
     private static extern nint WTHelperGetProvSignerFromChain(
         nint providerData,
         uint signerIndex,

@@ -33,6 +33,11 @@ namespace FolderSessionLock.Stage4
         private static readonly Guid GenericVerifyV2 =
             new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
 
+        /// <summary>
+        /// Atomically writes bytes to a file and flushes the containing directory.
+        /// </summary>
+        /// <param name="path">The destination file path.</param>
+        /// <param name="bytes">The bytes to write.</param>
         public static void AtomicWrite(string path, byte[] bytes)
         {
             string directory = Path.GetDirectoryName(Path.GetFullPath(path));
@@ -82,6 +87,12 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Appends a line and the platform-specific newline sequence to a file.
+        /// </summary>
+        /// <param name="path">The path of the file to append.</param>
+        /// <param name="line">The bytes to append before the newline sequence.</param>
+        /// <returns>The resulting length of the file in bytes.</returns>
         public static long AppendLine(string path, byte[] line)
         {
             string directory = Path.GetDirectoryName(Path.GetFullPath(path));
@@ -102,6 +113,11 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Sets the length of an existing file and flushes the change to storage.
+        /// </summary>
+        /// <param name="path">The path of the file to truncate or extend.</param>
+        /// <param name="length">The new file length in bytes.</param>
         public static void Truncate(string path, long length)
         {
             using (FileStream stream = new FileStream(
@@ -117,6 +133,11 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Generates cryptographically strong random bytes.
+        /// </summary>
+        /// <param name="count">The number of bytes to generate.</param>
+        /// <returns>An array containing the generated random bytes.</returns>
         public static byte[] RandomBytes(int count)
         {
             byte[] bytes = new byte[count];
@@ -127,6 +148,10 @@ namespace FolderSessionLock.Stage4
             return bytes;
         }
 
+        /// <summary>
+        /// Retrieves information about the system's TPM device.
+        /// </summary>
+        /// <returns>The TPM device information returned by the system.</returns>
         public static TpmDeviceInfo GetTpmDeviceInfo()
         {
             TbsDeviceInfo native = new TbsDeviceInfo();
@@ -141,6 +166,12 @@ namespace FolderSessionLock.Stage4
                 native.TpmImpRevision);
         }
 
+        /// <summary>
+        /// Protects data for use by the current Windows user.
+        /// </summary>
+        /// <param name="bytes">The data to protect.</param>
+        /// <param name="entropy">Optional additional entropy used during protection.</param>
+        /// <returns>The protected data.</returns>
         public static byte[] ProtectCurrentUser(byte[] bytes, byte[] entropy)
         {
             return ProtectedData.Protect(
@@ -149,6 +180,12 @@ namespace FolderSessionLock.Stage4
                 DataProtectionScope.CurrentUser);
         }
 
+        /// <summary>
+        /// Decrypts data protected for the current user.
+        /// </summary>
+        /// <param name="bytes">The protected data.</param>
+        /// <param name="entropy">Optional additional entropy used during protection.</param>
+        /// <returns>The decrypted data.</returns>
         public static byte[] UnprotectCurrentUser(byte[] bytes, byte[] entropy)
         {
             return ProtectedData.Unprotect(
@@ -157,6 +194,12 @@ namespace FolderSessionLock.Stage4
                 DataProtectionScope.CurrentUser);
         }
 
+        /// <summary>
+        /// Computes an HMAC-SHA256 digest for the specified data.
+        /// </summary>
+        /// <param name="key">The secret key used to compute the digest.</param>
+        /// <param name="bytes">The data to authenticate.</param>
+        /// <returns>The digest encoded as an uppercase hexadecimal string.</returns>
         public static string HmacSha256(byte[] key, byte[] bytes)
         {
             using (HMACSHA256 hmac = new HMACSHA256(key))
@@ -165,6 +208,12 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Compares two hexadecimal strings using a full character-by-character scan.
+        /// </summary>
+        /// <param name="left">The first hexadecimal string.</param>
+        /// <param name="right">The second hexadecimal string.</param>
+        /// <returns><see langword="true"/> if both strings are identical, <see langword="false"/> otherwise.</returns>
         public static bool FixedTimeEqualsHex(string left, string right)
         {
             if (left == null || right == null || left.Length != right.Length)
@@ -179,6 +228,11 @@ namespace FolderSessionLock.Stage4
             return difference == 0;
         }
 
+        /// <summary>
+        /// Computes the SHA-256 hash of the specified bytes.
+        /// </summary>
+        /// <param name="bytes">The bytes to hash.</param>
+        /// <returns>The hash encoded as an uppercase hexadecimal string.</returns>
         public static string Sha256(byte[] bytes)
         {
             using (SHA256 hash = SHA256.Create())
@@ -187,6 +241,12 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Describes the identity and reparse-point status of a file system path.
+        /// </summary>
+        /// <param name="path">The file or directory path to inspect.</param>
+        /// <param name="directory">Whether the path identifies a directory.</param>
+        /// <returns>The requested path, normalized final path, stable file identity, and reparse-point status.</returns>
         public static FileIdentity DescribeFile(string path, bool directory)
         {
             uint flags = FileFlagOpenReparsePoint;
@@ -211,6 +271,14 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Applies an owner and protected DACL security descriptor to a directory while verifying its identity remains stable.
+        /// </summary>
+        /// <param name="path">The directory path whose security is updated.</param>
+        /// <param name="securityDescriptor">The security descriptor containing the owner and DACL to apply.</param>
+        /// <returns>The directory identity after the security update.</returns>
+        /// <exception cref="Win32Exception">Thrown when the directory cannot be opened, the security descriptor cannot be read, or the security update fails.</exception>
+        /// <exception cref="IOException">Thrown when the directory identity changes during the security update or the directory is a reparse point.</exception>
         public static FileIdentity SetDirectorySecurity(
             string path,
             byte[] securityDescriptor)
@@ -291,6 +359,12 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Renames a file without replacing an existing destination and flushes the destination directory.
+        /// </summary>
+        /// <param name="source">The path of the file to rename.</param>
+        /// <param name="destination">The destination path.</param>
+        /// <exception cref="Win32Exception">Thrown when the rename operation fails.</exception>
         public static void RenameNoReplace(string source, string destination)
         {
             if (!MoveFileEx(source, destination, MoveFileWriteThrough))
@@ -300,6 +374,12 @@ namespace FolderSessionLock.Stage4
             FlushDirectory(Path.GetDirectoryName(Path.GetFullPath(destination)));
         }
 
+        /// <summary>
+        /// Describes the identity and final path of an open file handle.
+        /// </summary>
+        /// <param name="handle">The open file handle to inspect.</param>
+        /// <param name="requestedPath">The path originally used to request the handle.</param>
+        /// <returns>The file's normalized paths, stable identity, and reparse-point status.</returns>
         private static FileIdentity DescribeHandle(
             SafeFileHandle handle,
             string requestedPath)
@@ -336,6 +416,12 @@ namespace FolderSessionLock.Stage4
                 (information.FileAttributes & 0x400) != 0);
         }
 
+        /// <summary>
+        /// Verifies a file's Authenticode signature and identifies its signing certificate.
+        /// </summary>
+        /// <param name="path">The path of the file to verify.</param>
+        /// <returns>The signing certificate's thumbprint and SubjectPublicKeyInfo SHA-256 hash.</returns>
+        /// <exception cref="CryptographicException">Thrown if Authenticode validation or signer certificate extraction fails.</exception>
         public static AuthenticodeIdentity VerifyAuthenticode(string path)
         {
             IntPtr pathPointer = IntPtr.Zero;
@@ -413,6 +499,11 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Encodes a certificate's public key as a DER-encoded SubjectPublicKeyInfo structure.
+        /// </summary>
+        /// <param name="certificate">The certificate whose public key is encoded.</param>
+        /// <returns>The DER-encoded SubjectPublicKeyInfo bytes.</returns>
         private static byte[] EncodeSubjectPublicKeyInfo(X509Certificate2 certificate)
         {
             byte[] algorithm = DerSequence(
@@ -429,6 +520,11 @@ namespace FolderSessionLock.Stage4
             return DerSequence(algorithm, Der(0x03, bitString));
         }
 
+        /// <summary>
+        /// Encodes a dotted object identifier as an ASN.1 DER object identifier.
+        /// </summary>
+        /// <param name="value">The dotted decimal object identifier.</param>
+        /// <returns>The DER-encoded object identifier.</returns>
         private static byte[] DerOid(string value)
         {
             string[] parts = value.Split('.');
@@ -452,6 +548,11 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Creates an ASN.1 SEQUENCE containing the specified DER-encoded values.
+        /// </summary>
+        /// <param name="values">The DER-encoded values to include in the sequence.</param>
+        /// <returns>The DER-encoded ASN.1 SEQUENCE.</returns>
         private static byte[] DerSequence(params byte[][] values)
         {
             using (MemoryStream stream = new MemoryStream())
@@ -464,6 +565,12 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Encodes a value using ASN.1 DER tag-length-value format.
+        /// </summary>
+        /// <param name="tag">The ASN.1 tag to encode.</param>
+        /// <param name="value">The value to encode.</param>
+        /// <returns>The DER-encoded tag, length, and value.</returns>
         private static byte[] Der(byte tag, byte[] value)
         {
             using (MemoryStream stream = new MemoryStream())
@@ -508,6 +615,11 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        /// <summary>
+        /// Converts bytes to an uppercase hexadecimal string without separators.
+        /// </summary>
+        /// <param name="bytes">The bytes to convert.</param>
+        /// <returns>The uppercase hexadecimal representation of the bytes.</returns>
         private static string Hex(byte[] bytes)
         {
             return BitConverter.ToString(bytes).Replace("-", string.Empty);
@@ -515,6 +627,13 @@ namespace FolderSessionLock.Stage4
 
         public sealed class FileIdentity
         {
+            /// <summary>
+            /// Initializes a file identity with its requested path, resolved path, stable identifier, and reparse status.
+            /// </summary>
+            /// <param name="requestedPath">The path used to access the file.</param>
+            /// <param name="finalPath">The resolved final path of the file.</param>
+            /// <param name="identity">The stable file identity.</param>
+            /// <param name="isReparse">Indicates whether the file is a reparse point.</param>
             public FileIdentity(
                 string requestedPath,
                 string finalPath,
@@ -534,6 +653,11 @@ namespace FolderSessionLock.Stage4
 
         public sealed class AuthenticodeIdentity
         {
+            /// <summary>
+            /// Initializes an Authenticode identity with its certificate thumbprint and public key hash.
+            /// </summary>
+            /// <param name="thumbprint">The certificate thumbprint.</param>
+            /// <param name="spkiSha256">The SHA-256 hash of the certificate's SubjectPublicKeyInfo.</param>
             public AuthenticodeIdentity(string thumbprint, string spkiSha256)
             {
                 Thumbprint = thumbprint;
@@ -545,6 +669,14 @@ namespace FolderSessionLock.Stage4
 
         public sealed class TpmDeviceInfo
         {
+            /// <summary>
+            /// Initializes TPM device information with the values returned by the TPM interface.
+            /// </summary>
+            /// <param name="result">The result code from the TPM device information query.</param>
+            /// <param name="structVersion">The version of the device information structure.</param>
+            /// <param name="tpmVersion">The TPM version.</param>
+            /// <param name="tpmInterfaceType">The TPM interface type.</param>
+            /// <param name="tpmImpRevision">The TPM implementation revision.</param>
             public TpmDeviceInfo(
                 uint result,
                 uint structVersion,
@@ -649,28 +781,60 @@ namespace FolderSessionLock.Stage4
             uint flagsAndAttributes,
             IntPtr templateFile);
 
-        [DllImport("kernel32.dll", SetLastError = true)]
+        /// <summary>
+            /// Retrieves file attributes and identity information for an open file handle.
+            /// </summary>
+            /// <param name="file">The open file handle to inspect.</param>
+            /// <param name="information">Receives the file attributes and identity information.</param>
+            /// <returns><c>true</c> if the information is retrieved; otherwise, <c>false</c>.</returns>
+            [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetFileInformationByHandle(
             SafeFileHandle file,
             out ByHandleFileInformation information);
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        /// <summary>
+            /// Retrieves the final normalized path associated with an open file handle.
+            /// </summary>
+            /// <param name="file">The open file handle.</param>
+            /// <param name="path">The buffer that receives the path.</param>
+            /// <param name="pathLength">The capacity of <paramref name="path"/>.</param>
+            /// <param name="flags">Flags controlling the returned path format.</param>
+            /// <returns>The path length, or zero if the operation fails.</returns>
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint GetFinalPathNameByHandle(
             SafeFileHandle file,
             StringBuilder path,
             int pathLength,
             uint flags);
 
+        /// <summary>
+        /// Flushes buffered data associated with a file handle to the device.
+        /// </summary>
+        /// <param name="file">The file handle whose buffers should be flushed.</param>
+        /// <returns><c>true</c> if the buffers were flushed successfully; <c>false</c> otherwise.</returns>
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool FlushFileBuffers(SafeFileHandle file);
 
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        /// <summary>
+            /// Moves or renames a file or directory using the specified options.
+            /// </summary>
+            /// <param name="existingFileName">The path of the file or directory to move.</param>
+            /// <param name="newFileName">The destination path.</param>
+            /// <param name="flags">Flags that control the move operation.</param>
+            /// <returns><c>true</c> if the move succeeds; <c>false</c> otherwise.</returns>
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool MoveFileEx(
             string existingFileName,
             string newFileName,
             uint flags);
 
-        [DllImport(
+        /// <summary>
+            /// Retrieves information about the system's TPM device.
+            /// </summary>
+            /// <param name="size">The size, in bytes, of the device information structure.</param>
+            /// <param name="information">Receives the TPM device information.</param>
+            /// <returns>A TBS result code indicating whether the operation succeeded.</returns>
+            [DllImport(
             "tbs.dll",
             EntryPoint = "Tbsi_GetDeviceInfo",
             ExactSpelling = true)]
@@ -678,20 +842,46 @@ namespace FolderSessionLock.Stage4
             uint size,
             ref TbsDeviceInfo information);
 
-        [DllImport("advapi32.dll", SetLastError = true)]
+        /// <summary>
+            /// Retrieves the owner information from a security descriptor.
+            /// </summary>
+            /// <param name="securityDescriptor">A pointer to the security descriptor.</param>
+            /// <param name="owner">Receives a pointer to the owner security identifier.</param>
+            /// <param name="ownerDefaulted">Receives whether the owner information is defaulted.</param>
+            /// <returns><c>true</c> if the owner information is retrieved successfully; otherwise, <c>false</c>.</returns>
+            [DllImport("advapi32.dll", SetLastError = true)]
         private static extern bool GetSecurityDescriptorOwner(
             IntPtr securityDescriptor,
             out IntPtr owner,
             [MarshalAs(UnmanagedType.Bool)] out bool ownerDefaulted);
 
-        [DllImport("advapi32.dll", SetLastError = true)]
+        /// <summary>
+            /// Retrieves the discretionary access control list (DACL) information from a security descriptor.
+            /// </summary>
+            /// <param name="securityDescriptor">A pointer to the security descriptor.</param>
+            /// <param name="daclPresent">Receives whether the descriptor contains a DACL.</param>
+            /// <param name="dacl">Receives a pointer to the DACL.</param>
+            /// <param name="daclDefaulted">Receives whether the DACL was provided by a default mechanism.</param>
+            /// <returns><c>true</c> if the operation succeeds, <c>false</c> otherwise.</returns>
+            [DllImport("advapi32.dll", SetLastError = true)]
         private static extern bool GetSecurityDescriptorDacl(
             IntPtr securityDescriptor,
             [MarshalAs(UnmanagedType.Bool)] out bool daclPresent,
             out IntPtr dacl,
             [MarshalAs(UnmanagedType.Bool)] out bool daclDefaulted);
 
-        [DllImport("advapi32.dll", SetLastError = true)]
+        /// <summary>
+            /// Applies the specified security information to an object represented by a handle.
+            /// </summary>
+            /// <param name="handle">The handle to the object.</param>
+            /// <param name="objectType">The type of object represented by the handle.</param>
+            /// <param name="securityInformation">The security information to update.</param>
+            /// <param name="owner">A pointer to the owner security identifier.</param>
+            /// <param name="group">A pointer to the group security identifier.</param>
+            /// <param name="dacl">A pointer to the discretionary access control list.</param>
+            /// <param name="sacl">A pointer to the system access control list.</param>
+            /// <returns>Zero if the operation succeeds; otherwise, a Win32 error code.</returns>
+            [DllImport("advapi32.dll", SetLastError = true)]
         private static extern uint SetSecurityInfo(
             SafeFileHandle handle,
             uint objectType,
@@ -701,16 +891,36 @@ namespace FolderSessionLock.Stage4
             IntPtr dacl,
             IntPtr sacl);
 
-        [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
+        /// <summary>
+            /// Performs trust verification for the specified subject and verification action.
+            /// </summary>
+            /// <param name="windowHandle">The window handle used for any trust-provider user interface.</param>
+            /// <param name="actionId">The identifier of the verification action to perform.</param>
+            /// <param name="trustData">The trust-verification data and state.</param>
+            /// <returns>Zero if verification succeeds; otherwise, a trust-provider status code.</returns>
+            [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
         private static extern int WinVerifyTrust(
             IntPtr windowHandle,
             ref Guid actionId,
             ref WintrustData trustData);
 
+        /// <summary>
+        /// Retrieves provider data from WinTrust verification state data.
+        /// </summary>
+        /// <param name="stateData">A pointer to WinTrust state data.</param>
+        /// <returns>A pointer to the corresponding provider data.</returns>
         [DllImport("wintrust.dll", ExactSpelling = true)]
         private static extern IntPtr WTHelperProvDataFromStateData(IntPtr stateData);
 
-        [DllImport("wintrust.dll", ExactSpelling = true)]
+        /// <summary>
+            /// Retrieves signer information from a Wintrust provider data structure.
+            /// </summary>
+            /// <param name="providerData">The provider data handle.</param>
+            /// <param name="signerIndex">The signer index to retrieve.</param>
+            /// <param name="counterSigner">Whether to retrieve a counter-signature.</param>
+            /// <param name="counterSignerIndex">The counter-signature index to retrieve.</param>
+            /// <returns>A pointer to the requested signer information, or <see cref="IntPtr.Zero"/> if unavailable.</returns>
+            [DllImport("wintrust.dll", ExactSpelling = true)]
         private static extern IntPtr WTHelperGetProvSignerFromChain(
             IntPtr providerData,
             uint signerIndex,

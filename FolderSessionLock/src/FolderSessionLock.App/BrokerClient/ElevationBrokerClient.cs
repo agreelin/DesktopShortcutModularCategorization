@@ -29,6 +29,10 @@ internal sealed class ElevationBrokerClient
     private readonly BrokerConnectionRace _connectionRace;
     private readonly Func<DateTimeOffset> _utcNow;
 
+    /// <summary>
+    /// Initializes an elevation broker client with the services required to execute broker requests.
+    /// </summary>
+    /// <param name="utcNow">The function used to obtain the current UTC timestamp.</param>
     internal ElevationBrokerClient(
         IRecoveryReadinessReader readiness,
         IInitiatingClientIdentityProvider identity,
@@ -47,7 +51,11 @@ internal sealed class ElevationBrokerClient
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
     }
 
-    internal static ElevationBrokerClient CreateProduction() => new(
+    /// <summary>
+        /// Creates an elevation broker client configured with the production Windows implementations.
+        /// </summary>
+        /// <returns>A production-configured elevation broker client.</returns>
+        internal static ElevationBrokerClient CreateProduction() => new(
         new WindowsRecoveryReadinessReader(),
         new WindowsInitiatingClientIdentityProvider(),
         new WindowsBrokerPathResolver(),
@@ -55,6 +63,13 @@ internal sealed class ElevationBrokerClient
         new WindowsConsentElevationLauncher(),
         new BrokerConnectionRace(new WindowsBrokerPipeConnector()));
 
+    /// <summary>
+    /// Executes a broker request and returns its response or a mapped broker error.
+    /// </summary>
+    /// <param name="request">The broker request to execute.</param>
+    /// <param name="ownerWindow">The window handle to associate with the elevated broker operation.</param>
+    /// <param name="cancellationToken">The token used to cancel readiness checks and broker communication.</param>
+    /// <returns>The broker response when execution succeeds, or the corresponding broker error.</returns>
     internal async ValueTask<BrokerClientResult> ExecuteAsync(
         BrokerRequestEnvelope request,
         nint ownerWindow,
@@ -246,19 +261,32 @@ internal sealed class ElevationBrokerClient
         }
     }
 
-    private static BrokerError RecoveryBlocking() => new(
+    /// <summary>
+        /// Creates an error indicating that recovery must complete before folder restrictions can be created.
+        /// </summary>
+        /// <returns>A retryable recovery-blocking broker error.</returns>
+        private static BrokerError RecoveryBlocking() => new(
         BrokerErrorCodes.FSL_E_RECOVERY_BLOCKING,
         "Folder restrictions cannot be created until recovery is complete.",
         true,
         null);
 
-    private static BrokerError BrokerPathUntrusted() => new(
+    /// <summary>
+        /// Creates an error indicating that the elevated broker installation could not be verified.
+        /// </summary>
+        /// <returns>The broker path verification failure error.</returns>
+        private static BrokerError BrokerPathUntrusted() => new(
         BrokerErrorCodes.FSL_E_BROKER_PATH_UNTRUSTED,
         "The elevated broker installation could not be verified.",
         false,
         null);
 
-    private static BrokerError MapAccountMismatch(BrokerError error) =>
+    /// <summary>
+            /// Maps account SID mismatch errors to the corresponding cross-account elevation error.
+            /// </summary>
+            /// <param name="error">The broker error to map.</param>
+            /// <returns>The mapped cross-account error, or the original error when no mapping applies.</returns>
+            private static BrokerError MapAccountMismatch(BrokerError error) =>
         error.Code == BrokerErrorCodes.FSL_E_ACCOUNT_SID_MISMATCH
             ? new BrokerError(
                 BrokerErrorCodes.FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED,
