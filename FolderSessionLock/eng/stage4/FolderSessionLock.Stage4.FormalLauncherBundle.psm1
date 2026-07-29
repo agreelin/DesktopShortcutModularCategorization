@@ -1,0 +1,4502 @@
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$script:FlbModelNames = @(
+    'schemaVersion',
+    'authorityProfile',
+    'contractId',
+    'checkpoint',
+    'attemptId',
+    'runId',
+    'rootBinding',
+    'recoveryAuthority')
+$script:FlbRootBindingNames = @(
+    'fixtureId',
+    'sourceLeafName',
+    'bundleLeafName')
+$script:FlbRecoveryAuthorityNames = @(
+    'contractId',
+    'contractSha256')
+$script:FlbBundleNames = @(
+    'outer-launcher.ps1',
+    'launch-observer.ps1',
+    'launch-observer-contract.json')
+$script:FlbSourceNames = @(
+    'elevated-reconcile.ps1',
+    'recovery-contract.json')
+$script:FlbRecoveryNames = @(
+    'schemaVersion',
+    'contractId',
+    'checkpoint',
+    'contractStageGates',
+    'identity',
+    'source',
+    'canonical',
+    'transaction',
+    'release',
+    'allowedWrites',
+    'forbiddenActions',
+    'futureInvocation',
+    'binding')
+$script:FlbProfiles = @('Formal', 'TestFixture')
+$script:FlbZeros = '0' * 64
+$script:FlbSelfHashRule =
+    'SHA256(canonical UTF-8 bytes after replacing only bindingManifest.contractCanonicalSha256 with 64 ASCII zeroes)'
+$script:FlbRunIdPattern = '^\d{8}T\d{6}Z-[0-9a-f]{8}$'
+$script:FlbShaPattern = '^[0-9A-F]{64}$'
+$script:FlbGitPattern = '^[0-9a-f]{40}$'
+$script:FlbSidPattern = '^S-\d(?:-\d+)+$'
+$script:FlbResultFieldOrder = @(
+    'schemaVersion',
+    'recordOrdinal',
+    'attemptId',
+    'runId',
+    'checkpoint',
+    'wrapperSha256',
+    'recoveryContractSha256',
+    'phase',
+    'status',
+    'outcome',
+    'observerPid',
+    'targetPid',
+    'exitCode',
+    'gateId',
+    'timestampUtc')
+$script:FlbAllowedWrites = @(
+    'Create exactly the fixed launch-attempt.jsonl latch using CreateNew and WriteThrough.',
+    'Write and Flush(true) LaunchCommitted before any RunAs activity.',
+    'Append, Flush(true), and verify RunAsInvoking immediately before the unique RunAs call.',
+    'Append, Flush(true), and verify exactly one terminal LaunchResult after RunAs returns or throws.')
+$script:FlbForbiddenActions = @(
+    'No launch when formalExecutionEligible is false.',
+    'No alternate target, fallback launcher, second RunAs call, retry, or relaunch.',
+    'No runtime arguments or caller-supplied executable, path, command, policy, ACL, or metadata.',
+    'No retry when any object exists at the fixed latch path.',
+    'No repository, evidence, anchor, release, recovery, Program Files, ProgramData, service, registry, certificate, ACL, account, VMware, restart, or logout mutation by the launcher.',
+    'No stdout or stderr redirection for the recovery wrapper.',
+    'No dynamic command, Invoke-Expression, controller, product executable, Git process, or shell fallback.')
+$script:FlbExitCodes = [ordered]@{
+    Success = 0
+    ArgumentGate = 64
+    LatchExists = 65
+    EnvironmentGate = 66
+    ContractGate = 67
+    ObserverRootGate = 68
+    ObserverBindingGate = 69
+    SourceRecoveryGate = 70
+    RepositoryGate = 71
+    CanonicalGate = 72
+    ExternalAnchorGate = 73
+    ReleaseGate = 74
+    SystemStateGate = 75
+    LatchCommitFailure = 76
+    LaunchFailure = 77
+    LaunchResultFailure = 78
+    RecoveryNonZero = 79
+    UnexpectedFailure = 80
+    PreAppendTemporalGate = 81
+}
+
+function Test-FslFlbLatchRecordShape {
+    param([AllowNull()][psobject]$Record)
+    if ($null -eq $Record) { return $false }
+    $names = @($Record.PSObject.Properties | ForEach-Object Name)
+    $expected = @(
+        'schemaVersion','recordOrdinal','attemptId','runId','checkpoint',
+        'wrapperSha256','recoveryContractSha256','phase','status','outcome',
+        'observerPid','targetPid','exitCode','gateId','timestampUtc')
+    if (($names -join '|') -cne ($expected -join '|') -or
+        $Record.schemaVersion -isnot [int] -or
+        $Record.recordOrdinal -isnot [int] -or
+        $Record.attemptId -isnot [string] -or
+        $Record.runId -isnot [string] -or
+        $Record.checkpoint -isnot [string] -or
+        $Record.wrapperSha256 -isnot [string] -or
+        $Record.recoveryContractSha256 -isnot [string] -or
+        $Record.phase -isnot [string] -or
+        $Record.status -isnot [string] -or
+        ($null -ne $Record.outcome -and $Record.outcome -isnot [string]) -or
+        $Record.observerPid -isnot [int] -or
+        ($null -ne $Record.targetPid -and $Record.targetPid -isnot [int]) -or
+        ($null -ne $Record.exitCode -and $Record.exitCode -isnot [int]) -or
+        ($null -ne $Record.gateId -and $Record.gateId -isnot [string]) -or
+        $Record.timestampUtc -isnot [string]) {
+        return $false
+    }
+    return (
+        [int]$Record.schemaVersion -eq 1 -and
+        [int]$Record.recordOrdinal -ge 1 -and
+        [int]$Record.recordOrdinal -le 3 -and
+        [int]$Record.observerPid -gt 0 -and
+        [string]$Record.wrapperSha256 -cmatch '^[0-9A-F]{64}$' -and
+        [string]$Record.recoveryContractSha256 -cmatch '^[0-9A-F]{64}$')
+}
+
+function ConvertTo-FslFlbLatchCanonicalLine {
+    param([AllowNull()][psobject]$Record)
+    if (-not (Test-FslFlbLatchRecordShape $Record)) { return $null }
+    return ($Record | ConvertTo-Json -Compress -Depth 4)
+}
+
+function Test-FslFlbLatchBytes {
+    param([AllowNull()][byte[]]$Bytes, [AllowNull()][object[]]$ExpectedRecords)
+    try {
+        $records = @($ExpectedRecords)
+        if ($null -eq $Bytes -or $records.Count -lt 1 -or
+            $records.Count -gt 3 -or $Bytes.Length -eq 0 -or
+            $Bytes[$Bytes.Length - 1] -ne 0x0A -or $Bytes -contains 0x0D -or
+            ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and
+                $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF)) {
+            return $false
+        }
+        $lines = [Collections.Generic.List[string]]::new()
+        foreach ($record in $records) {
+            $line = ConvertTo-FslFlbLatchCanonicalLine $record
+            if ($null -eq $line) { return $false }
+            [void]$lines.Add($line)
+        }
+        $canonicalText = ($lines -join "`n") + "`n"
+        $encoding = [Text.UTF8Encoding]::new($false, $true)
+        $canonicalBytes = $encoding.GetBytes($canonicalText)
+        if ($canonicalBytes.Length -ne $Bytes.Length) { return $false }
+        for ($byteIndex = 0; $byteIndex -lt $Bytes.Length; $byteIndex++) {
+            if ($Bytes[$byteIndex] -ne $canonicalBytes[$byteIndex]) {
+                return $false
+            }
+        }
+        $actualText = $encoding.GetString($Bytes)
+        $actualLines = @($actualText.Split([char]0x0A))
+        if ($actualLines.Count -ne $records.Count + 1 -or
+            $actualLines[$actualLines.Count - 1] -cne '') {
+            return $false
+        }
+        $parsed = @()
+        for ($recordIndex = 0; $recordIndex -lt $records.Count; $recordIndex++) {
+            if ([string]::IsNullOrEmpty($actualLines[$recordIndex])) {
+                return $false
+            }
+            $value = $actualLines[$recordIndex] | ConvertFrom-Json
+            if (-not (Test-FslFlbLatchRecordShape $value)) { return $false }
+            $parsed += $value
+        }
+        $first = $parsed[0]
+        $previousTime = [DateTimeOffset]::MinValue
+        $format = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'"
+        $culture = [Globalization.CultureInfo]::InvariantCulture
+        $styles = [Globalization.DateTimeStyles]::AssumeUniversal -bor
+            [Globalization.DateTimeStyles]::AdjustToUniversal
+        for ($recordIndex = 0; $recordIndex -lt $parsed.Count; $recordIndex++) {
+            $record = $parsed[$recordIndex]
+            if ([int]$record.recordOrdinal -ne $recordIndex + 1 -or
+                [string]$record.attemptId -cne [string]$first.attemptId -or
+                [string]$record.runId -cne [string]$first.runId -or
+                [string]$record.checkpoint -cne [string]$first.checkpoint -or
+                [string]$record.wrapperSha256 -cne
+                    [string]$first.wrapperSha256 -or
+                [string]$record.recoveryContractSha256 -cne
+                    [string]$first.recoveryContractSha256 -or
+                [int]$record.observerPid -ne [int]$first.observerPid) {
+                return $false
+            }
+            $time = [DateTimeOffset]::MinValue
+            if (-not [DateTimeOffset]::TryParseExact(
+                [string]$record.timestampUtc,
+                $format,
+                $culture,
+                $styles,
+                [ref]$time) -or $time -lt $previousTime) {
+                return $false
+            }
+            $previousTime = $time
+            if ($recordIndex -eq 0 -and (
+                [string]$record.phase -cne 'LaunchCommitted' -or
+                [string]$record.status -cne 'Pending')) {
+                return $false
+            }
+            if ($recordIndex -eq 1 -and (
+                [string]$record.phase -cne 'RunAsInvoking' -or
+                [string]$record.status -cne 'Pending')) {
+                return $false
+            }
+            if ($recordIndex -lt 2 -and (
+                $null -ne $record.outcome -or $null -ne $record.targetPid -or
+                $null -ne $record.exitCode -or $null -ne $record.gateId)) {
+                return $false
+            }
+        }
+        if ($parsed.Count -eq 3) {
+            $terminal = $parsed[2]
+            if ([string]$terminal.phase -cne 'LaunchResult' -or
+                [string]$terminal.status -cne 'Completed' -or
+                [string]$terminal.outcome -cnotin @(
+                    'Exited','UacCancelled','LaunchFailed')) {
+                return $false
+            }
+            if ([string]$terminal.outcome -ceq 'Exited') {
+                if ($terminal.targetPid -isnot [int] -or
+                    [int]$terminal.targetPid -le 0 -or
+                    $terminal.exitCode -isnot [int] -or
+                    ([int]$terminal.exitCode -eq 0 -and
+                        $null -ne $terminal.gateId) -or
+                    ([int]$terminal.exitCode -ge 84 -and
+                        [int]$terminal.exitCode -le 254 -and (
+                            $terminal.gateId -isnot [string] -or
+                            -not ([string]$terminal.gateId).StartsWith(
+                                ('FSL-CG-{0:D3}-' -f
+                                    ([int]$terminal.exitCode - 83)),
+                                [StringComparison]::Ordinal))) -or
+                    (([int]$terminal.exitCode -lt 84 -or
+                        [int]$terminal.exitCode -gt 254) -and
+                        [int]$terminal.exitCode -ne 0 -and
+                        $null -ne $terminal.gateId)) {
+                    return $false
+                }
+            }
+            elseif ($null -ne $terminal.targetPid -or
+                $null -ne $terminal.exitCode -or
+                $null -ne $terminal.gateId) {
+                return $false
+            }
+        }
+        return $true
+    }
+    catch { return $false }
+}
+
+# The rendered observer is assembled from these module function bodies, so
+# generator tests and observer execution have one latch implementation source.
+$script:FlbLatchHelperTemplate = @(
+    'function Test-FslFlbLatchRecordShape {'
+    (Get-Command Test-FslFlbLatchRecordShape).Definition.TrimEnd()
+    '}'
+    ''
+    'function ConvertTo-FslFlbLatchCanonicalLine {'
+    (Get-Command ConvertTo-FslFlbLatchCanonicalLine).Definition.TrimEnd()
+    '}'
+    ''
+    'function Test-FslFlbLatchBytes {'
+    (Get-Command Test-FslFlbLatchBytes).Definition.TrimEnd()
+    '}'
+) -join "`n"
+
+if (-not ('FolderSessionLock.Stage4.FormalLauncherNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace FolderSessionLock.Stage4
+{
+    public sealed class FormalTokenProof
+    {
+        public string MachineName { get; set; }
+        public int ElevationType { get; set; }
+        public string CurrentAccountSid { get; set; }
+        public string LinkedAccountSid { get; set; }
+        public int CurrentSidType { get; set; }
+        public int LinkedSidType { get; set; }
+        public bool CurrentAdministratorsDenyOnly { get; set; }
+        public bool CurrentAdministratorsEnabled { get; set; }
+        public bool LinkedAdministratorsDenyOnly { get; set; }
+        public bool LinkedAdministratorsEnabled { get; set; }
+        public string CurrentAccountDomain { get; set; }
+        public string LinkedAccountDomain { get; set; }
+    }
+
+    public sealed class FormalLauncherNative
+    {
+        private const uint ReadAttributes = 0x80;
+        private const uint ShareRead = 1;
+        private const uint ShareWrite = 2;
+        private const uint ShareDelete = 4;
+        private const uint OpenExisting = 3;
+        private const uint OpenReparse = 0x00200000;
+        private const uint BackupSemantics = 0x02000000;
+
+        private FormalLauncherNative(
+            string requestedPath,
+            string finalPath,
+            string identity,
+            uint linkCount,
+            bool reparse)
+        {
+            RequestedPath = requestedPath;
+            FinalPath = finalPath;
+            Identity = identity;
+            LinkCount = linkCount;
+            Reparse = reparse;
+        }
+
+        public string RequestedPath { get; private set; }
+        public string FinalPath { get; private set; }
+        public string Identity { get; private set; }
+        public uint LinkCount { get; private set; }
+        public bool Reparse { get; private set; }
+
+        public static string[] ParseWindowsCommandLine(string commandLine)
+        {
+            if (commandLine == null)
+                throw new ArgumentNullException("commandLine");
+            int count;
+            IntPtr vector = CommandLineToArgvW(commandLine, out count);
+            if (vector == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            try
+            {
+                if (count < 1 || count > 65536)
+                    throw new InvalidOperationException("Invalid argv count.");
+                string[] result = new string[count];
+                for (int index = 0; index < count; index++)
+                {
+                    IntPtr value = Marshal.ReadIntPtr(
+                        vector, checked(index * IntPtr.Size));
+                    if (value == IntPtr.Zero)
+                        throw new InvalidOperationException("Null argv entry.");
+                    result[index] = Marshal.PtrToStringUni(value);
+                    if (result[index] == null)
+                        throw new InvalidOperationException("Invalid argv text.");
+                }
+                return result;
+            }
+            finally { LocalFree(vector); }
+        }
+
+        public static bool ValidateZlibEnvelope(byte[] bytes)
+        {
+            try
+            {
+                if (bytes == null || bytes.Length < 7) return false;
+                int cmf = bytes[0], flg = bytes[1];
+                if ((cmf & 15) != 8 || (cmf >> 4) > 7 ||
+                    (((cmf << 8) | flg) % 31) != 0 || (flg & 32) != 0)
+                    return false;
+                DeflateBits bits = new DeflateBits(bytes, 2, bytes.Length - 4);
+                long output = 0;
+                bool final;
+                do
+                {
+                    final = bits.Read(1) != 0;
+                    int kind = bits.Read(2);
+                    if (kind == 0)
+                    {
+                        bits.AlignZero();
+                        int length = bits.ReadByte() | (bits.ReadByte() << 8);
+                        int complement =
+                            bits.ReadByte() | (bits.ReadByte() << 8);
+                        if (((length ^ 0xFFFF) & 0xFFFF) != complement)
+                            return false;
+                        bits.SkipBytes(length);
+                        output = checked(output + length);
+                    }
+                    else if (kind == 1 || kind == 2)
+                    {
+                        Huffman literal;
+                        Huffman distance;
+                        if (kind == 1)
+                        {
+                            int[] literalLengths = new int[288];
+                            for (int i = 0; i <= 143; i++) literalLengths[i] = 8;
+                            for (int i = 144; i <= 255; i++) literalLengths[i] = 9;
+                            for (int i = 256; i <= 279; i++) literalLengths[i] = 7;
+                            for (int i = 280; i <= 287; i++) literalLengths[i] = 8;
+                            int[] distanceLengths = new int[32];
+                            for (int i = 0; i < 32; i++) distanceLengths[i] = 5;
+                            literal = new Huffman(literalLengths);
+                            distance = new Huffman(distanceLengths);
+                        }
+                        else
+                        {
+                            ReadDynamicTrees(
+                                bits, out literal, out distance);
+                        }
+                        ScanCompressed(bits, literal, distance, ref output);
+                    }
+                    else return false;
+                    if (output > 268435456) return false;
+                } while (!final);
+                bits.Finish();
+                uint a = 1, b = 0;
+                long decompressed = 0;
+                using (var input = new System.IO.MemoryStream(
+                    bytes, 2, bytes.Length - 6, false))
+                using (var deflate = new System.IO.Compression.DeflateStream(
+                    input, System.IO.Compression.CompressionMode.Decompress))
+                {
+                    byte[] buffer = new byte[8192];
+                    int count;
+                    while ((count = deflate.Read(buffer, 0, buffer.Length)) != 0)
+                    {
+                        decompressed = checked(decompressed + count);
+                        if (decompressed > 268435456) return false;
+                        for (int index = 0; index < count; index++)
+                        {
+                            a = (a + buffer[index]) % 65521;
+                            b = (b + a) % 65521;
+                        }
+                    }
+                }
+                uint stored = ((uint)bytes[bytes.Length - 4] << 24) |
+                    ((uint)bytes[bytes.Length - 3] << 16) |
+                    ((uint)bytes[bytes.Length - 2] << 8) |
+                    bytes[bytes.Length - 1];
+                return ((b << 16) | a) == stored;
+            }
+            catch { return false; }
+        }
+
+        private static void ReadDynamicTrees(
+            DeflateBits bits, out Huffman literal, out Huffman distance)
+        {
+            int literalCount = bits.Read(5) + 257;
+            int distanceCount = bits.Read(5) + 1;
+            int codeCount = bits.Read(4) + 4;
+            if (literalCount > 286 || distanceCount > 32)
+                throw new InvalidOperationException();
+            int[] order = {
+                16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15 };
+            int[] codeLengths = new int[19];
+            for (int i = 0; i < codeCount; i++)
+                codeLengths[order[i]] = bits.Read(3);
+            Huffman codeTree = new Huffman(codeLengths);
+            int total = literalCount + distanceCount;
+            int[] lengths = new int[total];
+            int offset = 0;
+            while (offset < total)
+            {
+                int symbol = codeTree.Decode(bits);
+                if (symbol <= 15) lengths[offset++] = symbol;
+                else
+                {
+                    int repeat;
+                    int value;
+                    if (symbol == 16)
+                    {
+                        if (offset == 0) throw new InvalidOperationException();
+                        repeat = bits.Read(2) + 3;
+                        value = lengths[offset - 1];
+                    }
+                    else if (symbol == 17)
+                    {
+                        repeat = bits.Read(3) + 3;
+                        value = 0;
+                    }
+                    else if (symbol == 18)
+                    {
+                        repeat = bits.Read(7) + 11;
+                        value = 0;
+                    }
+                    else throw new InvalidOperationException();
+                    if (offset + repeat > total)
+                        throw new InvalidOperationException();
+                    while (repeat-- > 0) lengths[offset++] = value;
+                }
+            }
+            int[] literals = new int[literalCount];
+            int[] distances = new int[distanceCount];
+            Array.Copy(lengths, 0, literals, 0, literalCount);
+            Array.Copy(lengths, literalCount, distances, 0, distanceCount);
+            if (literals[256] == 0) throw new InvalidOperationException();
+            literal = new Huffman(literals);
+            distance = new Huffman(distances);
+        }
+
+        private static void ScanCompressed(
+            DeflateBits bits, Huffman literal, Huffman distance,
+            ref long output)
+        {
+            int[] lengthBase = {
+                3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,
+                59,67,83,99,115,131,163,195,227,258 };
+            int[] lengthExtra = {
+                0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,
+                4,5,5,5,5,0 };
+            int[] distanceBase = {
+                1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,
+                513,769,1025,1537,2049,3073,4097,6145,8193,12289,
+                16385,24577 };
+            int[] distanceExtra = {
+                0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,
+                10,11,11,12,12,13,13 };
+            while (true)
+            {
+                int symbol = literal.Decode(bits);
+                if (symbol < 256) output = checked(output + 1);
+                else if (symbol == 256) return;
+                else
+                {
+                    if (symbol < 257 || symbol > 285)
+                        throw new InvalidOperationException();
+                    int index = symbol - 257;
+                    int length = lengthBase[index] +
+                        bits.Read(lengthExtra[index]);
+                    int distanceSymbol = distance.Decode(bits);
+                    if (distanceSymbol < 0 || distanceSymbol > 29)
+                        throw new InvalidOperationException();
+                    int distanceValue = distanceBase[distanceSymbol] +
+                        bits.Read(distanceExtra[distanceSymbol]);
+                    if (distanceValue > output)
+                        throw new InvalidOperationException();
+                    output = checked(output + length);
+                }
+                if (output > 268435456)
+                    throw new InvalidOperationException();
+            }
+        }
+
+        private sealed class DeflateBits
+        {
+            private readonly byte[] bytes;
+            private readonly int endBit;
+            private int bit;
+            internal DeflateBits(byte[] value, int startByte, int endByte)
+            {
+                bytes = value;
+                bit = checked(startByte * 8);
+                endBit = checked(endByte * 8);
+                if (startByte < 0 || endByte < startByte ||
+                    endByte > value.Length) throw new InvalidOperationException();
+            }
+            internal int Read(int count)
+            {
+                if (count < 0 || count > 16 || bit + count > endBit)
+                    throw new InvalidOperationException();
+                int value = 0;
+                for (int index = 0; index < count; index++, bit++)
+                    value |= ((bytes[bit >> 3] >> (bit & 7)) & 1) << index;
+                return value;
+            }
+            internal int ReadByte()
+            {
+                if ((bit & 7) != 0) throw new InvalidOperationException();
+                return Read(8);
+            }
+            internal void AlignZero()
+            {
+                while ((bit & 7) != 0)
+                    if (Read(1) != 0) throw new InvalidOperationException();
+            }
+            internal void SkipBytes(int count)
+            {
+                if ((bit & 7) != 0 || count < 0 ||
+                    bit + checked(count * 8) > endBit)
+                    throw new InvalidOperationException();
+                bit += count * 8;
+            }
+            internal void Finish()
+            {
+                AlignZero();
+                if (bit != endBit) throw new InvalidOperationException();
+            }
+        }
+
+        private sealed class Huffman
+        {
+            private readonly System.Collections.Generic.Dictionary<long, int>
+                symbols = new System.Collections.Generic.Dictionary<long, int>();
+            private readonly int maximum;
+            internal Huffman(int[] lengths)
+            {
+                int[] counts = new int[16];
+                foreach (int length in lengths)
+                {
+                    if (length < 0 || length > 15)
+                        throw new InvalidOperationException();
+                    if (length != 0) counts[length]++;
+                }
+                int code = 0;
+                int[] next = new int[16];
+                for (int length = 1; length <= 15; length++)
+                {
+                    code = (code + counts[length - 1]) << 1;
+                    if (code + counts[length] > (1 << length))
+                        throw new InvalidOperationException();
+                    next[length] = code;
+                    if (counts[length] != 0) maximum = length;
+                }
+                if (maximum == 0) throw new InvalidOperationException();
+                for (int symbol = 0; symbol < lengths.Length; symbol++)
+                {
+                    int length = lengths[symbol];
+                    if (length == 0) continue;
+                    long key = ((long)length << 32) |
+                        (uint)next[length]++;
+                    if (symbols.ContainsKey(key))
+                        throw new InvalidOperationException();
+                    symbols.Add(key, symbol);
+                }
+            }
+            internal int Decode(DeflateBits bits)
+            {
+                int code = 0;
+                for (int length = 1; length <= maximum; length++)
+                {
+                    code = (code << 1) | bits.Read(1);
+                    int symbol;
+                    if (symbols.TryGetValue(
+                        ((long)length << 32) | (uint)code, out symbol))
+                        return symbol;
+                }
+                throw new InvalidOperationException();
+            }
+        }
+
+        public static FormalLauncherNative Read(string path, bool directory)
+        {
+            string full = System.IO.Path.GetFullPath(path).TrimEnd('\\');
+            uint flags = OpenReparse | (directory ? BackupSemantics : 0);
+            using (SafeFileHandle handle = CreateFile(
+                full,
+                ReadAttributes,
+                ShareRead | ShareWrite | ShareDelete,
+                IntPtr.Zero,
+                OpenExisting,
+                flags,
+                IntPtr.Zero))
+            {
+                if (handle.IsInvalid)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                Information info;
+                if (!GetFileInformationByHandle(handle, out info))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                StringBuilder final = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandle(
+                    handle, final, final.Capacity, 0);
+                if (length == 0 || length >= final.Capacity)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                string normalized = final.ToString();
+                if (normalized.StartsWith(@"\\?\", StringComparison.Ordinal))
+                    normalized = normalized.Substring(4);
+                ulong index = ((ulong)info.FileIndexHigh << 32) |
+                    info.FileIndexLow;
+                return new FormalLauncherNative(
+                    full,
+                    normalized.TrimEnd('\\'),
+                    info.VolumeSerialNumber.ToString("X8") +
+                        index.ToString("X16"),
+                    info.NumberOfLinks,
+                    (info.FileAttributes & 0x400) != 0);
+            }
+        }
+
+        public static FormalTokenProof ReadFormalTokenProof()
+        {
+            IntPtr current = IntPtr.Zero;
+            IntPtr linked = IntPtr.Zero;
+            if (!OpenProcessToken(GetCurrentProcess(), 0x0008, out current))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            try
+            {
+                int elevationType = ReadTokenInt32(current, 18);
+                linked = ReadLinkedToken(current);
+                string currentSid;
+                string currentDomain;
+                int currentSidType;
+                ReadTokenIdentity(
+                    current, out currentSid, out currentDomain,
+                    out currentSidType);
+                string linkedSid;
+                string linkedDomain;
+                int linkedSidType;
+                ReadTokenIdentity(
+                    linked, out linkedSid, out linkedDomain,
+                    out linkedSidType);
+                GroupState currentAdministrators =
+                    ReadAdministratorsGroup(current);
+                GroupState linkedAdministrators =
+                    ReadAdministratorsGroup(linked);
+                return new FormalTokenProof
+                {
+                    MachineName = Environment.MachineName,
+                    ElevationType = elevationType,
+                    CurrentAccountSid = currentSid,
+                    LinkedAccountSid = linkedSid,
+                    CurrentSidType = currentSidType,
+                    LinkedSidType = linkedSidType,
+                    CurrentAdministratorsDenyOnly =
+                        currentAdministrators.DenyOnly,
+                    CurrentAdministratorsEnabled =
+                        currentAdministrators.Enabled,
+                    LinkedAdministratorsDenyOnly =
+                        linkedAdministrators.DenyOnly,
+                    LinkedAdministratorsEnabled =
+                        linkedAdministrators.Enabled,
+                    CurrentAccountDomain = currentDomain,
+                    LinkedAccountDomain = linkedDomain
+                };
+            }
+            finally
+            {
+                if (linked != IntPtr.Zero) CloseHandle(linked);
+                if (current != IntPtr.Zero) CloseHandle(current);
+            }
+        }
+
+        private static int ReadTokenInt32(IntPtr token, int informationClass)
+        {
+            IntPtr buffer = Marshal.AllocHGlobal(sizeof(int));
+            try
+            {
+                int returned;
+                if (!GetTokenInformation(
+                    token, informationClass, buffer, sizeof(int), out returned) ||
+                    returned != sizeof(int))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                return Marshal.ReadInt32(buffer);
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        private static IntPtr ReadLinkedToken(IntPtr token)
+        {
+            IntPtr buffer = Marshal.AllocHGlobal(IntPtr.Size);
+            try
+            {
+                int returned;
+                if (!GetTokenInformation(
+                    token, 19, buffer, IntPtr.Size, out returned) ||
+                    returned != IntPtr.Size)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                return Marshal.ReadIntPtr(buffer);
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        private static void ReadTokenIdentity(
+            IntPtr token, out string sidValue, out string domainValue,
+            out int sidType)
+        {
+            int required = 0;
+            GetTokenInformation(token, 1, IntPtr.Zero, 0, out required);
+            if (required <= 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            IntPtr buffer = Marshal.AllocHGlobal(required);
+            try
+            {
+                int returned;
+                if (!GetTokenInformation(
+                    token, 1, buffer, required, out returned))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                IntPtr sid = Marshal.ReadIntPtr(buffer);
+                sidValue = new System.Security.Principal.SecurityIdentifier(
+                    sid).Value;
+                uint nameLength = 0;
+                uint domainLength = 0;
+                int use;
+                LookupAccountSid(
+                    null, sid, null, ref nameLength, null, ref domainLength,
+                    out use);
+                if (nameLength == 0 || domainLength == 0)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                StringBuilder name = new StringBuilder((int)nameLength);
+                StringBuilder domain = new StringBuilder((int)domainLength);
+                if (!LookupAccountSid(
+                    null, sid, name, ref nameLength, domain, ref domainLength,
+                    out use))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                domainValue = domain.ToString();
+                sidType = use;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        private sealed class GroupState
+        {
+            internal bool DenyOnly;
+            internal bool Enabled;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SidAndAttributes
+        {
+            internal IntPtr Sid;
+            internal uint Attributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TokenGroupsLayout
+        {
+            internal uint GroupCount;
+            internal SidAndAttributes FirstGroup;
+        }
+
+        private static GroupState ReadAdministratorsGroup(IntPtr token)
+        {
+            var administrators = new System.Security.Principal.SecurityIdentifier(
+                "S-1-5-32-544");
+            byte[] sidBytes = new byte[administrators.BinaryLength];
+            administrators.GetBinaryForm(sidBytes, 0);
+            IntPtr administratorsSid = Marshal.AllocHGlobal(sidBytes.Length);
+            int required = 0;
+            GetTokenInformation(token, 2, IntPtr.Zero, 0, out required);
+            if (required <= 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            IntPtr buffer = Marshal.AllocHGlobal(required);
+            try
+            {
+                Marshal.Copy(
+                    sidBytes, 0, administratorsSid, sidBytes.Length);
+                int returned;
+                if (!GetTokenInformation(
+                    token, 2, buffer, required, out returned) ||
+                    returned < sizeof(uint) || returned > required)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                uint rawCount = unchecked((uint)Marshal.ReadInt32(buffer));
+                int offset = checked((int)Marshal.OffsetOf(
+                    typeof(TokenGroupsLayout), "FirstGroup"));
+                int stride = Marshal.SizeOf(typeof(SidAndAttributes));
+                if (offset < sizeof(uint) || stride < IntPtr.Size + sizeof(uint) ||
+                    rawCount > 65536 ||
+                    checked(offset + checked((int)rawCount * stride)) > returned)
+                    throw new InvalidOperationException(
+                        "TOKEN_GROUPS bounds are invalid.");
+                int matches = 0;
+                uint attributes = 0;
+                for (int index = 0; index < (int)rawCount; index++)
+                {
+                    IntPtr entryPointer = IntPtr.Add(
+                        buffer, checked(offset + index * stride));
+                    SidAndAttributes entry =
+                        (SidAndAttributes)Marshal.PtrToStructure(
+                            entryPointer, typeof(SidAndAttributes));
+                    if (entry.Sid == IntPtr.Zero)
+                        throw new InvalidOperationException(
+                            "TOKEN_GROUPS contains a null SID.");
+                    if (EqualSid(entry.Sid, administratorsSid))
+                    {
+                        matches++;
+                        attributes = entry.Attributes;
+                    }
+                }
+                if (matches != 1)
+                    throw new InvalidOperationException(
+                        "The Administrators SID must occur exactly once.");
+                return new GroupState
+                {
+                    Enabled = (attributes & 0x00000004) != 0,
+                    DenyOnly = (attributes & 0x00000010) != 0
+                };
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+                Marshal.FreeHGlobal(administratorsSid);
+            }
+        }
+
+        public static bool VerifyGitIndexAndTree(
+            string gitRoot, string gitDirectory, string expectedTree)
+        {
+            try
+            {
+                byte[] index = System.IO.File.ReadAllBytes(
+                    System.IO.Path.Combine(gitDirectory, "index"));
+                if (index.Length < 32 ||
+                    Encoding.ASCII.GetString(index, 0, 4) != "DIRC" ||
+                    ReadUInt32(index, 4) != 2)
+                    return false;
+                int checksumOffset = index.Length - 20;
+                byte[] calculated;
+                using (var sha = System.Security.Cryptography.SHA1.Create())
+                    calculated = sha.ComputeHash(index, 0, checksumOffset);
+                for (int i = 0; i < 20; i++)
+                    if (calculated[i] != index[checksumOffset + i])
+                        return false;
+                uint rawCount = ReadUInt32(index, 8);
+                if (rawCount > 1000000) return false;
+                int count = (int)rawCount;
+                int offset = 12;
+                byte[] previousPath = null;
+                var entries = new System.Collections.Generic.List<GitEntry>();
+                string normalizedRoot = System.IO.Path.GetFullPath(
+                    gitRoot).TrimEnd('\\');
+                string rootPrefix = normalizedRoot + "\\";
+                for (int entryIndex = 0; entryIndex < count; entryIndex++)
+                {
+                    int start = offset;
+                    if (start < 12 || start + 63 > checksumOffset)
+                        return false;
+                    uint mode = ReadUInt32(index, start + 24);
+                    if (mode != 0x000081A4 && mode != 0x000081ED)
+                        return false;
+                    byte[] oid = new byte[20];
+                    Buffer.BlockCopy(index, start + 40, oid, 0, 20);
+                    bool allZero = true;
+                    foreach (byte value in oid)
+                        if (value != 0) { allZero = false; break; }
+                    if (allZero) return false;
+                    ushort flags = ReadUInt16(index, start + 60);
+                    if ((flags & 0xF000) != 0) return false;
+                    int pathStart = start + 62;
+                    int pathEnd = pathStart;
+                    while (pathEnd < checksumOffset && index[pathEnd] != 0)
+                        pathEnd++;
+                    if (pathEnd >= checksumOffset || pathEnd == pathStart)
+                        return false;
+                    int pathLength = pathEnd - pathStart;
+                    if ((flags & 0x0FFF) != Math.Min(pathLength, 0x0FFF))
+                        return false;
+                    byte[] pathBytes = new byte[pathLength];
+                    Buffer.BlockCopy(
+                        index, pathStart, pathBytes, 0, pathLength);
+                    if (previousPath != null &&
+                        CompareBytes(previousPath, pathBytes) >= 0)
+                        return false;
+                    previousPath = pathBytes;
+                    string relative;
+                    try
+                    {
+                        relative = new UTF8Encoding(
+                            false, true).GetString(pathBytes);
+                    }
+                    catch { return false; }
+                    if (!IsCanonicalGitPath(relative)) return false;
+                    string full = System.IO.Path.GetFullPath(
+                        System.IO.Path.Combine(
+                            normalizedRoot, relative.Replace('/', '\\')));
+                    if (!full.StartsWith(
+                        rootPrefix, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    if (!System.IO.File.Exists(full)) return false;
+                    FormalLauncherNative identity = Read(full, false);
+                    if (identity.Reparse || identity.LinkCount != 1 ||
+                        !identity.FinalPath.StartsWith(
+                            rootPrefix, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    byte[] content = System.IO.File.ReadAllBytes(full);
+                    byte[] blobOid = GitObjectId("blob", content);
+                    if (!EqualBytes(blobOid, oid)) return false;
+                    entries.Add(new GitEntry
+                    {
+                        Path = relative,
+                        Mode = mode,
+                        ObjectId = oid
+                    });
+                    int entryLength = (pathEnd - start) + 1;
+                    int next = start + ((entryLength + 7) & ~7);
+                    if (next <= start || next > checksumOffset) return false;
+                    for (int padding = pathEnd + 1; padding < next; padding++)
+                        if (index[padding] != 0) return false;
+                    offset = next;
+                }
+                byte[] cacheTree = null;
+                while (offset < checksumOffset)
+                {
+                    if (offset + 8 > checksumOffset) return false;
+                    string signature = Encoding.ASCII.GetString(index, offset, 4);
+                    uint rawSize = ReadUInt32(index, offset + 4);
+                    if (rawSize > Int32.MaxValue) return false;
+                    int size = (int)rawSize;
+                    offset += 8;
+                    if (size < 0 || offset + size < offset ||
+                        offset + size > checksumOffset)
+                        return false;
+                    if (signature != "TREE" || cacheTree != null ||
+                        !ValidateCacheTree(index, offset, size))
+                        return false;
+                    cacheTree = new byte[size];
+                    Buffer.BlockCopy(index, offset, cacheTree, 0, size);
+                    offset += size;
+                }
+                if (offset != checksumOffset) return false;
+                GitNode root = new GitNode();
+                foreach (GitEntry entry in entries)
+                    if (!InsertEntry(root, entry)) return false;
+                byte[] actualTreeBytes = BuildTree(root);
+                if (cacheTree != null &&
+                    !EqualBytes(cacheTree, BuildCacheTree(root)))
+                    return false;
+                string actualTree = ToHex(actualTreeBytes);
+                return String.Equals(
+                    actualTree, expectedTree, StringComparison.Ordinal);
+            }
+            catch { return false; }
+        }
+
+        private sealed class GitEntry
+        {
+            internal string Path;
+            internal uint Mode;
+            internal byte[] ObjectId;
+        }
+
+        private sealed class GitNode
+        {
+            internal readonly System.Collections.Generic.Dictionary<
+                string, GitNode> Directories =
+                new System.Collections.Generic.Dictionary<string, GitNode>(
+                    StringComparer.Ordinal);
+            internal readonly System.Collections.Generic.Dictionary<
+                string, GitEntry> Files =
+                new System.Collections.Generic.Dictionary<string, GitEntry>(
+                    StringComparer.Ordinal);
+        }
+
+        private static bool InsertEntry(GitNode root, GitEntry entry)
+        {
+            string[] parts = entry.Path.Split('/');
+            GitNode node = root;
+            for (int index = 0; index < parts.Length - 1; index++)
+            {
+                if (node.Files.ContainsKey(parts[index])) return false;
+                GitNode child;
+                if (!node.Directories.TryGetValue(parts[index], out child))
+                {
+                    child = new GitNode();
+                    node.Directories.Add(parts[index], child);
+                }
+                node = child;
+            }
+            string leaf = parts[parts.Length - 1];
+            if (node.Directories.ContainsKey(leaf) ||
+                node.Files.ContainsKey(leaf))
+                return false;
+            node.Files.Add(leaf, entry);
+            return true;
+        }
+
+        private static byte[] BuildTree(GitNode node)
+        {
+            var items = new System.Collections.Generic.List<TreeItem>();
+            foreach (var pair in node.Files)
+                items.Add(new TreeItem
+                {
+                    Name = pair.Key,
+                    Directory = false,
+                    Mode = pair.Value.Mode == 0x000081ED
+                        ? "100755" : "100644",
+                    ObjectId = pair.Value.ObjectId
+                });
+            foreach (var pair in node.Directories)
+                items.Add(new TreeItem
+                {
+                    Name = pair.Key,
+                    Directory = true,
+                    Mode = "40000",
+                    ObjectId = BuildTree(pair.Value)
+                });
+            items.Sort(delegate(TreeItem left, TreeItem right)
+            {
+                return CompareBytes(
+                    Encoding.UTF8.GetBytes(
+                        left.Name + (left.Directory ? "/" : "")),
+                    Encoding.UTF8.GetBytes(
+                        right.Name + (right.Directory ? "/" : "")));
+            });
+            using (var body = new System.IO.MemoryStream())
+            {
+                foreach (TreeItem item in items)
+                {
+                    byte[] prefix = Encoding.ASCII.GetBytes(
+                        item.Mode + " ");
+                    byte[] name = new UTF8Encoding(false, true).GetBytes(
+                        item.Name);
+                    body.Write(prefix, 0, prefix.Length);
+                    body.Write(name, 0, name.Length);
+                    body.WriteByte(0);
+                    body.Write(item.ObjectId, 0, item.ObjectId.Length);
+                }
+                return GitObjectId("tree", body.ToArray());
+            }
+        }
+
+        private static byte[] BuildCacheTree(GitNode root)
+        {
+            using (var output = new System.IO.MemoryStream())
+            {
+                WriteCacheTreeNode(output, root, "", true);
+                return output.ToArray();
+            }
+        }
+
+        private static int WriteCacheTreeNode(
+            System.IO.Stream output, GitNode node, string name, bool root)
+        {
+            int entryCount = node.Files.Count;
+            foreach (GitNode child in node.Directories.Values)
+                entryCount += CountEntries(child);
+            byte[] path = new UTF8Encoding(false, true).GetBytes(
+                root ? "" : name);
+            output.Write(path, 0, path.Length);
+            output.WriteByte(0);
+            byte[] counts = Encoding.ASCII.GetBytes(
+                entryCount.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture) + " " +
+                node.Directories.Count.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture) + "\n");
+            output.Write(counts, 0, counts.Length);
+            byte[] oid = BuildTree(node);
+            output.Write(oid, 0, oid.Length);
+            var names = new System.Collections.Generic.List<string>(
+                node.Directories.Keys);
+            names.Sort(StringComparer.Ordinal);
+            foreach (string childName in names)
+                WriteCacheTreeNode(
+                    output, node.Directories[childName], childName, false);
+            return entryCount;
+        }
+
+        private static int CountEntries(GitNode node)
+        {
+            int count = node.Files.Count;
+            foreach (GitNode child in node.Directories.Values)
+                count += CountEntries(child);
+            return count;
+        }
+
+        private sealed class TreeItem
+        {
+            internal string Name;
+            internal bool Directory;
+            internal string Mode;
+            internal byte[] ObjectId;
+        }
+
+        private static bool ValidateCacheTree(byte[] bytes, int start, int size)
+        {
+            try
+            {
+                int offset = start;
+                int end = start + size;
+                if (!ParseCacheTreeNode(bytes, ref offset, end, true))
+                    return false;
+                return offset == end;
+            }
+            catch { return false; }
+        }
+
+        private static bool ParseCacheTreeNode(
+            byte[] bytes, ref int offset, int end, bool root)
+        {
+            int pathStart = offset;
+            while (offset < end && bytes[offset] != 0) offset++;
+            if (offset >= end) return false;
+            string path;
+            try
+            {
+                path = new UTF8Encoding(false, true).GetString(
+                    bytes, pathStart, offset - pathStart);
+            }
+            catch { return false; }
+            if ((root && path.Length != 0) ||
+                (!root && (
+                    path.Length == 0 || path.Contains("/") ||
+                    path.Contains("\\") ||
+                    path.Normalize(NormalizationForm.FormC) != path)))
+                return false;
+            offset++;
+            int count = ReadAsciiInteger(bytes, ref offset, end, true);
+            if (count < -1 || offset >= end || bytes[offset++] != (byte)' ')
+                return false;
+            int subtreeCount = ReadAsciiInteger(
+                bytes, ref offset, end, false);
+            if (subtreeCount < 0 || offset >= end ||
+                bytes[offset++] != (byte)'\n')
+                return false;
+            if (count >= 0)
+            {
+                if (offset + 20 > end) return false;
+                offset += 20;
+            }
+            for (int index = 0; index < subtreeCount; index++)
+                if (!ParseCacheTreeNode(bytes, ref offset, end, false))
+                    return false;
+            return true;
+        }
+
+        private static int ReadAsciiInteger(
+            byte[] bytes, ref int offset, int end, bool allowNegativeOne)
+        {
+            bool negative = false;
+            if (allowNegativeOne && offset < end && bytes[offset] == (byte)'-')
+            {
+                negative = true;
+                offset++;
+            }
+            int start = offset;
+            long value = 0;
+            while (offset < end &&
+                bytes[offset] >= (byte)'0' && bytes[offset] <= (byte)'9')
+            {
+                value = checked(value * 10 + bytes[offset] - (byte)'0');
+                offset++;
+            }
+            if (offset == start || value > Int32.MaxValue) return Int32.MinValue;
+            int result = (int)value;
+            if (negative) result = -result;
+            if (negative && result != -1) return Int32.MinValue;
+            return result;
+        }
+
+        private static bool IsCanonicalGitPath(string path)
+        {
+            if (String.IsNullOrEmpty(path) || path[0] == '/' ||
+                path.Contains("\\") || path.Contains("\0") ||
+                path.Normalize(NormalizationForm.FormC) != path)
+                return false;
+            string[] parts = path.Split('/');
+            foreach (string part in parts)
+                if (part.Length == 0 || part == "." || part == "..")
+                    return false;
+            return true;
+        }
+
+        private static byte[] GitObjectId(string type, byte[] content)
+        {
+            byte[] header = Encoding.ASCII.GetBytes(
+                type + " " + content.Length.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture) + "\0");
+            byte[] full = new byte[header.Length + content.Length];
+            Buffer.BlockCopy(header, 0, full, 0, header.Length);
+            Buffer.BlockCopy(content, 0, full, header.Length, content.Length);
+            using (var sha = System.Security.Cryptography.SHA1.Create())
+                return sha.ComputeHash(full);
+        }
+
+        private static ushort ReadUInt16(byte[] bytes, int offset)
+        {
+            return (ushort)(((uint)bytes[offset] << 8) |
+                bytes[offset + 1]);
+        }
+
+        private static uint ReadUInt32(byte[] bytes, int offset)
+        {
+            return ((uint)bytes[offset] << 24) |
+                ((uint)bytes[offset + 1] << 16) |
+                ((uint)bytes[offset + 2] << 8) |
+                bytes[offset + 3];
+        }
+
+        private static int CompareBytes(byte[] left, byte[] right)
+        {
+            int length = Math.Min(left.Length, right.Length);
+            for (int index = 0; index < length; index++)
+            {
+                int difference = left[index] - right[index];
+                if (difference != 0) return difference;
+            }
+            return left.Length - right.Length;
+        }
+
+        private static bool EqualBytes(byte[] left, byte[] right)
+        {
+            if (left.Length != right.Length) return false;
+            for (int index = 0; index < left.Length; index++)
+                if (left[index] != right[index]) return false;
+            return true;
+        }
+
+        private static string ToHex(byte[] bytes)
+        {
+            return BitConverter.ToString(bytes).Replace(
+                "-", "").ToLowerInvariant();
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Information
+        {
+            internal uint FileAttributes;
+            internal System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            internal System.Runtime.InteropServices.ComTypes.FILETIME AccessTime;
+            internal System.Runtime.InteropServices.ComTypes.FILETIME WriteTime;
+            internal uint VolumeSerialNumber;
+            internal uint FileSizeHigh;
+            internal uint FileSizeLow;
+            internal uint NumberOfLinks;
+            internal uint FileIndexHigh;
+            internal uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern SafeFileHandle CreateFile(
+            string name, uint access, uint share, IntPtr security,
+            uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError=true)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle handle, out Information information);
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle handle, StringBuilder path, int length, uint flags);
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+        [DllImport("advapi32.dll", SetLastError=true)]
+        private static extern bool OpenProcessToken(
+            IntPtr process, uint access, out IntPtr token);
+        [DllImport("advapi32.dll", SetLastError=true)]
+        private static extern bool GetTokenInformation(
+            IntPtr token, int informationClass, IntPtr information,
+            int informationLength, out int returnLength);
+        [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern bool LookupAccountSid(
+            string systemName, IntPtr sid, StringBuilder name,
+            ref uint nameLength, StringBuilder domain, ref uint domainLength,
+            out int use);
+        [DllImport("advapi32.dll")]
+        private static extern bool EqualSid(IntPtr sid1, IntPtr sid2);
+        [DllImport("kernel32.dll", SetLastError=true)]
+        private static extern bool CloseHandle(IntPtr handle);
+        [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern IntPtr CommandLineToArgvW(
+            string commandLine, out int argumentCount);
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
+    }
+}
+'@ -ReferencedAssemblies @(
+        'System.dll',
+        'System.Core.dll',
+        'System.Security.dll')
+}
+
+# Responsibility 1: strict public capability model.
+function New-FslFlbException {
+    param([string]$Code, [string]$Message, [AllowNull()][Exception]$Inner)
+    $exception = if ($null -eq $Inner) {
+        [InvalidOperationException]::new($Message)
+    }
+    else {
+        [InvalidOperationException]::new($Message, $Inner)
+    }
+    $exception.Data['FslFormalLauncherBundleCode'] = $Code
+    return $exception
+}
+
+function Stop-FslFlb {
+    param([string]$Code, [string]$Message, [AllowNull()][Exception]$Inner)
+    throw (New-FslFlbException $Code $Message $Inner)
+}
+
+function Get-FslFlbNames {
+    param($Value)
+    if ($Value -is [Collections.IDictionary]) {
+        return @($Value.Keys | ForEach-Object { [string]$_ })
+    }
+    return @($Value.PSObject.Properties | ForEach-Object { $_.Name })
+}
+
+function Get-FslFlbValue {
+    param($Value, [string]$Name)
+    if ($Value -is [Collections.IDictionary]) {
+        return $Value[$Name]
+    }
+    return $Value.PSObject.Properties[$Name].Value
+}
+
+function Test-FslFlbNames {
+    param($Value, [string[]]$Expected)
+    $actual = @(Get-FslFlbNames $Value)
+    if ($actual.Count -ne $Expected.Count) { return $false }
+    for ($index = 0; $index -lt $Expected.Count; $index++) {
+        if ($actual[$index] -cne $Expected[$index]) { return $false }
+    }
+    return $true
+}
+
+function Test-FslFlbLeaf {
+    param([AllowNull()][string]$Value)
+    if ([string]::IsNullOrEmpty($Value) -or
+        $Value -in @('.', '..') -or
+        [IO.Path]::IsPathRooted($Value) -or
+        $Value.IndexOfAny([char[]]"\/:") -ge 0 -or
+        $Value -match '[\x00-\x1F<>:"|?*]' -or
+        $Value.EndsWith(' ') -or
+        $Value.EndsWith('.')) {
+        return $false
+    }
+    $stem = $Value.Split('.')[0]
+    if ($stem -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+        return $false
+    }
+    return $true
+}
+
+function Assert-FslFlbModel {
+    param([psobject]$Model)
+    if (-not (Test-FslFlbNames $Model $script:FlbModelNames) -or
+        $Model.schemaVersion -isnot [int] -or
+        [int]$Model.schemaVersion -ne 1 -or
+        [string]$Model.authorityProfile -cnotin $script:FlbProfiles -or
+        [string]::IsNullOrWhiteSpace([string]$Model.contractId) -or
+        [string]::IsNullOrWhiteSpace([string]$Model.checkpoint) -or
+        [string]::IsNullOrWhiteSpace([string]$Model.attemptId) -or
+        [string]$Model.runId -cnotmatch $script:FlbRunIdPattern -or
+        -not (Test-FslFlbNames `
+            $Model.rootBinding `
+            $script:FlbRootBindingNames) -or
+        -not (Test-FslFlbNames `
+            $Model.recoveryAuthority `
+            $script:FlbRecoveryAuthorityNames) -or
+        -not (Test-FslFlbLeaf ([string]$Model.rootBinding.sourceLeafName)) -or
+        -not (Test-FslFlbLeaf ([string]$Model.rootBinding.bundleLeafName)) -or
+        [string]$Model.rootBinding.sourceLeafName -ceq
+            [string]$Model.rootBinding.bundleLeafName -or
+        [string]::IsNullOrWhiteSpace(
+            [string]$Model.recoveryAuthority.contractId) -or
+        [string]$Model.recoveryAuthority.contractSha256 -cnotmatch
+            $script:FlbShaPattern) {
+        Stop-FslFlb `
+            'FSL-FLB-V001-MODEL' `
+            'The slim formal-launcher capability model is invalid.' `
+            $null
+    }
+    if ([string]$Model.authorityProfile -ceq 'Formal') {
+        if ($null -ne $Model.rootBinding.fixtureId) {
+            Stop-FslFlb `
+                'FSL-FLB-V001-MODEL' `
+                'Formal authority requires a null fixtureId.' `
+                $null
+        }
+    }
+    else {
+        if ($Model.rootBinding.fixtureId -isnot [string]) {
+            Stop-FslFlb `
+                'FSL-FLB-V001-MODEL' `
+                'TestFixture authority requires a canonical Guid-D fixtureId.' `
+                $null
+        }
+        $fixture = [Guid]::Empty
+        if (-not [Guid]::TryParseExact(
+                [string]$Model.rootBinding.fixtureId,
+                'D',
+                [ref]$fixture) -or
+            $fixture.ToString('D') -cne
+                [string]$Model.rootBinding.fixtureId) {
+            Stop-FslFlb `
+                'FSL-FLB-V001-MODEL' `
+                'TestFixture authority requires a canonical Guid-D fixtureId.' `
+                $null
+        }
+    }
+}
+
+# Responsibility 2: canonical JSON and cryptographic helpers.
+function ConvertTo-FslFlbJsonString {
+    param([string]$Value)
+    return ($Value | ConvertTo-Json -Compress)
+}
+
+function ConvertTo-FslFlbJsonValue {
+    param([AllowNull()]$Value, [int]$Depth)
+    if ($Depth -gt 64) {
+        Stop-FslFlb 'FSL-FLB-V005-CONTRACT-CANONICAL' 'JSON depth exceeded.' $null
+    }
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [string] -or $Value -is [char]) {
+        return ConvertTo-FslFlbJsonString ([string]$Value)
+    }
+    if ($Value -is [bool]) {
+        return $(if ($Value) { 'true' } else { 'false' })
+    }
+    if ($Value -is [byte] -or $Value -is [sbyte] -or
+        $Value -is [int16] -or $Value -is [uint16] -or
+        $Value -is [int32] -or $Value -is [uint32] -or
+        $Value -is [int64] -or $Value -is [uint64]) {
+        return [Convert]::ToString(
+            $Value,
+            [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [Collections.IEnumerable] -and
+        $Value -isnot [Collections.IDictionary] -and
+        $Value -isnot [pscustomobject]) {
+        $items = @($Value)
+        if ($items.Count -eq 0) { return '[]' }
+        $lines = [Collections.Generic.List[string]]::new()
+        [void]$lines.Add('[')
+        for ($index = 0; $index -lt $items.Count; $index++) {
+            $rendered = ConvertTo-FslFlbJsonValue $items[$index] ($Depth + 1)
+            $parts = $rendered -split "`n", -1
+            for ($part = 0; $part -lt $parts.Count; $part++) {
+                $suffix = if (
+                    $part -eq $parts.Count - 1 -and
+                    $index -lt $items.Count - 1) { ',' } else { '' }
+                $prefix = if ($part -eq 0) {
+                    ' ' * (($Depth + 1) * 2)
+                }
+                else { '' }
+                [void]$lines.Add($prefix + $parts[$part] + $suffix)
+            }
+        }
+        [void]$lines.Add((' ' * ($Depth * 2)) + ']')
+        return $lines -join "`n"
+    }
+    if ($Value -is [Collections.IDictionary] -or
+        $Value -is [pscustomobject]) {
+        $names = @(Get-FslFlbNames $Value)
+        if ($names.Count -eq 0) { return '{}' }
+        $lines = [Collections.Generic.List[string]]::new()
+        [void]$lines.Add('{')
+        for ($index = 0; $index -lt $names.Count; $index++) {
+            $name = $names[$index]
+            $rendered = ConvertTo-FslFlbJsonValue (
+                Get-FslFlbValue $Value $name) ($Depth + 1)
+            $parts = $rendered -split "`n", -1
+            for ($part = 0; $part -lt $parts.Count; $part++) {
+                $suffix = if (
+                    $part -eq $parts.Count - 1 -and
+                    $index -lt $names.Count - 1) { ',' } else { '' }
+                if ($part -eq 0) {
+                    [void]$lines.Add(
+                        (' ' * (($Depth + 1) * 2)) +
+                        (ConvertTo-FslFlbJsonString $name) +
+                        ': ' + $parts[$part] + $suffix)
+                }
+                else {
+                    [void]$lines.Add($parts[$part] + $suffix)
+                }
+            }
+        }
+        [void]$lines.Add((' ' * ($Depth * 2)) + '}')
+        return $lines -join "`n"
+    }
+    Stop-FslFlb `
+        'FSL-FLB-V005-CONTRACT-CANONICAL' `
+        "Unsupported JSON value type: $($Value.GetType().FullName)." `
+        $null
+}
+
+function ConvertTo-FslFlbCanonicalJson {
+    param($Value)
+    return (ConvertTo-FslFlbJsonValue $Value 0) + "`n"
+}
+
+function Get-FslFlbBytes {
+    param([string]$Text)
+    return [Text.UTF8Encoding]::new($false, $true).GetBytes($Text)
+}
+
+function Get-FslFlbSha256Bytes {
+    param([byte[]]$Bytes)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString(
+            $hash.ComputeHash($Bytes)).Replace('-', '')
+    }
+    finally { $hash.Dispose() }
+}
+
+function Get-FslFlbSha256 {
+    param([string]$Path)
+    return Get-FslFlbSha256Bytes ([IO.File]::ReadAllBytes($Path))
+}
+
+function Get-FslFlbSha1Bytes {
+    param([byte[]]$Bytes)
+    $hash = [Security.Cryptography.SHA1]::Create()
+    try {
+        return [BitConverter]::ToString(
+            $hash.ComputeHash($Bytes)).Replace('-', '').ToLowerInvariant()
+    }
+    finally { $hash.Dispose() }
+}
+
+function Get-FslFlbMapHash {
+    param([object[]]$Gates)
+    $text = @($Gates | ForEach-Object {
+        ([string]$_.gateId) + '|' + ([string][int]$_.exitCode)
+    }) -join "`n"
+    return Get-FslFlbSha256Bytes (Get-FslFlbBytes $text)
+}
+
+# Responsibility 3: filesystem identity, ACL, durable writes, and roots.
+function Get-FslFlbIdentity {
+    param([string]$Path, [bool]$Directory)
+    return [FolderSessionLock.Stage4.FormalLauncherNative]::Read(
+        $Path,
+        $Directory)
+}
+
+function Test-FslFlbOrdinary {
+    param([string]$Path, [bool]$Directory)
+    try {
+        $identity = Get-FslFlbIdentity $Path $Directory
+        $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+        return -not $identity.Reparse -and
+            $identity.LinkCount -eq 1 -and
+            $identity.RequestedPath -ceq $full -and
+            [string]::Equals(
+                $identity.FinalPath,
+                $full,
+                [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch { return $false }
+}
+
+function Get-FslFlbAclSddl {
+    param([string]$Path, [bool]$Directory)
+    $sections =
+        [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Group -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $security = if ($Directory) {
+        [IO.Directory]::GetAccessControl($Path, $sections)
+    }
+    else {
+        [IO.File]::GetAccessControl($Path, $sections)
+    }
+    return $security.GetSecurityDescriptorSddlForm($sections)
+}
+
+function Test-FslFlbProtectedAcl {
+    param(
+        [string]$Path,
+        [bool]$Directory,
+        [string]$UserSid,
+        [AllowNull()][string]$ExpectedSddl)
+    try {
+        $sections =
+            [Security.AccessControl.AccessControlSections]::Owner -bor
+            [Security.AccessControl.AccessControlSections]::Group -bor
+            [Security.AccessControl.AccessControlSections]::Access
+        $security = if ($Directory) {
+            [IO.Directory]::GetAccessControl($Path, $sections)
+        }
+        else {
+            [IO.File]::GetAccessControl($Path, $sections)
+        }
+        $owner = ([Security.Principal.NTAccount]$security.Owner).Translate(
+            [Security.Principal.SecurityIdentifier]).Value
+        if ($owner -cne $UserSid -or -not $security.AreAccessRulesProtected) {
+            return $false
+        }
+        $rules = @($security.GetAccessRules(
+            $true,
+            $false,
+            [Security.Principal.SecurityIdentifier]))
+        $principals = @('S-1-5-18', 'S-1-5-32-544', $UserSid)
+        $inheritance = if ($Directory) {
+            [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                [Security.AccessControl.InheritanceFlags]::ObjectInherit
+        }
+        else { [Security.AccessControl.InheritanceFlags]::None }
+        if ($rules.Count -ne 3) { return $false }
+        for ($index = 0; $index -lt 3; $index++) {
+            $rule = $rules[$index]
+            if ($rule.IdentityReference.Value -cne $principals[$index] -or
+                $rule.AccessControlType -ne
+                    [Security.AccessControl.AccessControlType]::Allow -or
+                $rule.FileSystemRights -ne
+                    [Security.AccessControl.FileSystemRights]::FullControl -or
+                $rule.InheritanceFlags -ne $inheritance -or
+                $rule.PropagationFlags -ne
+                    [Security.AccessControl.PropagationFlags]::None -or
+                $rule.IsInherited) {
+                return $false
+            }
+        }
+        if (-not [string]::IsNullOrEmpty($ExpectedSddl) -and
+            (Get-FslFlbAclSddl $Path $Directory) -cne $ExpectedSddl) {
+            return $false
+        }
+        return $true
+    }
+    catch { return $false }
+}
+
+function Test-FslFlbFormalTokenProofDto {
+    param([AllowNull()][psobject]$Proof)
+    if ($null -eq $Proof -or
+        -not (Test-FslFlbNames $Proof @(
+            'machineName',
+            'elevationType',
+            'currentAccountSid',
+            'linkedAccountSid',
+            'currentSidType',
+            'linkedSidType',
+            'currentAdministratorsDenyOnly',
+            'currentAdministratorsEnabled',
+            'linkedAdministratorsDenyOnly',
+            'linkedAdministratorsEnabled',
+            'currentAccountDomain',
+            'linkedAccountDomain')) -or
+        $Proof.machineName -isnot [string] -or
+        $Proof.elevationType -isnot [int] -or
+        $Proof.currentAccountSid -isnot [string] -or
+        $Proof.linkedAccountSid -isnot [string] -or
+        $Proof.currentSidType -isnot [int] -or
+        $Proof.linkedSidType -isnot [int] -or
+        $Proof.currentAdministratorsDenyOnly -isnot [bool] -or
+        $Proof.currentAdministratorsEnabled -isnot [bool] -or
+        $Proof.linkedAdministratorsDenyOnly -isnot [bool] -or
+        $Proof.linkedAdministratorsEnabled -isnot [bool] -or
+        $Proof.currentAccountDomain -isnot [string] -or
+        $Proof.linkedAccountDomain -isnot [string]) {
+        return $false
+    }
+    return [string]$Proof.machineName -ceq 'FSL-STAGE4-VM' -and
+        [int]$Proof.elevationType -eq 3 -and
+        [string]$Proof.currentAccountSid -cmatch $script:FlbSidPattern -and
+        [string]$Proof.currentAccountSid -ceq
+            [string]$Proof.linkedAccountSid -and
+        [int]$Proof.currentSidType -eq 1 -and
+        [int]$Proof.linkedSidType -eq 1 -and
+        [bool]$Proof.currentAdministratorsDenyOnly -and
+        -not [bool]$Proof.currentAdministratorsEnabled -and
+        -not [bool]$Proof.linkedAdministratorsDenyOnly -and
+        [bool]$Proof.linkedAdministratorsEnabled -and
+        [string]$Proof.currentAccountDomain -ceq
+            [string]$Proof.machineName -and
+        [string]$Proof.linkedAccountDomain -ceq
+            [string]$Proof.machineName
+}
+
+function Set-FslFlbSddl {
+    param([string]$Path, [string]$Sddl, [bool]$Directory)
+    $security = if ($Directory) {
+        [Security.AccessControl.DirectorySecurity]::new()
+    }
+    else { [Security.AccessControl.FileSecurity]::new() }
+    $sections =
+        [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Group -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $security.SetSecurityDescriptorSddlForm($Sddl, $sections)
+    if ($Directory) {
+        [IO.Directory]::SetAccessControl($Path, $security)
+    }
+    else { [IO.File]::SetAccessControl($Path, $security) }
+}
+
+function ConvertTo-FslFlbFileSddl {
+    param([string]$DirectorySddl)
+    $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
+        $DirectorySddl)
+    $owner = $descriptor.Owner.Value
+    $group = $descriptor.Group.Value
+    return "O:$owner" + "G:$group" +
+        "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;$owner)"
+}
+
+function Write-FslFlbNew {
+    param([string]$Path, [byte[]]$Bytes)
+    $stream = [IO.FileStream]::new(
+        $Path,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::Read,
+        4096,
+        [IO.FileOptions]::WriteThrough)
+    try {
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.Flush($true)
+    }
+    finally { $stream.Dispose() }
+}
+
+function Get-FslFlbRoots {
+    param([psobject]$Model)
+    if ([string]$Model.authorityProfile -ceq 'Formal') {
+        $base = Join-Path (
+            [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::LocalApplicationData)) (
+            'FolderSessionLock\Stage4\Recovery\' + [string]$Model.runId)
+    }
+    else {
+        $base = Join-Path ([IO.Path]::GetTempPath()) (
+            'FolderSessionLock.Tests\' +
+            [string]$Model.rootBinding.fixtureId)
+    }
+    $base = [IO.Path]::GetFullPath($base).TrimEnd('\')
+    $source = [IO.Path]::GetFullPath((
+        Join-Path $base ([string]$Model.rootBinding.sourceLeafName))).TrimEnd('\')
+    $bundle = [IO.Path]::GetFullPath((
+        Join-Path $base ([string]$Model.rootBinding.bundleLeafName))).TrimEnd('\')
+    $prefix = $base + '\'
+    if (-not $source.StartsWith(
+            $prefix,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        -not $bundle.StartsWith(
+            $prefix,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-FslFlb 'FSL-FLB-V002-ROOT' 'A resolved root escaped its authority base.' $null
+    }
+    return [pscustomobject][ordered]@{
+        baseRoot = $base
+        sourceRoot = $source
+        bundleRoot = $bundle
+    }
+}
+
+function Test-FslFlbExactSet {
+    param([object[]]$Actual, [string[]]$Expected)
+    if ($Actual.Count -ne $Expected.Count) { return $false }
+    $set = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    foreach ($item in $Actual) {
+        if (-not $set.Add([string]$item)) { return $false }
+    }
+    foreach ($item in $Expected) {
+        if (-not $set.Contains($item)) { return $false }
+    }
+    return $true
+}
+
+# Responsibility 4: process-free repository authority and recovery authority.
+function Read-FslFlbUInt32Be {
+    param([byte[]]$Bytes, [int]$Offset)
+    return [uint32](
+        ([uint32]$Bytes[$Offset] -shl 24) -bor
+        ([uint32]$Bytes[$Offset + 1] -shl 16) -bor
+        ([uint32]$Bytes[$Offset + 2] -shl 8) -bor
+        [uint32]$Bytes[$Offset + 3])
+}
+
+function Read-FslFlbLooseObject {
+    param(
+        [string]$GitDirectory,
+        [string]$ObjectId,
+        [string]$ExpectedType)
+    $path = Join-Path $GitDirectory (
+        'objects\' + $ObjectId.Substring(0, 2) + '\' +
+        $ObjectId.Substring(2))
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The required Git object is not a loose object; authority fails closed.' `
+            $null
+    }
+    $bytes = [IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -lt 7) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'A Git object is invalid.' $null
+    }
+    if (-not [FolderSessionLock.Stage4.FormalLauncherNative]::
+        ValidateZlibEnvelope($bytes)) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'A Git loose-object zlib envelope is invalid.' `
+            $null
+    }
+    $input = [IO.MemoryStream]::new(
+        $bytes,
+        2,
+        $bytes.Length - 6,
+        $false)
+    $deflate = [IO.Compression.DeflateStream]::new(
+        $input,
+        [IO.Compression.CompressionMode]::Decompress)
+    $output = [IO.MemoryStream]::new()
+    try {
+        $deflate.CopyTo($output)
+        $uncompressed = $output.ToArray()
+        $a = [uint32]1
+        $b = [uint32]0
+        foreach ($value in $uncompressed) {
+            $a = [uint32](($a + $value) % 65521)
+            $b = [uint32](($b + $a) % 65521)
+        }
+        $adler = [uint32](($b -shl 16) -bor $a)
+        $storedAdler = Read-FslFlbUInt32Be $bytes ($bytes.Length - 4)
+        if ($adler -ne $storedAdler -or
+            (Get-FslFlbSha1Bytes $uncompressed) -cne $ObjectId) {
+            Stop-FslFlb `
+                'FSL-FLB-V010-SOURCE-RECOVERY' `
+                'A Git loose-object checksum drifted.' `
+                $null
+        }
+        $nul = [Array]::IndexOf($uncompressed, [byte]0)
+        if ($nul -le 0) {
+            Stop-FslFlb `
+                'FSL-FLB-V010-SOURCE-RECOVERY' `
+                'A Git loose-object header is invalid.' `
+                $null
+        }
+        $header = [Text.Encoding]::ASCII.GetString($uncompressed, 0, $nul)
+        $match = [regex]::Match(
+            $header,
+            '^(?<type>commit|tree|blob) (?<length>0|[1-9][0-9]*)$')
+        [int64]$declaredLength = 0
+        if (-not $match.Success -or
+            $match.Groups['type'].Value -cne $ExpectedType -or
+            -not [int64]::TryParse(
+                $match.Groups['length'].Value,
+                [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$declaredLength) -or
+            $declaredLength -ne $uncompressed.Length - $nul - 1) {
+            Stop-FslFlb `
+                'FSL-FLB-V010-SOURCE-RECOVERY' `
+                'A Git loose-object type or length drifted.' `
+                $null
+        }
+        return $uncompressed
+    }
+    finally {
+        $output.Dispose()
+        $deflate.Dispose()
+        $input.Dispose()
+    }
+}
+
+function Get-FslFlbRepository {
+    $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $candidate = $projectRoot
+    $gitRoot = $null
+    while (-not [string]::IsNullOrEmpty($candidate)) {
+        if (Test-Path -LiteralPath (Join-Path $candidate '.git') -PathType Container) {
+            $gitRoot = $candidate
+            break
+        }
+        $parent = Split-Path -Parent $candidate
+        if ($parent -ceq $candidate) { break }
+        $candidate = $parent
+    }
+    if ($null -eq $gitRoot) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Git root is unavailable.' $null
+    }
+    return Get-FslFlbRepositoryAtRoot $projectRoot $gitRoot
+}
+
+function Get-FslFlbRepositoryAtRoot {
+    param([string]$ProjectRoot, [string]$GitRoot)
+    $projectRoot = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
+    $gitRoot = [IO.Path]::GetFullPath($GitRoot).TrimEnd('\')
+    if (-not (Test-FslFlbOrdinary $gitRoot $true) -or
+        -not $projectRoot.StartsWith(
+            $gitRoot + '\',
+            [StringComparison]::OrdinalIgnoreCase) -and
+        $projectRoot -cne $gitRoot) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The Git/project roots are not ordinary and contained.' `
+            $null
+    }
+    $gitDirectory = Join-Path $gitRoot '.git'
+    if (-not (Test-FslFlbOrdinary $gitDirectory $true)) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The Git directory identity is unavailable.' `
+            $null
+    }
+    $headText = [IO.File]::ReadAllText(
+        (Join-Path $gitDirectory 'HEAD'),
+        [Text.UTF8Encoding]::new($false, $true)).Trim()
+    if (-not $headText.StartsWith('ref: refs/heads/', [StringComparison]::Ordinal)) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'Detached Git HEAD is not allowed.' $null
+    }
+    $reference = $headText.Substring(5)
+    $branch = $reference.Substring('refs/heads/'.Length)
+    $referencePath = Join-Path $gitDirectory ($reference.Replace('/', '\'))
+    if (-not (Test-Path -LiteralPath $referencePath -PathType Leaf)) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Git branch ref is unavailable.' $null
+    }
+    $head = [IO.File]::ReadAllText($referencePath).Trim()
+    if ($head -cnotmatch $script:FlbGitPattern) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Git HEAD is invalid.' $null
+    }
+    $commitBytes = Read-FslFlbLooseObject $gitDirectory $head 'commit'
+    $nul = [Array]::IndexOf($commitBytes, [byte]0)
+    if ($nul -lt 0) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Git commit object is invalid.' $null
+    }
+    $commitText = [Text.UTF8Encoding]::new($false, $true).GetString(
+        $commitBytes,
+        $nul + 1,
+        $commitBytes.Length - $nul - 1)
+    $match = [regex]::Match($commitText, '^tree (?<tree>[0-9a-f]{40})\n')
+    if (-not $match.Success) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Git tree is unavailable.' $null
+    }
+    $tree = $match.Groups['tree'].Value
+    $trackedClean = Test-FslFlbIndexClean $gitRoot $gitDirectory $tree
+    return [pscustomobject][ordered]@{
+        projectRoot = $projectRoot
+        gitRoot = $gitRoot
+        gitDirectory = $gitDirectory
+        branch = $branch
+        head = $head
+        tree = $tree
+        trackedClean = $trackedClean
+    }
+}
+
+function Test-FslFlbIndexClean {
+    param(
+        [string]$GitRoot,
+        [string]$GitDirectory,
+        [string]$ExpectedTree)
+    return [FolderSessionLock.Stage4.FormalLauncherNative]::
+        VerifyGitIndexAndTree($GitRoot, $GitDirectory, $ExpectedTree)
+}
+
+function Assert-FslFlbRecoveryShape {
+    param([psobject]$Recovery)
+    if (-not (Test-FslFlbNames $Recovery $script:FlbRecoveryNames) -or
+        $Recovery.schemaVersion -isnot [int] -or
+        [int]$Recovery.schemaVersion -ne 2 -or
+        -not (Test-FslFlbNames `
+            $Recovery.identity `
+            @(
+                'machineName',
+                'repository',
+                'branch',
+                'gitCommit',
+                'gitTree',
+                'runId',
+                'userSid')) -or
+        -not (Test-FslFlbNames `
+            $Recovery.source `
+            @('module', 'native', 'controller')) -or
+        -not (Test-FslFlbNames `
+            $Recovery.canonical `
+            @(
+                'evidenceRoot',
+                'evidenceFiles',
+                'externalAnchorRoot',
+                'externalAnchorFiles')) -or
+        -not (Test-FslFlbNames `
+            $Recovery.transaction `
+            @(
+                'transactionId',
+                'workflow',
+                'recoveryMode',
+                'planHash',
+                'planCount',
+                'operationIdentitySha256',
+                'prefixRecordSha256',
+                'directory',
+                'expectedPost')) -or
+        -not (Test-FslFlbNames `
+            $Recovery.transaction.directory `
+            @(
+                'path',
+                'finalPath',
+                'fileId',
+                'aclSddl',
+                'ordinaryDirectory',
+                'nonReparse',
+                'childCount')) -or
+        -not (Test-FslFlbNames `
+            $Recovery.transaction.expectedPost `
+            @(
+                'walRecordCount',
+                'latestGeneration',
+                'latestSlot',
+                'previousGeneration',
+                'previousSlot',
+                'stateSequence',
+                'stateTransition',
+                'directoryAbsent',
+                'programDataAbsent',
+                'serviceAbsent',
+                'addedPhases')) -or
+        -not (Test-FslFlbNames `
+            $Recovery.release `
+            @(
+                'root',
+                'fileCount',
+                'fingerprintSha256',
+                'descriptorSha256',
+                'manifestSha256',
+                'sumsSha256')) -or
+        -not (Test-FslFlbNames `
+            $Recovery.futureInvocation `
+            @(
+                'filePath',
+                'arguments',
+                'verb',
+                'passThru',
+                'wait',
+                'redirectStandardOutput',
+                'redirectStandardError')) -or
+        -not (Test-FslFlbNames $Recovery.binding @('wrapperSha256'))) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The recovery contract nested shape, order, case, or type is invalid.' `
+            $null
+    }
+    if ($Recovery.identity.machineName -isnot [string] -or
+        $Recovery.identity.repository -isnot [string] -or
+        $Recovery.identity.branch -isnot [string] -or
+        $Recovery.identity.gitCommit -isnot [string] -or
+        $Recovery.identity.gitTree -isnot [string] -or
+        $Recovery.identity.runId -isnot [string] -or
+        $Recovery.identity.userSid -isnot [string] -or
+        $Recovery.transaction.planCount -isnot [int] -or
+        $Recovery.transaction.directory.childCount -isnot [int] -or
+        $Recovery.transaction.directory.ordinaryDirectory -isnot [bool] -or
+        $Recovery.transaction.directory.nonReparse -isnot [bool] -or
+        $Recovery.transaction.expectedPost.walRecordCount -isnot [int] -or
+        $Recovery.transaction.expectedPost.latestGeneration -isnot [int] -or
+        $Recovery.transaction.expectedPost.previousGeneration -isnot [int] -or
+        $Recovery.transaction.expectedPost.stateSequence -isnot [int] -or
+        $Recovery.transaction.expectedPost.directoryAbsent -isnot [bool] -or
+        $Recovery.transaction.expectedPost.programDataAbsent -isnot [bool] -or
+        $Recovery.transaction.expectedPost.serviceAbsent -isnot [bool] -or
+        $Recovery.release.fileCount -isnot [int] -or
+        $Recovery.futureInvocation.passThru -isnot [bool] -or
+        $Recovery.futureInvocation.wait -isnot [bool] -or
+        $Recovery.futureInvocation.redirectStandardOutput -isnot [bool] -or
+        $Recovery.futureInvocation.redirectStandardError -isnot [bool] -or
+        $Recovery.allowedWrites -isnot [object[]] -or
+        $Recovery.forbiddenActions -isnot [object[]] -or
+        $Recovery.futureInvocation.arguments -isnot [object[]] -or
+        $Recovery.transaction.expectedPost.addedPhases -isnot [object[]]) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The recovery contract nested value types are invalid.' `
+            $null
+    }
+    foreach ($name in @('module', 'native', 'controller')) {
+        if (-not (Test-FslFlbNames `
+            (Get-FslFlbValue $Recovery.source $name) `
+            @('path', 'length', 'sha256'))) {
+            Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'A source binding shape is invalid.' $null
+        }
+    }
+    foreach ($entry in @($Recovery.canonical.evidenceFiles) +
+        @($Recovery.canonical.externalAnchorFiles)) {
+        if (-not (Test-FslFlbNames $entry @('path', 'length', 'sha256'))) {
+            Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'A canonical binding shape is invalid.' $null
+        }
+    }
+}
+
+function Get-FslFlbFileRecord {
+    param([string]$Path)
+    $identity = Get-FslFlbIdentity $Path $false
+    return [pscustomobject][ordered]@{
+        path = [IO.Path]::GetFullPath($Path)
+        length = (Get-Item -LiteralPath $Path).Length
+        sha256 = Get-FslFlbSha256 $Path
+        finalPath = $identity.FinalPath
+        fileId = $identity.Identity
+        aclSddl = Get-FslFlbAclSddl $Path $false
+    }
+}
+
+function Get-FslFlbDirectoryRecord {
+    param([string]$Path)
+    $identity = Get-FslFlbIdentity $Path $true
+    return [pscustomobject][ordered]@{
+        path = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+        finalPath = $identity.FinalPath
+        fileId = $identity.Identity
+        aclSddl = Get-FslFlbAclSddl $Path $true
+        childCount = @(Get-ChildItem -LiteralPath $Path -Force).Count
+    }
+}
+
+function Assert-FslFlbBoundFile {
+    param([psobject]$Record, [bool]$RequireAcl)
+    if (-not (Test-Path -LiteralPath ([string]$Record.path) -PathType Leaf) -or
+        -not (Test-FslFlbOrdinary ([string]$Record.path) $false) -or
+        (Get-Item -LiteralPath ([string]$Record.path)).Length -ne
+            [int64]$Record.length -or
+        (Get-FslFlbSha256 ([string]$Record.path)) -cne
+            [string]$Record.sha256) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'A bound file drifted.' $null
+    }
+    if ($RequireAcl -and
+        (Get-FslFlbAclSddl ([string]$Record.path) $false) -cne
+            [string]$Record.aclSddl) {
+        Stop-FslFlb 'FSL-FLB-V013-ACL' 'A bound file ACL drifted.' $null
+    }
+}
+
+function Resolve-FslFlbAuthority {
+    param([psobject]$Model)
+    $roots = Get-FslFlbRoots $Model
+    if (-not (Test-Path -LiteralPath $roots.baseRoot -PathType Container) -or
+        -not (Test-FslFlbOrdinary $roots.baseRoot $true) -or
+        -not (Test-Path -LiteralPath $roots.sourceRoot -PathType Container) -or
+        -not (Test-FslFlbOrdinary $roots.sourceRoot $true)) {
+        Stop-FslFlb 'FSL-FLB-V002-ROOT' 'The internal authority roots are invalid.' $null
+    }
+    $sourceChildren = @(
+        Get-ChildItem -LiteralPath $roots.sourceRoot -Force |
+            ForEach-Object { $_.Name })
+    if (-not (Test-FslFlbExactSet $sourceChildren $script:FlbSourceNames)) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The source root is not exact-two.' $null
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $sid = $identity.User.Value
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $administrator = $principal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    $tokenProof = $null
+    if ([string]$Model.authorityProfile -ceq 'Formal') {
+        try {
+            $nativeProof =
+                [FolderSessionLock.Stage4.FormalLauncherNative]::
+                    ReadFormalTokenProof()
+            $tokenProof = [pscustomobject][ordered]@{
+                machineName = [string]$nativeProof.MachineName
+                elevationType = [int]$nativeProof.ElevationType
+                currentAccountSid = [string]$nativeProof.CurrentAccountSid
+                linkedAccountSid = [string]$nativeProof.LinkedAccountSid
+                currentSidType = [int]$nativeProof.CurrentSidType
+                linkedSidType = [int]$nativeProof.LinkedSidType
+                currentAdministratorsDenyOnly =
+                    [bool]$nativeProof.CurrentAdministratorsDenyOnly
+                currentAdministratorsEnabled =
+                    [bool]$nativeProof.CurrentAdministratorsEnabled
+                linkedAdministratorsDenyOnly =
+                    [bool]$nativeProof.LinkedAdministratorsDenyOnly
+                linkedAdministratorsEnabled =
+                    [bool]$nativeProof.LinkedAdministratorsEnabled
+                currentAccountDomain =
+                    [string]$nativeProof.CurrentAccountDomain
+                linkedAccountDomain =
+                    [string]$nativeProof.LinkedAccountDomain
+            }
+        }
+        catch {
+            Stop-FslFlb `
+                'FSL-FLB-V011-FORMAL-TOKEN' `
+                'The native formal token proof is unavailable.' `
+                $_.Exception
+        }
+        if (-not (Test-FslFlbFormalTokenProofDto $tokenProof)) {
+            Stop-FslFlb `
+                'FSL-FLB-V011-FORMAL-TOKEN' `
+                'The native formal token proof failed closed.' `
+                $null
+        }
+    }
+    $sourceSddl = Get-FslFlbAclSddl $roots.sourceRoot $true
+    if (-not (Test-FslFlbProtectedAcl `
+        $roots.sourceRoot `
+        $true `
+        $sid `
+        $sourceSddl)) {
+        Stop-FslFlb 'FSL-FLB-V013-ACL' 'The source root ACL is invalid.' $null
+    }
+    $wrapperPath = Join-Path $roots.sourceRoot 'elevated-reconcile.ps1'
+    $recoveryPath = Join-Path $roots.sourceRoot 'recovery-contract.json'
+    foreach ($path in @($wrapperPath, $recoveryPath)) {
+        if (-not (Test-FslFlbOrdinary $path $false) -or
+            -not (Test-FslFlbProtectedAcl $path $false $sid $null)) {
+            Stop-FslFlb 'FSL-FLB-V013-ACL' 'A source file identity or ACL is invalid.' $null
+        }
+    }
+    if ([string]$Model.authorityProfile -ceq 'TestFixture') {
+        $wrapperText = [IO.File]::ReadAllText(
+            $wrapperPath,
+            [Text.UTF8Encoding]::new($false, $true))
+        if ($wrapperText -cnotmatch
+            "(?m)^\s*throw 'TEST_FIXTURE_NEVER_EXECUTE'\s*$") {
+            Stop-FslFlb `
+                'FSL-FLB-V010-SOURCE-RECOVERY' `
+                'A TestFixture wrapper must be an explicit non-executable sentinel.' `
+                $null
+        }
+    }
+    $recoveryHash = Get-FslFlbSha256 $recoveryPath
+    if ($recoveryHash -cne
+            [string]$Model.recoveryAuthority.contractSha256) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The public recovery hash binding drifted.' $null
+    }
+    $rawRecovery = [IO.File]::ReadAllText(
+        $recoveryPath,
+        [Text.UTF8Encoding]::new($false, $true))
+    $recovery = $rawRecovery | ConvertFrom-Json
+    Assert-FslFlbRecoveryShape $recovery
+    if ([string]$recovery.contractId -cne
+            [string]$Model.recoveryAuthority.contractId) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The recovery contract ID drifted.' $null
+    }
+    $gates = @($recovery.contractStageGates)
+    if ($gates.Count -ne 171) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The recovery gate count drifted.' $null
+    }
+    if (-not (Test-FslFlbGateMapDto $gates)) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The recovery gate map drifted.' `
+            $null
+    }
+    $repository = Get-FslFlbRepository
+    if ([string]$recovery.identity.machineName -cne [Environment]::MachineName -or
+        [string]$recovery.identity.repository -cne $repository.projectRoot -or
+        [string]$recovery.identity.branch -cne $repository.branch -or
+        [string]$recovery.identity.gitCommit -cne $repository.head -or
+        [string]$recovery.identity.gitTree -cne $repository.tree -or
+        [string]$recovery.identity.runId -cne [string]$Model.runId -or
+        [string]$recovery.identity.userSid -cne $sid) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'Recovery/current authority cross-check failed.' $null
+    }
+    foreach ($name in @('module', 'native', 'controller')) {
+        $record = Get-FslFlbValue $recovery.source $name
+        Assert-FslFlbBoundFile $record $false
+    }
+    if ((Get-FslFlbSha256 $wrapperPath) -cne
+        [string]$recovery.binding.wrapperSha256) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The wrapper binding drifted.' $null
+    }
+    foreach ($record in @($recovery.canonical.evidenceFiles) +
+        @($recovery.canonical.externalAnchorFiles)) {
+        Assert-FslFlbBoundFile $record $false
+    }
+    foreach ($root in @(
+        [string]$recovery.canonical.evidenceRoot,
+        [string]$recovery.canonical.externalAnchorRoot)) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container) -or
+            -not (Test-FslFlbOrdinary $root $true)) {
+            Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'A canonical root drifted.' $null
+        }
+    }
+    $evidenceActual = @(
+        Get-ChildItem -LiteralPath ([string]$recovery.canonical.evidenceRoot) -File |
+            ForEach-Object { $_.FullName })
+    $evidenceExpected = @($recovery.canonical.evidenceFiles |
+        ForEach-Object { [string]$_.path })
+    if (-not (Test-FslFlbExactSet $evidenceActual $evidenceExpected)) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The evidence exact set drifted.' $null
+    }
+    $anchorActual = @(
+        Get-ChildItem -LiteralPath ([string]$recovery.canonical.externalAnchorRoot) -File |
+            ForEach-Object { $_.FullName })
+    $anchorExpected = @($recovery.canonical.externalAnchorFiles |
+        ForEach-Object { [string]$_.path })
+    if (-not (Test-FslFlbExactSet $anchorActual $anchorExpected)) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The anchor exact set drifted.' $null
+    }
+    $releaseRoot = [string]$recovery.release.root
+    $releaseFiles = @(Get-ChildItem -LiteralPath $releaseRoot -File -Force)
+    if ($releaseFiles.Count -ne [int]$recovery.release.fileCount) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Release exact set drifted.' $null
+    }
+    $releaseLines = @($releaseFiles | Sort-Object Name | ForEach-Object {
+        $_.Name + '|' + $_.Length + '|' + (Get-FslFlbSha256 $_.FullName)
+    })
+    if ((Get-FslFlbSha256Bytes (
+            Get-FslFlbBytes ($releaseLines -join "`n"))) -cne
+            [string]$recovery.release.fingerprintSha256 -or
+        (Get-FslFlbSha256 (
+            Join-Path $releaseRoot 'release-descriptor.json')) -cne
+            [string]$recovery.release.descriptorSha256 -or
+        (Get-FslFlbSha256 (
+            Join-Path $releaseRoot 'release-manifest.json')) -cne
+            [string]$recovery.release.manifestSha256 -or
+        (Get-FslFlbSha256 (
+            Join-Path $releaseRoot 'SHA256SUMS.txt')) -cne
+            [string]$recovery.release.sumsSha256) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Release fingerprint drifted.' $null
+    }
+    $directory = $recovery.transaction.directory
+    if (-not (Test-Path -LiteralPath ([string]$directory.path) -PathType Container) -or
+        -not (Test-FslFlbOrdinary ([string]$directory.path) $true)) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The transaction directory drifted.' $null
+    }
+    $directoryIdentity = Get-FslFlbIdentity ([string]$directory.path) $true
+    if ($directoryIdentity.FinalPath -cne [string]$directory.finalPath -or
+        $directoryIdentity.Identity -cne [string]$directory.fileId -or
+        (Get-FslFlbAclSddl ([string]$directory.path) $true) -cne
+            [string]$directory.aclSddl -or
+        @(Get-ChildItem -LiteralPath ([string]$directory.path) -Force).Count -ne
+            [int]$directory.childCount) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The transaction directory binding drifted.' $null
+    }
+    $powerShell = Join-Path (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::System)) (
+        'WindowsPowerShell\v1.0\powershell.exe')
+    $expectedRecoveryArguments = @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        $wrapperPath)
+    if ([string]$recovery.futureInvocation.filePath -cne $powerShell -or
+        (@($recovery.futureInvocation.arguments) -join [char]0) -cne
+            ($expectedRecoveryArguments -join [char]0) -or
+        [string]$recovery.futureInvocation.verb -cne 'RunAs' -or
+        -not [bool]$recovery.futureInvocation.passThru -or
+        -not [bool]$recovery.futureInvocation.wait -or
+        [bool]$recovery.futureInvocation.redirectStandardOutput -or
+        [bool]$recovery.futureInvocation.redirectStandardError) {
+        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The recovery invocation drifted.' $null
+    }
+    $installDirectory = [string]$directory.path
+    $programData = Join-Path (
+        [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::CommonApplicationData)) (
+        'FolderSessionLock')
+    $serviceRegistry =
+        'HKLM:\SYSTEM\CurrentControlSet\Services\FolderSessionLockRecovery'
+    $productProcesses = @(
+        Get-Process -Name (
+            'FolderSessionLock.App',
+            'FolderSessionLock.Broker',
+            'FolderSessionLock.Recovery',
+            'FolderSessionLock.Service') -ErrorAction SilentlyContinue)
+    $service = Get-Service -Name 'FolderSessionLockRecovery' -ErrorAction SilentlyContinue
+    $appInfo = Get-Service -Name 'AppInfo' -ErrorAction SilentlyContinue
+    $enableLua = Get-ItemPropertyValue `
+        -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+        -Name EnableLUA `
+        -ErrorAction Stop
+    $formalEligible =
+        [string]$Model.authorityProfile -ceq 'Formal' -and
+        $null -ne $tokenProof -and
+        [Environment]::UserInteractive -and
+        $repository.trackedClean
+    $sourceRecords = @(
+        Get-FslFlbFileRecord $wrapperPath
+        Get-FslFlbFileRecord $recoveryPath)
+    $evidenceRecords = @($recovery.canonical.evidenceFiles |
+        ForEach-Object { Get-FslFlbFileRecord ([string]$_.path) })
+    $anchorRecords = @($recovery.canonical.externalAnchorFiles |
+        ForEach-Object { Get-FslFlbFileRecord ([string]$_.path) })
+    $releaseRecords = @($releaseFiles | Sort-Object Name |
+        ForEach-Object { Get-FslFlbFileRecord $_.FullName })
+    return [pscustomobject][ordered]@{
+        schemaVersion = 1
+        formalExecutionEligible = $formalEligible
+        profile = [string]$Model.authorityProfile
+        roots = $roots
+        identity = [pscustomobject][ordered]@{
+            machineName = [Environment]::MachineName
+            userSid = $sid
+            sessionId = $session
+            isAdministrator = $administrator
+            isInteractive = [Environment]::UserInteractive
+            formalTokenProof = $tokenProof
+        }
+        repository = $repository
+        executable = [pscustomobject][ordered]@{
+            powerShellPath = $powerShell
+            workingDirectory = (
+                [Environment]::GetFolderPath(
+                    [Environment+SpecialFolder]::System))
+        }
+        source = [pscustomobject][ordered]@{
+            rootSddl = $sourceSddl
+            fileSddl = Get-FslFlbAclSddl $wrapperPath $false
+            files = $sourceRecords
+            recoveryContractId = [string]$recovery.contractId
+            recoveryContractSha256 = $recoveryHash
+            recoveryGateMapSha256 = Get-FslFlbMapHash $gates
+        }
+        currentBindings = [pscustomobject][ordered]@{
+            sourceRoot = Get-FslFlbDirectoryRecord $roots.sourceRoot
+            evidenceRoot = Get-FslFlbDirectoryRecord (
+                [string]$recovery.canonical.evidenceRoot)
+            evidenceFiles = $evidenceRecords
+            externalAnchorRoot = Get-FslFlbDirectoryRecord (
+                [string]$recovery.canonical.externalAnchorRoot)
+            externalAnchorFiles = $anchorRecords
+            releaseRoot = Get-FslFlbDirectoryRecord $releaseRoot
+            releaseFiles = $releaseRecords
+            transactionDirectory = Get-FslFlbDirectoryRecord (
+                [string]$directory.path)
+        }
+        canonical = $recovery.canonical
+        release = $recovery.release
+        transaction = $recovery.transaction
+        recoveryInvocation = $recovery.futureInvocation
+        systemState = [pscustomobject][ordered]@{
+            installDirectory = $installDirectory
+            programDataRoot = $programData
+            programDataAbsent = -not (Test-Path -LiteralPath $programData)
+            serviceRegistryPath = $serviceRegistry
+            serviceRegistryAbsent = -not (Test-Path -LiteralPath $serviceRegistry)
+            serviceAbsent = $null -eq $service
+            productProcessCount = $productProcesses.Count
+            enableLua = [int]$enableLua
+            appInfoStatus = if ($null -eq $appInfo) {
+                'Missing'
+            }
+            else { [string]$appInfo.Status }
+        }
+    }
+}
+
+# Responsibility 5: internal policy and deterministic renderers.
+function ConvertTo-FslFlbWindowsArgument {
+    param([AllowEmptyString()][string]$Value)
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+    $builder = [Text.StringBuilder]::new()
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes++
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append('\' * ($backslashes * 2 + 1))
+            [void]$builder.Append('"')
+        }
+        else {
+            if ($backslashes -gt 0) {
+                [void]$builder.Append('\' * $backslashes)
+            }
+            [void]$builder.Append($character)
+        }
+        $backslashes = 0
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append('\' * ($backslashes * 2))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Join-FslFlbWindowsArgumentLine {
+    param([string[]]$Arguments)
+    return @($Arguments | ForEach-Object {
+        ConvertTo-FslFlbWindowsArgument $_
+    }) -join ' '
+}
+
+function Get-FslFlbPolicy {
+    param([psobject]$Model, [psobject]$Authority)
+    $bundle = $Authority.roots.bundleRoot
+    $observer = Join-Path $bundle 'launch-observer.ps1'
+    $outer = Join-Path $bundle 'outer-launcher.ps1'
+    $contract = Join-Path $bundle 'launch-observer-contract.json'
+    $latch = Join-Path $bundle 'launch-attempt.jsonl'
+    $powerShell = $Authority.executable.powerShellPath
+    $commandLine = '"' + $powerShell +
+        '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+        $observer + '"'
+    $recoveryArgumentLine = Join-FslFlbWindowsArgumentLine (
+        [string[]]@($Authority.recoveryInvocation.arguments))
+    return [pscustomobject][ordered]@{
+        schemaVersion = 1
+        files = [pscustomobject][ordered]@{
+            outerLauncherPath = $outer
+            observerPath = $observer
+            contractPath = $contract
+        }
+        outerInvocation = [pscustomobject][ordered]@{
+            filePath = $powerShell
+            arguments = @(
+                '-NoLogo',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                $observer)
+            windowStyle = 'Hidden'
+            passThru = $true
+            wait = $false
+            redirectStandardOutput = $false
+            redirectStandardError = $false
+        }
+        recoveryRunAs = [pscustomobject][ordered]@{
+            applicationName = $powerShell
+            argumentLine = $recoveryArgumentLine
+            verb = 'RunAs'
+            passThru = $true
+            wait = $true
+        }
+        nativeOuterLaunch = [pscustomobject][ordered]@{
+            primitive = 'CreateProcessW'
+            launcherPath = $outer
+            applicationName = $powerShell
+            commandLine = $commandLine
+            workingDirectory = $Authority.executable.workingDirectory
+            creationFlags = @(
+                'CREATE_BREAKAWAY_FROM_JOB',
+                'CREATE_NO_WINDOW')
+            numericCreationFlags = '0x09000000'
+            inheritHandles = $false
+            currentUser = $true
+            requireNonElevated = $true
+            requireInteractive = $true
+            requiredUserSid = $Authority.identity.userSid
+            requiredSessionId = $Authority.identity.sessionId
+            windowStyle = 'Hidden'
+            noWindow = $true
+            wait = $false
+            fallbackAllowed = $false
+        }
+        latch = [pscustomobject][ordered]@{
+            path = $latch
+            schemaVersion = 1
+            fileMode = 'CreateNew'
+            fileAccess = 'Write'
+            fileShare = 'Read'
+            fileOptions = 'WriteThrough'
+            encoding = 'UTF-8 without BOM'
+            records = @(
+                'LaunchCommitted',
+                'RunAsInvoking',
+                'LaunchResult')
+        }
+        resultSchema = [pscustomobject][ordered]@{
+            schemaVersion = 1
+            recordCount = 3
+            fieldOrder = $script:FlbResultFieldOrder
+            temporalFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'"
+            temporalRelation =
+                'record1.timestampUtc <= record2.timestampUtc <= record3.timestampUtc'
+            preAppendReadOnly = $true
+            recoveryGateMappingSchemaVersion = 2
+            recoveryGateMappingCount = 171
+        }
+        exitCodes = [pscustomobject]$script:FlbExitCodes
+        allowedWrites = $script:FlbAllowedWrites
+        forbiddenActions = $script:FlbForbiddenActions
+    }
+}
+
+function ConvertTo-FslFlbLiteral {
+    param([string]$Value)
+    if ($Value.Contains("`r") -or $Value.Contains("`n")) {
+        Stop-FslFlb 'FSL-FLB-V001-MODEL' 'A rendered literal contains a newline.' $null
+    }
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Get-FslFlbPredicateTexts {
+    return @(
+        '[string]$contract.contractId -ceq $fixedContractId',
+        '[string]$contract.attemptId -ceq $fixedAttemptId',
+        '[string]$contract.authority.identity.userSid -ceq $fixedSid',
+        '[int]$contract.authority.identity.sessionId -eq $fixedSessionId',
+        '[string]$contract.bindingManifest.observer.sha256 -ceq (Get-Hash $fixedObserverPath)',
+        '[string]$contract.bindingManifest.outerLauncher.sha256 -ceq (Get-Hash $fixedLauncherPath)',
+        '[string]$contract.policy.nativeOuterLaunch.primitive -ceq ''CreateProcessW''',
+        '[string]$contract.policy.nativeOuterLaunch.applicationName -ceq $fixedPowerShell',
+        '[string]$contract.policy.nativeOuterLaunch.commandLine -ceq $fixedCommandLine',
+        '[string]$contract.policy.nativeOuterLaunch.workingDirectory -ceq $fixedWorkingDirectory',
+        '[string]$contract.policy.nativeOuterLaunch.numericCreationFlags -ceq ''0x09000000''',
+        '-not [bool]$contract.policy.nativeOuterLaunch.inheritHandles',
+        '[bool]$contract.policy.nativeOuterLaunch.currentUser',
+        '[bool]$contract.policy.nativeOuterLaunch.requireNonElevated',
+        '[bool]$contract.policy.nativeOuterLaunch.requireInteractive',
+        '[string]$contract.policy.nativeOuterLaunch.requiredUserSid -ceq $fixedSid',
+        '[int]$contract.policy.nativeOuterLaunch.requiredSessionId -eq $fixedSessionId',
+        '[string]$contract.policy.nativeOuterLaunch.windowStyle -ceq ''Hidden''',
+        '[bool]$contract.policy.nativeOuterLaunch.noWindow',
+        '-not [bool]$contract.policy.nativeOuterLaunch.wait',
+        '-not [bool]$contract.policy.nativeOuterLaunch.fallbackAllowed',
+        'Test-ExactCreationFlags $contract.policy.nativeOuterLaunch.creationFlags')
+}
+
+function Test-FslFlbGateMapDto {
+    param([object[]]$Gates)
+    if ($Gates.Count -ne 171) { return $false }
+    $gateIds = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    $exitCodes = [Collections.Generic.HashSet[int]]::new()
+    for ($index = 0; $index -lt 171; $index++) {
+        $gate = $Gates[$index]
+        if ($null -eq $gate -or
+            -not (Test-FslFlbNames $gate @('gateId', 'exitCode')) -or
+            $gate.gateId -isnot [string] -or
+            $gate.exitCode -isnot [int] -or
+            -not ([string]$gate.gateId).StartsWith(
+                ('FSL-CG-{0:D3}-' -f ($index + 1)),
+                [StringComparison]::Ordinal) -or
+            [int]$gate.exitCode -ne 84 + $index -or
+            -not $gateIds.Add([string]$gate.gateId) -or
+            -not $exitCodes.Add([int]$gate.exitCode)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Resolve-FslFlbGateId {
+    param([int]$ExitCode, [object[]]$Gates)
+    if ($ExitCode -eq 0) { return $null }
+    $matches = @($Gates | Where-Object {
+        $_.exitCode -is [int] -and [int]$_.exitCode -eq $ExitCode
+    })
+    if ($matches.Count -eq 0) { return $null }
+    if ($matches.Count -ne 1) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The recovery exit-code map is ambiguous.' `
+            $null
+    }
+    return [string]$matches[0].gateId
+}
+
+function New-FslFlbTerminalDto {
+    param(
+        [string]$Outcome,
+        [AllowNull()][object]$TargetPid,
+        [AllowNull()][object]$ExitCode,
+        [object[]]$Gates)
+    if ($Outcome -cin @('UacCancelled', 'LaunchFailed')) {
+        return [pscustomobject][ordered]@{
+            outcome = $Outcome
+            targetPid = $null
+            exitCode = $null
+            gateId = $null
+        }
+    }
+    if ($Outcome -cne 'Exited' -or
+        $TargetPid -isnot [int] -or
+        [int]$TargetPid -le 0 -or
+        $ExitCode -isnot [int]) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The terminal result DTO is invalid.' `
+            $null
+    }
+    return [pscustomobject][ordered]@{
+        outcome = 'Exited'
+        targetPid = [int]$TargetPid
+        exitCode = [int]$ExitCode
+        gateId = Resolve-FslFlbGateId ([int]$ExitCode) $Gates
+    }
+}
+
+function Render-FslFlbOuter {
+    param([psobject]$Model, [psobject]$Authority, [psobject]$Policy)
+    $predicates = @(Get-FslFlbPredicateTexts)
+    $predicateText = ''
+    for ($index = 0; $index -lt $predicates.Count; $index++) {
+        $predicateText += '    (' + $predicates[$index] + ')' +
+            $(if ($index -lt $predicates.Count - 1) { ' -and' } else { '' }) +
+            "`n"
+    }
+    $template = @'
+param()
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$fixedContractPath = @@CONTRACT@@
+$fixedObserverPath = @@OBSERVER@@
+$fixedLauncherPath = @@OUTER@@
+$fixedPowerShell = @@POWERSHELL@@
+$fixedWorkingDirectory = @@WORKING@@
+$fixedContractId = @@CONTRACT_ID@@
+$fixedAttemptId = @@ATTEMPT_ID@@
+$fixedSid = @@SID@@
+$fixedSessionId = @@SESSION@@
+$fixedCommandLine = @@COMMAND@@
+function Get-Hash([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+function Test-ExactCreationFlags([AllowNull()][object]$Value) {
+    $values = @($Value)
+    return (
+        $values.Count -eq 2 -and
+        $values[0] -is [string] -and
+        [string]$values[0] -ceq 'CREATE_BREAKAWAY_FROM_JOB' -and
+        $values[1] -is [string] -and
+        [string]$values[1] -ceq 'CREATE_NO_WINDOW')
+}
+try {
+    if ($PSBoundParameters.Count -ne 0 -or $args.Count -ne 0) { exit 64 }
+    $contract = [IO.File]::ReadAllText($fixedContractPath) | ConvertFrom-Json
+    if (-not [bool]$contract.formalExecutionEligible) { exit 64 }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (
+        $identity.User.Value -cne $fixedSid -or
+        $principal.IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator) -or
+        [Diagnostics.Process]::GetCurrentProcess().SessionId -ne
+            $fixedSessionId -or
+        -not [Environment]::UserInteractive) {
+        exit 66
+    }
+    $contractValid =
+@@PREDICATES@@
+    if (-not $contractValid) { exit 68 }
+    if (Test-Path -LiteralPath $contract.policy.latch.path) { exit 65 }
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class FslFormalNativeLauncher {
+  public const uint CREATE_BREAKAWAY_FROM_JOB=0x01000000;
+  public const uint CREATE_NO_WINDOW=0x08000000;
+  public const uint FSL_CREATION_FLAGS=
+    CREATE_BREAKAWAY_FROM_JOB|CREATE_NO_WINDOW;
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct STARTUPINFO {
+    public int cb; public string lpReserved, lpDesktop, lpTitle;
+    public uint dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars;
+    public uint dwFillAttribute,dwFlags; public short wShowWindow,cbReserved2;
+    public IntPtr lpReserved2,hStdInput,hStdOutput,hStdError;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct PROCESS_INFORMATION {
+    public IntPtr hProcess,hThread; public uint dwProcessId,dwThreadId;
+  }
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+  public static extern bool CreateProcessW(
+    string app,StringBuilder command,IntPtr pa,IntPtr ta,bool inherit,
+    uint flags,IntPtr environment,string directory,ref STARTUPINFO startup,
+    out PROCESS_INFORMATION process);
+  [DllImport("kernel32.dll",SetLastError=true)]
+  public static extern bool CloseHandle(IntPtr handle);
+}
+"@
+    $startup = New-Object FslFormalNativeLauncher+STARTUPINFO
+    $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf($startup)
+    $startup.dwFlags = 1
+    $startup.wShowWindow = 0
+    $process = New-Object FslFormalNativeLauncher+PROCESS_INFORMATION
+    $mutableCommandLine = [Text.StringBuilder]::new($fixedCommandLine)
+    $created = [FslFormalNativeLauncher]::CreateProcessW(
+        $fixedPowerShell,$mutableCommandLine,[IntPtr]::Zero,[IntPtr]::Zero,
+        $false,[FslFormalNativeLauncher]::FSL_CREATION_FLAGS,
+        [IntPtr]::Zero,$fixedWorkingDirectory,
+        [ref]$startup,[ref]$process)
+    if (-not $created) { exit 69 }
+    [void][FslFormalNativeLauncher]::CloseHandle($process.hThread)
+    [void][FslFormalNativeLauncher]::CloseHandle($process.hProcess)
+    [pscustomobject][ordered]@{ processId=[int]$process.dwProcessId }
+    exit 0
+}
+catch { exit 70 }
+'@
+    $text = $template.
+        Replace('@@CONTRACT@@', (ConvertTo-FslFlbLiteral $Policy.files.contractPath)).
+        Replace('@@OBSERVER@@', (ConvertTo-FslFlbLiteral $Policy.files.observerPath)).
+        Replace('@@OUTER@@', (ConvertTo-FslFlbLiteral $Policy.files.outerLauncherPath)).
+        Replace('@@POWERSHELL@@', (ConvertTo-FslFlbLiteral $Authority.executable.powerShellPath)).
+        Replace('@@WORKING@@', (ConvertTo-FslFlbLiteral $Authority.executable.workingDirectory)).
+        Replace('@@CONTRACT_ID@@', (ConvertTo-FslFlbLiteral ([string]$Model.contractId))).
+        Replace('@@ATTEMPT_ID@@', (ConvertTo-FslFlbLiteral ([string]$Model.attemptId))).
+        Replace('@@SID@@', (ConvertTo-FslFlbLiteral $Authority.identity.userSid)).
+        Replace('@@SESSION@@', ([string][int]$Authority.identity.sessionId)).
+        Replace('@@COMMAND@@', (ConvertTo-FslFlbLiteral $Policy.nativeOuterLaunch.commandLine)).
+        Replace('@@PREDICATES@@', $predicateText.TrimEnd("`n"))
+    return $text.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
+}
+
+function Render-FslFlbObserver {
+    param([psobject]$Model, [psobject]$Authority, [psobject]$Policy)
+    # The generated script is intentionally self-contained. Its single
+    # Assert-FormalPreLatch call precedes the first writable handle and RunAs.
+    $template = @'
+param()
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$fixedContractPath = @@CONTRACT@@
+$fixedObserverPath = @@OBSERVER@@
+$fixedOuterPath = @@OUTER@@
+$fixedRecoveryPath = @@RECOVERY@@
+$fixedWrapperPath = @@WRAPPER@@
+$fixedRepository = @@REPOSITORY@@
+$fixedGitRoot = @@GITROOT@@
+$fixedGitDirectory = @@GITDIR@@
+$fixedGitBranch = @@GITBRANCH@@
+$fixedGitHead = @@GITHEAD@@
+$fixedGitTree = @@GITTREE@@
+$fixedTrackedClean = @@TRACKEDCLEAN@@
+$fixedPowerShell = @@POWERSHELL@@
+$fixedWorkingDirectory = @@WORKING@@
+$fixedCommandLine = @@COMMAND@@
+$fixedRecoveryArgumentLine = @@RECOVERY_ARGUMENT_LINE@@
+$fixedSid = @@SID@@
+$fixedSession = @@SESSION@@
+$fixedRunId = @@RUNID@@
+$fixedContractId = @@CONTRACT_ID@@
+$fixedAttemptId = @@ATTEMPT_ID@@
+$fixedCheckpoint = @@CHECKPOINT@@
+
+function Initialize-NativeIdentity {
+  if(-not('FslFormalObserverIdentity'-as[type])){
+    Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public sealed class FslFormalObserverTokenProof {
+  public string MachineName,CurrentAccountSid,LinkedAccountSid;
+  public string CurrentAccountDomain,LinkedAccountDomain;
+  public int ElevationType,CurrentSidType,LinkedSidType;
+  public bool CurrentAdministratorsDenyOnly,CurrentAdministratorsEnabled;
+  public bool LinkedAdministratorsDenyOnly,LinkedAdministratorsEnabled;
+}
+public sealed class FslFormalObserverIdentity {
+  const uint READ=0x80,SR=1,SW=2,SD=4,OPEN=3,REPARSE=0x00200000,
+    DIRECTORY=0x02000000;
+  public string FinalPath; public string FileId; public uint Links;
+  public bool Reparse;
+  public static string[] ParseWindowsCommandLine(string commandLine) {
+    if(commandLine==null)throw new ArgumentNullException("commandLine");
+    int count;IntPtr vector=CommandLineToArgvW(commandLine,out count);
+    if(vector==IntPtr.Zero)
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+    try {
+      if(count<1||count>65536)
+        throw new InvalidOperationException("Invalid argv count.");
+      string[] result=new string[count];
+      for(int i=0;i<count;i++) {
+        IntPtr value=Marshal.ReadIntPtr(vector,checked(i*IntPtr.Size));
+        if(value==IntPtr.Zero)
+          throw new InvalidOperationException("Null argv entry.");
+        result[i]=Marshal.PtrToStringUni(value);
+        if(result[i]==null)
+          throw new InvalidOperationException("Invalid argv text.");
+      }
+      return result;
+    } finally {LocalFree(vector);}
+  }
+  public static bool ValidateZlibEnvelope(byte[] bytes) {
+    try {
+      if(bytes==null||bytes.Length<7)return false;
+      int cmf=bytes[0],flg=bytes[1];
+      if((cmf&15)!=8||(cmf>>4)>7||(((cmf<<8)|flg)%31)!=0||
+         (flg&32)!=0)return false;
+      ObserverBits bits=new ObserverBits(bytes,2,bytes.Length-4);
+      long output=0;bool final;
+      do {
+        final=bits.Read(1)!=0;int kind=bits.Read(2);
+        if(kind==0) {
+          bits.AlignZero();
+          int length=bits.ReadByte()|(bits.ReadByte()<<8);
+          int complement=bits.ReadByte()|(bits.ReadByte()<<8);
+          if(((length^0xFFFF)&0xFFFF)!=complement)return false;
+          bits.SkipBytes(length);output=checked(output+length);
+        } else if(kind==1||kind==2) {
+          ObserverHuffman literal,distance;
+          if(kind==1) {
+            int[] ll=new int[288];
+            for(int i=0;i<=143;i++)ll[i]=8;
+            for(int i=144;i<=255;i++)ll[i]=9;
+            for(int i=256;i<=279;i++)ll[i]=7;
+            for(int i=280;i<=287;i++)ll[i]=8;
+            int[] dl=new int[32];for(int i=0;i<32;i++)dl[i]=5;
+            literal=new ObserverHuffman(ll);
+            distance=new ObserverHuffman(dl);
+          } else ReadDynamicTrees(bits,out literal,out distance);
+          ScanCompressed(bits,literal,distance,ref output);
+        } else return false;
+        if(output>268435456)return false;
+      }while(!final);
+      bits.Finish();uint a=1,b=0;long decompressed=0;
+      using(var input=new System.IO.MemoryStream(
+        bytes,2,bytes.Length-6,false))
+      using(var deflate=new System.IO.Compression.DeflateStream(
+        input,System.IO.Compression.CompressionMode.Decompress)) {
+        byte[] buffer=new byte[8192];int count;
+        while((count=deflate.Read(buffer,0,buffer.Length))!=0) {
+          decompressed=checked(decompressed+count);
+          if(decompressed>268435456)return false;
+          for(int i=0;i<count;i++) {
+            a=(a+buffer[i])%65521;b=(b+a)%65521;
+          }
+        }
+      }
+      uint stored=((uint)bytes[bytes.Length-4]<<24)|
+        ((uint)bytes[bytes.Length-3]<<16)|
+        ((uint)bytes[bytes.Length-2]<<8)|bytes[bytes.Length-1];
+      return((b<<16)|a)==stored;
+    }catch{return false;}
+  }
+  static void ReadDynamicTrees(
+    ObserverBits bits,out ObserverHuffman literal,
+    out ObserverHuffman distance) {
+    int lc=bits.Read(5)+257,dc=bits.Read(5)+1,cc=bits.Read(4)+4;
+    if(lc>286||dc>32)throw new InvalidOperationException();
+    int[] order={16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15};
+    int[] codeLengths=new int[19];
+    for(int i=0;i<cc;i++)codeLengths[order[i]]=bits.Read(3);
+    ObserverHuffman codeTree=new ObserverHuffman(codeLengths);
+    int total=lc+dc,offset=0;int[] lengths=new int[total];
+    while(offset<total) {
+      int symbol=codeTree.Decode(bits);
+      if(symbol<=15)lengths[offset++]=symbol;
+      else {
+        int repeat,value;
+        if(symbol==16) {
+          if(offset==0)throw new InvalidOperationException();
+          repeat=bits.Read(2)+3;value=lengths[offset-1];
+        } else if(symbol==17) {repeat=bits.Read(3)+3;value=0;}
+        else if(symbol==18) {repeat=bits.Read(7)+11;value=0;}
+        else throw new InvalidOperationException();
+        if(offset+repeat>total)throw new InvalidOperationException();
+        while(repeat-->0)lengths[offset++]=value;
+      }
+    }
+    int[] literals=new int[lc],distances=new int[dc];
+    Array.Copy(lengths,0,literals,0,lc);
+    Array.Copy(lengths,lc,distances,0,dc);
+    if(literals[256]==0)throw new InvalidOperationException();
+    literal=new ObserverHuffman(literals);
+    distance=new ObserverHuffman(distances);
+  }
+  static void ScanCompressed(
+    ObserverBits bits,ObserverHuffman literal,ObserverHuffman distance,
+    ref long output) {
+    int[] lb={3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,
+      59,67,83,99,115,131,163,195,227,258};
+    int[] le={0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,
+      4,5,5,5,5,0};
+    int[] db={1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,
+      513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
+    int[] de={0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,
+      10,11,11,12,12,13,13};
+    while(true) {
+      int symbol=literal.Decode(bits);
+      if(symbol<256)output=checked(output+1);
+      else if(symbol==256)return;
+      else {
+        if(symbol<257||symbol>285)throw new InvalidOperationException();
+        int i=symbol-257,length=lb[i]+bits.Read(le[i]);
+        int ds=distance.Decode(bits);
+        if(ds<0||ds>29)throw new InvalidOperationException();
+        int dv=db[ds]+bits.Read(de[ds]);
+        if(dv>output)throw new InvalidOperationException();
+        output=checked(output+length);
+      }
+      if(output>268435456)throw new InvalidOperationException();
+    }
+  }
+  sealed class ObserverBits {
+    readonly byte[] bytes;readonly int endBit;int bit;
+    internal ObserverBits(byte[] value,int startByte,int endByte) {
+      bytes=value;bit=checked(startByte*8);endBit=checked(endByte*8);
+      if(startByte<0||endByte<startByte||endByte>value.Length)
+        throw new InvalidOperationException();
+    }
+    internal int Read(int count) {
+      if(count<0||count>16||bit+count>endBit)
+        throw new InvalidOperationException();
+      int value=0;
+      for(int i=0;i<count;i++,bit++)
+        value|=((bytes[bit>>3]>>(bit&7))&1)<<i;
+      return value;
+    }
+    internal int ReadByte() {
+      if((bit&7)!=0)throw new InvalidOperationException();return Read(8);
+    }
+    internal void AlignZero() {
+      while((bit&7)!=0)if(Read(1)!=0)throw new InvalidOperationException();
+    }
+    internal void SkipBytes(int count) {
+      if((bit&7)!=0||count<0||bit+checked(count*8)>endBit)
+        throw new InvalidOperationException();bit+=count*8;
+    }
+    internal void Finish() {
+      AlignZero();if(bit!=endBit)throw new InvalidOperationException();
+    }
+  }
+  sealed class ObserverHuffman {
+    readonly System.Collections.Generic.Dictionary<long,int> symbols=
+      new System.Collections.Generic.Dictionary<long,int>();
+    readonly int maximum;
+    internal ObserverHuffman(int[] lengths) {
+      int[] counts=new int[16];
+      foreach(int length in lengths) {
+        if(length<0||length>15)throw new InvalidOperationException();
+        if(length!=0)counts[length]++;
+      }
+      int code=0;int[] next=new int[16];
+      for(int length=1;length<=15;length++) {
+        code=(code+counts[length-1])<<1;
+        if(code+counts[length]>(1<<length))
+          throw new InvalidOperationException();
+        next[length]=code;if(counts[length]!=0)maximum=length;
+      }
+      if(maximum==0)throw new InvalidOperationException();
+      for(int symbol=0;symbol<lengths.Length;symbol++) {
+        int length=lengths[symbol];if(length==0)continue;
+        long key=((long)length<<32)|(uint)next[length]++;
+        if(symbols.ContainsKey(key))throw new InvalidOperationException();
+        symbols.Add(key,symbol);
+      }
+    }
+    internal int Decode(ObserverBits bits) {
+      int code=0;
+      for(int length=1;length<=maximum;length++) {
+        code=(code<<1)|bits.Read(1);int symbol;
+        if(symbols.TryGetValue(((long)length<<32)|(uint)code,out symbol))
+          return symbol;
+      }
+      throw new InvalidOperationException();
+    }
+  }
+  public static FslFormalObserverIdentity Read(string path,bool directory) {
+    string full=System.IO.Path.GetFullPath(path).TrimEnd('\\');
+    using(SafeFileHandle h=CreateFile(full,READ,SR|SW|SD,IntPtr.Zero,OPEN,
+      REPARSE|(directory?DIRECTORY:0),IntPtr.Zero)) {
+      if(h.IsInvalid)throw new Win32Exception(Marshal.GetLastWin32Error());
+      Info i;if(!GetFileInformationByHandle(h,out i))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      StringBuilder b=new StringBuilder(32768);
+      uint n=GetFinalPathNameByHandle(h,b,b.Capacity,0);
+      if(n==0||n>=b.Capacity)
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      string f=b.ToString();if(f.StartsWith(@"\\?\",StringComparison.Ordinal))
+        f=f.Substring(4);
+      ulong x=((ulong)i.FileIndexHigh<<32)|i.FileIndexLow;
+      return new FslFormalObserverIdentity {
+        FinalPath=f.TrimEnd('\\'),
+        FileId=i.VolumeSerialNumber.ToString("X8")+x.ToString("X16"),
+        Links=i.NumberOfLinks,Reparse=(i.FileAttributes&0x400)!=0};
+    }
+  }
+  public static FslFormalObserverTokenProof ReadTokenProof() {
+    IntPtr current=IntPtr.Zero,linked=IntPtr.Zero;
+    if(!OpenProcessToken(GetCurrentProcess(),0x0008,out current))
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+    try {
+      int elevation=ReadInt(current,18);linked=ReadLinked(current);
+      string currentSid,currentDomain,linkedSid,linkedDomain;
+      int currentType,linkedType;
+      ReadIdentity(current,out currentSid,out currentDomain,out currentType);
+      ReadIdentity(linked,out linkedSid,out linkedDomain,out linkedType);
+      ObserverGroupState currentGroup=ReadAdministratorsGroup(current);
+      ObserverGroupState linkedGroup=ReadAdministratorsGroup(linked);
+      return new FslFormalObserverTokenProof {
+        MachineName=Environment.MachineName,ElevationType=elevation,
+        CurrentAccountSid=currentSid,LinkedAccountSid=linkedSid,
+        CurrentSidType=currentType,LinkedSidType=linkedType,
+        CurrentAdministratorsDenyOnly=currentGroup.DenyOnly,
+        CurrentAdministratorsEnabled=currentGroup.Enabled,
+        LinkedAdministratorsDenyOnly=linkedGroup.DenyOnly,
+        LinkedAdministratorsEnabled=linkedGroup.Enabled,
+        CurrentAccountDomain=currentDomain,LinkedAccountDomain=linkedDomain};
+    } finally {
+      if(linked!=IntPtr.Zero)CloseHandle(linked);
+      if(current!=IntPtr.Zero)CloseHandle(current);
+    }
+  }
+  static int ReadInt(IntPtr token,int kind) {
+    IntPtr b=Marshal.AllocHGlobal(4);
+    try {int n;if(!GetTokenInformation(token,kind,b,4,out n)||n!=4)
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+      return Marshal.ReadInt32(b);}finally{Marshal.FreeHGlobal(b);}
+  }
+  static IntPtr ReadLinked(IntPtr token) {
+    IntPtr b=Marshal.AllocHGlobal(IntPtr.Size);
+    try {int n;if(!GetTokenInformation(token,19,b,IntPtr.Size,out n)||
+      n!=IntPtr.Size)throw new Win32Exception(Marshal.GetLastWin32Error());
+      return Marshal.ReadIntPtr(b);}finally{Marshal.FreeHGlobal(b);}
+  }
+  static void ReadIdentity(
+    IntPtr token,out string value,out string domainValue,out int sidType) {
+    int size=0;GetTokenInformation(token,1,IntPtr.Zero,0,out size);
+    if(size<=0)throw new Win32Exception(Marshal.GetLastWin32Error());
+    IntPtr b=Marshal.AllocHGlobal(size);
+    try {int n;if(!GetTokenInformation(token,1,b,size,out n))
+      throw new Win32Exception(Marshal.GetLastWin32Error());
+      IntPtr sid=Marshal.ReadIntPtr(b);
+      value=new System.Security.Principal.SecurityIdentifier(sid).Value;
+      uint nl=0,dl=0;int use;
+      LookupAccountSid(null,sid,null,ref nl,null,ref dl,out use);
+      if(nl==0||dl==0)throw new Win32Exception(Marshal.GetLastWin32Error());
+      StringBuilder name=new StringBuilder((int)nl);
+      StringBuilder domain=new StringBuilder((int)dl);
+      if(!LookupAccountSid(null,sid,name,ref nl,domain,ref dl,out use))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      domainValue=domain.ToString();sidType=use;
+    }finally{Marshal.FreeHGlobal(b);}
+  }
+  sealed class ObserverGroupState {internal bool DenyOnly,Enabled;}
+  [StructLayout(LayoutKind.Sequential)]struct ObserverSidAndAttributes {
+    internal IntPtr Sid;internal uint Attributes;
+  }
+  [StructLayout(LayoutKind.Sequential)]struct ObserverTokenGroupsLayout {
+    internal uint Count;internal ObserverSidAndAttributes First;
+  }
+  static ObserverGroupState ReadAdministratorsGroup(IntPtr token) {
+    var administrators=
+      new System.Security.Principal.SecurityIdentifier("S-1-5-32-544");
+    byte[] sidBytes=new byte[administrators.BinaryLength];
+    administrators.GetBinaryForm(sidBytes,0);
+    IntPtr adminSid=Marshal.AllocHGlobal(sidBytes.Length);
+    int size=0;GetTokenInformation(token,2,IntPtr.Zero,0,out size);
+    if(size<=0)throw new Win32Exception(Marshal.GetLastWin32Error());
+    IntPtr b=Marshal.AllocHGlobal(size);
+    try {
+      Marshal.Copy(sidBytes,0,adminSid,sidBytes.Length);
+      int returned;if(!GetTokenInformation(token,2,b,size,out returned)||
+        returned<4||returned>size)
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      uint count=unchecked((uint)Marshal.ReadInt32(b));
+      int offset=checked((int)Marshal.OffsetOf(
+        typeof(ObserverTokenGroupsLayout),"First"));
+      int stride=Marshal.SizeOf(typeof(ObserverSidAndAttributes));
+      if(offset<4||stride<IntPtr.Size+4||count>65536||
+         checked(offset+checked((int)count*stride))>returned)
+        throw new InvalidOperationException("TOKEN_GROUPS bounds invalid.");
+      int matches=0;uint attributes=0;
+      for(int i=0;i<(int)count;i++) {
+        var entry=(ObserverSidAndAttributes)Marshal.PtrToStructure(
+          IntPtr.Add(b,checked(offset+i*stride)),
+          typeof(ObserverSidAndAttributes));
+        if(entry.Sid==IntPtr.Zero)
+          throw new InvalidOperationException("Null group SID.");
+        if(EqualSid(entry.Sid,adminSid)){matches++;attributes=entry.Attributes;}
+      }
+      if(matches!=1)
+        throw new InvalidOperationException("Administrators SID count invalid.");
+      return new ObserverGroupState {
+        Enabled=(attributes&0x4)!=0,DenyOnly=(attributes&0x10)!=0};
+    }finally{Marshal.FreeHGlobal(b);Marshal.FreeHGlobal(adminSid);}
+  }
+  public static bool VerifyGitIndexAndTree(
+    string rootPath,string gitPath,string expectedTree) {
+    try {
+      byte[] index=System.IO.File.ReadAllBytes(
+        System.IO.Path.Combine(gitPath,"index"));
+      if(index.Length<32||Encoding.ASCII.GetString(index,0,4)!="DIRC"||
+         U32(index,4)!=2)return false;
+      int checksum=index.Length-20;byte[] actual;
+      using(var sha=System.Security.Cryptography.SHA1.Create())
+        actual=sha.ComputeHash(index,0,checksum);
+      for(int i=0;i<20;i++)if(actual[i]!=index[checksum+i])return false;
+      uint rawCount=U32(index,8);if(rawCount>1000000)return false;
+      int count=(int)rawCount,offset=12;byte[] previous=null;
+      var entries=new System.Collections.Generic.List<ObserverGitEntry>();
+      string root=System.IO.Path.GetFullPath(rootPath).TrimEnd('\\');
+      string prefix=root+"\\";
+      for(int entryIndex=0;entryIndex<count;entryIndex++) {
+        int start=offset;if(start<12||start+63>checksum)return false;
+        uint mode=U32(index,start+24);
+        if(mode!=0x000081A4&&mode!=0x000081ED)return false;
+        byte[] oid=new byte[20];Buffer.BlockCopy(index,start+40,oid,0,20);
+        bool zero=true;foreach(byte value in oid)if(value!=0){zero=false;break;}
+        if(zero)return false;
+        ushort flags=U16(index,start+60);if((flags&0xF000)!=0)return false;
+        int pathStart=start+62,pathEnd=pathStart;
+        while(pathEnd<checksum&&index[pathEnd]!=0)pathEnd++;
+        if(pathEnd>=checksum||pathEnd==pathStart)return false;
+        int pathLength=pathEnd-pathStart;
+        if((flags&0x0FFF)!=Math.Min(pathLength,0x0FFF))return false;
+        byte[] pathBytes=new byte[pathLength];
+        Buffer.BlockCopy(index,pathStart,pathBytes,0,pathLength);
+        if(previous!=null&&Compare(previous,pathBytes)>=0)return false;
+        previous=pathBytes;string relative;
+        try{relative=new UTF8Encoding(false,true).GetString(pathBytes);}
+        catch{return false;}
+        if(!CanonicalPath(relative))return false;
+        string full=System.IO.Path.GetFullPath(System.IO.Path.Combine(
+          root,relative.Replace('/','\\')));
+        if(!full.StartsWith(prefix,StringComparison.OrdinalIgnoreCase)||
+           !System.IO.File.Exists(full))return false;
+        FslFormalObserverIdentity identity=Read(full,false);
+        if(identity.Reparse||identity.Links!=1||
+           !identity.FinalPath.StartsWith(
+             prefix,StringComparison.OrdinalIgnoreCase))return false;
+        byte[] content=System.IO.File.ReadAllBytes(full);
+        if(!Equal(GitOid("blob",content),oid))return false;
+        entries.Add(new ObserverGitEntry {
+          Path=relative,Mode=mode,ObjectId=oid});
+        int length=(pathEnd-start)+1;
+        int next=start+((length+7)&~7);
+        if(next<=start||next>checksum)return false;
+        for(int p=pathEnd+1;p<next;p++)if(index[p]!=0)return false;
+        offset=next;
+      }
+      byte[] cacheTree=null;
+      while(offset<checksum) {
+        if(offset+8>checksum)return false;
+        string signature=Encoding.ASCII.GetString(index,offset,4);
+        uint rawSize=U32(index,offset+4);
+        if(rawSize>Int32.MaxValue)return false;
+        int size=(int)rawSize;offset+=8;
+        if(size<0||offset+size<offset||offset+size>checksum||
+           signature!="TREE"||cacheTree!=null||
+           !ValidCacheTree(index,offset,size))return false;
+        cacheTree=new byte[size];
+        Buffer.BlockCopy(index,offset,cacheTree,0,size);
+        offset+=size;
+      }
+      if(offset!=checksum)return false;
+      var rootNode=new ObserverGitNode();
+      foreach(ObserverGitEntry entry in entries)
+        if(!Insert(rootNode,entry))return false;
+      byte[] actualTree=BuildTree(rootNode);
+      if(cacheTree!=null&&!Equal(cacheTree,BuildCacheTree(rootNode)))
+        return false;
+      return String.Equals(Hex(actualTree),expectedTree,
+        StringComparison.Ordinal);
+    }catch{return false;}
+  }
+  sealed class ObserverGitEntry {
+    internal string Path;internal uint Mode;internal byte[] ObjectId;
+  }
+  sealed class ObserverGitNode {
+    internal readonly System.Collections.Generic.Dictionary<
+      string,ObserverGitNode> Directories=
+      new System.Collections.Generic.Dictionary<string,ObserverGitNode>(
+        StringComparer.Ordinal);
+    internal readonly System.Collections.Generic.Dictionary<
+      string,ObserverGitEntry> Files=
+      new System.Collections.Generic.Dictionary<string,ObserverGitEntry>(
+        StringComparer.Ordinal);
+  }
+  sealed class ObserverTreeItem {
+    internal string Name,Mode;internal bool Directory;internal byte[] ObjectId;
+  }
+  static bool Insert(ObserverGitNode root,ObserverGitEntry entry) {
+    string[] parts=entry.Path.Split('/');ObserverGitNode node=root;
+    for(int i=0;i<parts.Length-1;i++) {
+      if(node.Files.ContainsKey(parts[i]))return false;
+      ObserverGitNode child;
+      if(!node.Directories.TryGetValue(parts[i],out child)) {
+        child=new ObserverGitNode();node.Directories.Add(parts[i],child);}
+      node=child;
+    }
+    string leaf=parts[parts.Length-1];
+    if(node.Directories.ContainsKey(leaf)||node.Files.ContainsKey(leaf))
+      return false;
+    node.Files.Add(leaf,entry);return true;
+  }
+  static byte[] BuildTree(ObserverGitNode node) {
+    var items=new System.Collections.Generic.List<ObserverTreeItem>();
+    foreach(var pair in node.Files)items.Add(new ObserverTreeItem {
+      Name=pair.Key,Directory=false,
+      Mode=pair.Value.Mode==0x000081ED?"100755":"100644",
+      ObjectId=pair.Value.ObjectId});
+    foreach(var pair in node.Directories)items.Add(new ObserverTreeItem {
+      Name=pair.Key,Directory=true,Mode="40000",
+      ObjectId=BuildTree(pair.Value)});
+    items.Sort(delegate(ObserverTreeItem left,ObserverTreeItem right){
+      return Compare(Encoding.UTF8.GetBytes(
+        left.Name+(left.Directory?"/":"")),Encoding.UTF8.GetBytes(
+        right.Name+(right.Directory?"/":"")));});
+    using(var body=new System.IO.MemoryStream()) {
+      foreach(ObserverTreeItem item in items) {
+        byte[] mode=Encoding.ASCII.GetBytes(item.Mode+" ");
+        byte[] name=new UTF8Encoding(false,true).GetBytes(item.Name);
+        body.Write(mode,0,mode.Length);body.Write(name,0,name.Length);
+        body.WriteByte(0);body.Write(item.ObjectId,0,item.ObjectId.Length);}
+      return GitOid("tree",body.ToArray());
+    }
+  }
+  static byte[] BuildCacheTree(ObserverGitNode root) {
+    using(var output=new System.IO.MemoryStream()) {
+      WriteCacheNode(output,root,"",true);return output.ToArray();}
+  }
+  static int WriteCacheNode(
+    System.IO.Stream output,ObserverGitNode node,string name,bool root) {
+    int count=node.Files.Count;
+    foreach(ObserverGitNode child in node.Directories.Values)
+      count+=CountEntries(child);
+    byte[] path=new UTF8Encoding(false,true).GetBytes(root?"":name);
+    output.Write(path,0,path.Length);output.WriteByte(0);
+    byte[] counts=Encoding.ASCII.GetBytes(count.ToString(
+      System.Globalization.CultureInfo.InvariantCulture)+" "+
+      node.Directories.Count.ToString(
+        System.Globalization.CultureInfo.InvariantCulture)+"\n");
+    output.Write(counts,0,counts.Length);
+    byte[] oid=BuildTree(node);output.Write(oid,0,oid.Length);
+    var names=new System.Collections.Generic.List<string>(
+      node.Directories.Keys);names.Sort(StringComparer.Ordinal);
+    foreach(string childName in names)
+      WriteCacheNode(output,node.Directories[childName],childName,false);
+    return count;
+  }
+  static int CountEntries(ObserverGitNode node) {
+    int count=node.Files.Count;
+    foreach(ObserverGitNode child in node.Directories.Values)
+      count+=CountEntries(child);
+    return count;
+  }
+  static bool ValidCacheTree(byte[] b,int start,int size) {
+    try{int o=start,end=start+size;
+      return ParseCacheNode(b,ref o,end,true)&&o==end;}catch{return false;}
+  }
+  static bool ParseCacheNode(byte[] b,ref int o,int end,bool root) {
+    int start=o;while(o<end&&b[o]!=0)o++;if(o>=end)return false;
+    string path;try{path=new UTF8Encoding(false,true).GetString(
+      b,start,o-start);}catch{return false;}
+    if((root&&path.Length!=0)||(!root&&(path.Length==0||
+      path.Contains("/")||path.Contains("\\")||
+      path.Normalize(NormalizationForm.FormC)!=path)))return false;
+    o++;int count=AsciiInt(b,ref o,end,true);
+    if(count<-1||o>=end||b[o++]!=(byte)' ')return false;
+    int children=AsciiInt(b,ref o,end,false);
+    if(children<0||o>=end||b[o++]!=(byte)'\n')return false;
+    if(count>=0){if(o+20>end)return false;o+=20;}
+    for(int i=0;i<children;i++)
+      if(!ParseCacheNode(b,ref o,end,false))return false;
+    return true;
+  }
+  static int AsciiInt(byte[] b,ref int o,int end,bool negativeOne) {
+    bool negative=false;if(negativeOne&&o<end&&b[o]==(byte)'-'){
+      negative=true;o++;}
+    int start=o;long value=0;
+    while(o<end&&b[o]>=(byte)'0'&&b[o]<=(byte)'9'){
+      value=checked(value*10+b[o]-(byte)'0');o++;}
+    if(o==start||value>Int32.MaxValue)return Int32.MinValue;
+    int result=(int)value;if(negative)result=-result;
+    if(negative&&result!=-1)return Int32.MinValue;return result;
+  }
+  static bool CanonicalPath(string path) {
+    if(String.IsNullOrEmpty(path)||path[0]=='/'||path.Contains("\\")||
+       path.Contains("\0")||
+       path.Normalize(NormalizationForm.FormC)!=path)return false;
+    foreach(string part in path.Split('/'))
+      if(part.Length==0||part=="."||part=="..")return false;
+    return true;
+  }
+  static byte[] GitOid(string type,byte[] content) {
+    byte[] header=Encoding.ASCII.GetBytes(type+" "+content.Length.ToString(
+      System.Globalization.CultureInfo.InvariantCulture)+"\0");
+    byte[] full=new byte[header.Length+content.Length];
+    Buffer.BlockCopy(header,0,full,0,header.Length);
+    Buffer.BlockCopy(content,0,full,header.Length,content.Length);
+    using(var sha=System.Security.Cryptography.SHA1.Create())
+      return sha.ComputeHash(full);
+  }
+  static ushort U16(byte[] b,int o) {
+    return(ushort)(((uint)b[o]<<8)|b[o+1]);
+  }
+  static uint U32(byte[] b,int o) {
+    return((uint)b[o]<<24)|((uint)b[o+1]<<16)|((uint)b[o+2]<<8)|b[o+3];
+  }
+  static int Compare(byte[] left,byte[] right) {
+    int n=Math.Min(left.Length,right.Length);
+    for(int i=0;i<n;i++){int d=left[i]-right[i];if(d!=0)return d;}
+    return left.Length-right.Length;
+  }
+  static bool Equal(byte[] left,byte[] right) {
+    if(left.Length!=right.Length)return false;
+    for(int i=0;i<left.Length;i++)if(left[i]!=right[i])return false;
+    return true;
+  }
+  static string Hex(byte[] bytes) {
+    return BitConverter.ToString(bytes).Replace("-","").ToLowerInvariant();
+  }
+  [StructLayout(LayoutKind.Sequential)]struct Info {
+    public uint FileAttributes;public long CreationTime,AccessTime,WriteTime;
+    public uint VolumeSerialNumber,FileSizeHigh,FileSizeLow,NumberOfLinks;
+    public uint FileIndexHigh,FileIndexLow;
+  }
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+  static extern SafeFileHandle CreateFile(string p,uint a,uint s,IntPtr q,
+    uint c,uint f,IntPtr t);
+  [DllImport("kernel32.dll",SetLastError=true)]
+  static extern bool GetFileInformationByHandle(SafeFileHandle h,out Info i);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+  static extern uint GetFinalPathNameByHandle(
+    SafeFileHandle h,StringBuilder p,int n,uint f);
+  [DllImport("kernel32.dll")]static extern IntPtr GetCurrentProcess();
+  [DllImport("advapi32.dll",SetLastError=true)]
+  static extern bool OpenProcessToken(IntPtr p,uint a,out IntPtr t);
+  [DllImport("advapi32.dll",SetLastError=true)]
+  static extern bool GetTokenInformation(
+    IntPtr t,int c,IntPtr b,int n,out int r);
+  [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+  static extern bool LookupAccountSid(
+    string s,IntPtr p,StringBuilder n,ref uint nl,StringBuilder d,
+    ref uint dl,out int use);
+  [DllImport("advapi32.dll")]
+  static extern bool EqualSid(IntPtr a,IntPtr b);
+  [DllImport("kernel32.dll",SetLastError=true)]
+  static extern bool CloseHandle(IntPtr h);
+  [DllImport("shell32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+  static extern IntPtr CommandLineToArgvW(string line,out int count);
+  [DllImport("kernel32.dll")]static extern IntPtr LocalFree(IntPtr memory);
+}
+"@ -ReferencedAssemblies @('System.dll','System.Core.dll','System.Security.dll')
+  }
+}
+
+function Stop-Observer([int]$Code,[string]$Message) {
+    [Console]::Error.WriteLine($Message)
+    exit $Code
+}
+function Get-Hash([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+function Get-TextHash([string]$Text) {
+    $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes($Text)
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','') }
+    finally { $sha.Dispose() }
+}
+function Get-Sha1([byte[]]$Bytes) {
+    $sha=[Security.Cryptography.SHA1]::Create()
+    try{return [BitConverter]::ToString($sha.ComputeHash($Bytes)).
+      Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
+}
+function Read-U32([byte[]]$Bytes,[int]$Offset) {
+    return [uint32](([uint32]$Bytes[$Offset]-shl24)-bor
+      ([uint32]$Bytes[$Offset+1]-shl16)-bor
+      ([uint32]$Bytes[$Offset+2]-shl8)-bor[uint32]$Bytes[$Offset+3])
+}
+function Read-Loose([string]$ObjectId) {
+    $path=Join-Path $fixedGitDirectory (
+      'objects\'+$ObjectId.Substring(0,2)+'\'+$ObjectId.Substring(2))
+    if(-not(Test-Path -LiteralPath $path -PathType Leaf)){
+      Stop-Observer 71 'Required Git loose object is unavailable.'}
+    $bytes=[IO.File]::ReadAllBytes($path)
+    if($bytes.Length-lt7){Stop-Observer 71 'Git object is invalid.'}
+    if(-not[FslFormalObserverIdentity]::ValidateZlibEnvelope($bytes)){
+      Stop-Observer 71 'Git loose-object zlib envelope drifted.'}
+    $input=[IO.MemoryStream]::new($bytes,2,$bytes.Length-6,$false)
+    $deflate=[IO.Compression.DeflateStream]::new(
+      $input,[IO.Compression.CompressionMode]::Decompress)
+    $output=[IO.MemoryStream]::new()
+    try{
+      $deflate.CopyTo($output);$uncompressed=$output.ToArray()
+      [uint32]$a=1;[uint32]$b=0
+      foreach($value in $uncompressed){
+        $a=[uint32](($a+$value)%65521)
+        $b=[uint32](($b+$a)%65521)}
+      $adler=[uint32](($b-shl16)-bor$a)
+      if($adler-ne(Read-U32 $bytes ($bytes.Length-4)) -or
+         (Get-Sha1 $uncompressed)-cne$ObjectId){
+        Stop-Observer 71 'Git loose-object checksum drifted.'}
+      $nul=[Array]::IndexOf($uncompressed,[byte]0)
+      if($nul-le0){Stop-Observer 71 'Git loose-object header drifted.'}
+      $header=[Text.Encoding]::ASCII.GetString($uncompressed,0,$nul)
+      $match=[regex]::Match($header,'^commit (?<length>0|[1-9][0-9]*)$')
+      [int64]$length=0
+      if(-not$match.Success -or -not[int64]::TryParse(
+           $match.Groups['length'].Value,
+           [Globalization.NumberStyles]::None,
+           [Globalization.CultureInfo]::InvariantCulture,
+           [ref]$length) -or
+         $length-ne$uncompressed.Length-$nul-1){
+        Stop-Observer 71 'Git loose-object type/length drifted.'}
+      return $uncompressed}
+    finally{$output.Dispose();$deflate.Dispose();$input.Dispose()}
+}
+function Assert-GitAuthority([psobject]$Contract) {
+    $headText=[IO.File]::ReadAllText(
+      (Join-Path $fixedGitDirectory 'HEAD'),
+      [Text.UTF8Encoding]::new($false,$true)).Trim()
+    $expectedRef='ref: refs/heads/'+$fixedGitBranch
+    if($headText-cne$expectedRef){Stop-Observer 71 'Git branch drifted.'}
+    $head=[IO.File]::ReadAllText((Join-Path $fixedGitDirectory (
+      'refs\heads\'+$fixedGitBranch.Replace('/','\')))).Trim()
+    $commit=Read-Loose $head
+    $nul=[Array]::IndexOf($commit,[byte]0)
+    if($nul-lt0){Stop-Observer 71 'Git commit object drifted.'}
+    $text=[Text.UTF8Encoding]::new($false,$true).GetString(
+      $commit,$nul+1,$commit.Length-$nul-1)
+    $match=[regex]::Match($text,'^tree (?<tree>[0-9a-f]{40})\n')
+    $clean=[FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+      $fixedGitRoot,$fixedGitDirectory,$fixedGitTree)
+    if($head-cne$fixedGitHead -or -not$match.Success -or
+       $match.Groups['tree'].Value-cne$fixedGitTree -or
+       $clean-ne[bool]$fixedTrackedClean -or
+       [string]$Contract.authority.repository.projectRoot-cne$fixedRepository -or
+       [string]$Contract.authority.repository.gitRoot-cne$fixedGitRoot -or
+       [string]$Contract.authority.repository.gitDirectory-cne$fixedGitDirectory -or
+       [string]$Contract.authority.repository.branch-cne$fixedGitBranch -or
+       [string]$Contract.authority.repository.head-cne$fixedGitHead -or
+       [string]$Contract.authority.repository.tree-cne$fixedGitTree -or
+       [bool]$Contract.authority.repository.trackedClean-ne[bool]$fixedTrackedClean){
+      Stop-Observer 71 'Current Git authority drifted.'}
+}
+function Assert-ExactNames([string]$Root,[string[]]$Names,[int]$Code) {
+    $actual=@(Get-ChildItem -LiteralPath $Root -Force|ForEach-Object{$_.Name})
+    if($actual.Count-ne$Names.Count){Stop-Observer $Code 'Exact set count drifted.'}
+    foreach($name in $Names){if(@($actual|Where-Object{$_-ceq$name}).Count-ne1){
+        Stop-Observer $Code 'Exact set drifted.'}}
+}
+function Assert-File([psobject]$Record,[int]$Code) {
+    if(-not(Test-Path -LiteralPath $Record.path -PathType Leaf) -or
+       (Get-Item -LiteralPath $Record.path).Length-ne[int64]$Record.length -or
+       (Get-Hash $Record.path)-cne[string]$Record.sha256){
+        Stop-Observer $Code 'Bound file drifted.'}
+}
+function Get-Sddl([string]$Path,[bool]$Directory) {
+    $sections=[Security.AccessControl.AccessControlSections]::Owner -bor
+      [Security.AccessControl.AccessControlSections]::Group -bor
+      [Security.AccessControl.AccessControlSections]::Access
+    $security=if($Directory){
+      [IO.Directory]::GetAccessControl($Path,$sections)
+    }else{[IO.File]::GetAccessControl($Path,$sections)}
+    return $security.GetSecurityDescriptorSddlForm($sections)
+}
+function Assert-Identity(
+  [string]$Path,[bool]$Directory,[AllowNull()][psobject]$Record,
+  [AllowNull()][string]$ExpectedSddl,[int]$Code) {
+    $exists=if($Directory){
+      Test-Path -LiteralPath $Path -PathType Container
+    }else{Test-Path -LiteralPath $Path -PathType Leaf}
+    if(-not$exists){
+      Stop-Observer $Code 'Bound object is absent.'}
+    $identity=[FslFormalObserverIdentity]::Read($Path,$Directory)
+    $full=[IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if($identity.Reparse -or (-not$Directory -and $identity.Links-ne1) -or
+       $identity.FinalPath-cne$full){
+      Stop-Observer $Code 'Bound object identity drifted.'}
+    if($null-ne$Record -and
+       ($identity.FinalPath-cne[string]$Record.finalPath -or
+        $identity.FileId-cne[string]$Record.fileId)){
+      Stop-Observer $Code 'Bound object current authority drifted.'}
+    $sddl=Get-Sddl $Path $Directory
+    if($null-ne$Record -and $sddl-cne[string]$Record.aclSddl){
+      Stop-Observer $Code 'Bound object ACL authority drifted.'}
+    if($null-ne$ExpectedSddl -and $sddl-cne$ExpectedSddl){
+      Stop-Observer $Code 'Bound object ACL drifted.'}
+}
+function Assert-FormalTokenProof([psobject]$Contract) {
+    $native=[FslFormalObserverIdentity]::ReadTokenProof()
+    $bound=$Contract.authority.identity.formalTokenProof
+    if([Environment]::MachineName-cne'FSL-STAGE4-VM' -or
+       $native.MachineName-cne'FSL-STAGE4-VM' -or
+       $native.ElevationType-ne3 -or
+       $native.CurrentAccountSid-cne$fixedSid -or
+       $native.LinkedAccountSid-cne$fixedSid -or
+       $native.CurrentSidType-ne1 -or $native.LinkedSidType-ne1 -or
+       -not$native.CurrentAdministratorsDenyOnly -or
+       $native.CurrentAdministratorsEnabled -or
+       $native.LinkedAdministratorsDenyOnly -or
+       -not$native.LinkedAdministratorsEnabled -or
+       $native.CurrentAccountDomain-cne'FSL-STAGE4-VM' -or
+       $native.LinkedAccountDomain-cne'FSL-STAGE4-VM' -or
+       $null-eq$bound -or
+       [string]$bound.machineName-cne$native.MachineName -or
+       [int]$bound.elevationType-ne$native.ElevationType -or
+       [string]$bound.currentAccountSid-cne$native.CurrentAccountSid -or
+       [string]$bound.linkedAccountSid-cne$native.LinkedAccountSid -or
+       [int]$bound.currentSidType-ne$native.CurrentSidType -or
+       [int]$bound.linkedSidType-ne$native.LinkedSidType -or
+       [bool]$bound.currentAdministratorsDenyOnly-ne
+         $native.CurrentAdministratorsDenyOnly -or
+       [bool]$bound.currentAdministratorsEnabled-ne
+         $native.CurrentAdministratorsEnabled -or
+       [bool]$bound.linkedAdministratorsDenyOnly-ne
+         $native.LinkedAdministratorsDenyOnly -or
+       [bool]$bound.linkedAdministratorsEnabled-ne
+         $native.LinkedAdministratorsEnabled -or
+       [string]$bound.currentAccountDomain-cne$native.CurrentAccountDomain -or
+       [string]$bound.linkedAccountDomain-cne$native.LinkedAccountDomain){
+      Stop-Observer 66 'Formal native token proof drifted.'}
+}
+function Assert-CurrentFile([psobject]$Record,[int]$Code) {
+    Assert-File $Record $Code
+    Assert-Identity ([string]$Record.path) $false $Record $null $Code
+}
+function Assert-CurrentRoot([psobject]$Record,[int]$Code) {
+    Assert-Identity ([string]$Record.path) $true $Record $null $Code
+    if(@(Get-ChildItem -LiteralPath $Record.path -Force).Count-ne
+       [int]$Record.childCount){
+      Stop-Observer $Code 'Bound root child count drifted.'}
+}
+function Get-Utc {
+    [DateTime]::UtcNow.ToString(
+      "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
+      [Globalization.CultureInfo]::InvariantCulture)
+}
+@@LATCH_HELPERS@@
+function Write-Record([IO.FileStream]$Stream,[psobject]$Record) {
+    $json=ConvertTo-FslFlbLatchCanonicalLine $Record
+    if($null-eq$json){Stop-Observer 81 'Latch record shape drifted.'}
+    $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes($json+"`n")
+    $Stream.Write($bytes,0,$bytes.Length);$Stream.Flush($true)
+}
+function Assert-Latch([string]$Path,[object[]]$ExpectedRecords) {
+    $bytes=[IO.File]::ReadAllBytes($Path)
+    if(-not(Test-FslFlbLatchBytes $bytes $ExpectedRecords)){
+      Stop-Observer 81 'Latch canonical bytes or semantics drifted.'}
+}
+function Assert-Temporal([string]$Earlier,[string]$Later) {
+    $format="yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'"
+    $culture=[Globalization.CultureInfo]::InvariantCulture
+    $styles=[Globalization.DateTimeStyles]::AssumeUniversal -bor
+      [Globalization.DateTimeStyles]::AdjustToUniversal
+    $a=[DateTimeOffset]::MinValue;$b=[DateTimeOffset]::MinValue
+    if(-not[DateTimeOffset]::TryParseExact(
+         $Earlier,$format,$culture,$styles,[ref]$a) -or
+       -not[DateTimeOffset]::TryParseExact(
+         $Later,$format,$culture,$styles,[ref]$b) -or $b-lt$a){
+      Stop-Observer 81 'Temporal gate drifted.'}
+}
+function Assert-FormalPreLatch([psobject]$Contract,[string]$Raw) {
+    if(-not[bool]$Contract.formalExecutionEligible -or
+       [string]$Contract.authority.profile-cne'Formal'){
+      Stop-Observer 64 'Test fixtures are never formal-execution eligible.'}
+    $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal=[Security.Principal.WindowsPrincipal]::new($identity)
+    if(-not[Environment]::Is64BitOperatingSystem -or
+       -not[Environment]::Is64BitProcess -or
+       $PSVersionTable.PSVersion.Major-ne5 -or
+       [Environment]::MachineName-cne$Contract.authority.identity.machineName -or
+       $identity.User.Value-cne$fixedSid -or
+       [Diagnostics.Process]::GetCurrentProcess().SessionId-ne$fixedSession -or
+       $principal.IsInRole(
+         [Security.Principal.WindowsBuiltInRole]::Administrator) -or
+       -not[Environment]::UserInteractive){
+      Stop-Observer 66 'Identity/environment gate drifted.'}
+    Initialize-NativeIdentity
+    Assert-FormalTokenProof $Contract
+    $rawLength=[Text.UTF8Encoding]::new($false,$true).GetByteCount($Raw)
+    if($rawLength-ne[int]$Contract.bindingManifest.contractLength){
+      Stop-Observer 67 'Contract length drifted.'}
+    $pattern='(?m)^    "contractCanonicalSha256": "([0-9A-F]{64})",$'
+    $matches=[regex]::Matches($Raw,$pattern)
+    if($matches.Count-ne1){Stop-Observer 67 'Contract self-hash field drifted.'}
+    $zeroed=[regex]::Replace(
+      $Raw,$pattern,
+      '    "contractCanonicalSha256": "'+('0'*64)+'",')
+    if((Get-TextHash $zeroed)-cne
+       [string]$Contract.bindingManifest.contractCanonicalSha256){
+      Stop-Observer 67 'Contract self-hash drifted.'}
+    Assert-ExactNames $Contract.authority.roots.bundleRoot @(
+      'outer-launcher.ps1','launch-observer.ps1',
+      'launch-observer-contract.json') 68
+    Assert-Identity $Contract.authority.roots.bundleRoot $true $null (
+      [string]$Contract.authority.source.rootSddl) 68
+    $bundleFileSddl=[string]$Contract.authority.source.fileSddl
+    foreach($path in @($fixedOuterPath,$fixedObserverPath,$fixedContractPath)){
+      Assert-Identity $path $false $null $bundleFileSddl 69}
+    if((Get-Hash $fixedObserverPath)-cne
+         [string]$Contract.bindingManifest.observer.sha256 -or
+       (Get-Hash $fixedOuterPath)-cne
+         [string]$Contract.bindingManifest.outerLauncher.sha256){
+      Stop-Observer 69 'Bundle binding drifted.'}
+    Assert-ExactNames $Contract.authority.roots.sourceRoot @(
+      'elevated-reconcile.ps1','recovery-contract.json') 70
+    Assert-CurrentRoot $Contract.authority.currentBindings.sourceRoot 70
+    foreach($file in @($Contract.authority.source.files)){
+      Assert-CurrentFile $file 70}
+    $recoveryRaw=[IO.File]::ReadAllText(
+      $fixedRecoveryPath,[Text.UTF8Encoding]::new($false,$true))
+    if((Get-Hash $fixedRecoveryPath)-cne
+       [string]$Contract.bindingManifest.recoveryContract.sha256){
+      Stop-Observer 70 'Recovery hash drifted.'}
+    $recovery=$recoveryRaw|ConvertFrom-Json
+    $gates=@($recovery.contractStageGates)
+    if([int]$recovery.schemaVersion-ne2 -or $gates.Count-ne171){
+      Stop-Observer 70 'Recovery schema drifted.'}
+    $map=@();$exitMap=[Collections.Generic.Dictionary[int,string]]::new()
+    for($i=0;$i-lt171;$i++){
+      if(@($gates[$i].PSObject.Properties).Count-ne2 -or
+         $gates[$i].PSObject.Properties[0].Name-cne'gateId' -or
+         $gates[$i].PSObject.Properties[1].Name-cne'exitCode' -or
+         $gates[$i].exitCode-isnot[int] -or
+         -not([string]$gates[$i].gateId).StartsWith(
+           ('FSL-CG-{0:D3}-'-f($i+1)),[StringComparison]::Ordinal) -or
+         [int]$gates[$i].exitCode-ne84+$i -or
+         $exitMap.ContainsKey([int]$gates[$i].exitCode)){
+         Stop-Observer 70 'Recovery gate map drifted.'}
+      $exitMap.Add([int]$gates[$i].exitCode,[string]$gates[$i].gateId)
+      $map+=([string]$gates[$i].gateId)+'|'+[string][int]$gates[$i].exitCode}
+    if((Get-TextHash($map-join"`n"))-cne
+       [string]$Contract.authority.source.recoveryGateMapSha256){
+      Stop-Observer 70 'Recovery gate-map hash drifted.'}
+    if([string]$recovery.identity.repository-cne$fixedRepository -or
+       [string]$recovery.identity.machineName-cne[Environment]::MachineName -or
+       [string]$recovery.identity.runId-cne$fixedRunId -or
+       [string]$recovery.identity.userSid-cne$fixedSid){
+      Stop-Observer 71 'Recovery identity drifted.'}
+    Assert-GitAuthority $Contract
+    Assert-CurrentRoot $Contract.authority.currentBindings.evidenceRoot 72
+    foreach($file in @($Contract.authority.currentBindings.evidenceFiles)){
+      Assert-CurrentFile $file 72}
+    Assert-CurrentRoot $Contract.authority.currentBindings.externalAnchorRoot 73
+    foreach($file in @($Contract.authority.currentBindings.externalAnchorFiles)){
+      Assert-CurrentFile $file 73}
+    Assert-ExactNames $Contract.authority.canonical.evidenceRoot @(
+      $Contract.authority.canonical.evidenceFiles|ForEach-Object{
+        [IO.Path]::GetFileName($_.path)}) 72
+    Assert-ExactNames $Contract.authority.canonical.externalAnchorRoot @(
+      $Contract.authority.canonical.externalAnchorFiles|ForEach-Object{
+        [IO.Path]::GetFileName($_.path)}) 73
+    $release=@(Get-ChildItem -LiteralPath $Contract.authority.release.root -File)
+    if($release.Count-ne[int]$Contract.authority.release.fileCount){
+      Stop-Observer 74 'Release exact set drifted.'}
+    $releaseLines=@($release|Sort-Object Name|ForEach-Object{
+      $_.Name+'|'+$_.Length+'|'+(Get-Hash $_.FullName)})
+    if((Get-TextHash($releaseLines-join"`n"))-cne
+       [string]$Contract.authority.release.fingerprintSha256){
+      Stop-Observer 74 'Release fingerprint drifted.'}
+    Assert-CurrentRoot $Contract.authority.currentBindings.releaseRoot 74
+    foreach($file in @($Contract.authority.currentBindings.releaseFiles)){
+      Assert-CurrentFile $file 74}
+    $installExists=Test-Path `
+      -LiteralPath $Contract.authority.systemState.installDirectory `
+      -PathType Container
+    if(-not$installExists){
+      Stop-Observer 75 'Install directory drifted.'}
+    Assert-CurrentRoot $Contract.authority.currentBindings.transactionDirectory 75
+    $service=Get-Service -Name 'FolderSessionLockRecovery' -ErrorAction SilentlyContinue
+    $appInfo=Get-Service -Name 'AppInfo' -ErrorAction SilentlyContinue
+    $enableLua=Get-ItemPropertyValue `
+      -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+      -Name EnableLUA -ErrorAction Stop
+    $processes=@(Get-Process -Name @(
+      'FolderSessionLock.App','FolderSessionLock.Broker',
+      'FolderSessionLock.Recovery','FolderSessionLock.Service') `
+      -ErrorAction SilentlyContinue)
+    if(-not[bool]$Contract.authority.systemState.programDataAbsent -or
+       $(Test-Path -LiteralPath (
+          $Contract.authority.systemState.programDataRoot)) -or
+       -not[bool]$Contract.authority.systemState.serviceRegistryAbsent -or
+       $(Test-Path -LiteralPath (
+          $Contract.authority.systemState.serviceRegistryPath)) -or
+       -not[bool]$Contract.authority.systemState.serviceAbsent -or
+       $null-ne$service -or $processes.Count-ne0 -or
+       [int]$Contract.authority.systemState.productProcessCount-ne$processes.Count -or
+       [int]$Contract.authority.systemState.enableLua-ne[int]$enableLua -or
+       [int]$enableLua-ne1 -or $null-eq$appInfo -or
+       [string]$Contract.authority.systemState.appInfoStatus-cne
+         [string]$appInfo.Status -or [string]$appInfo.Status-cne'Running'){
+      Stop-Observer 75 'System-state gate drifted.'}
+    if(Test-Path -LiteralPath $Contract.policy.latch.path){
+      Stop-Observer 65 'Latch already exists.'}
+    if([string]$Contract.policy.nativeOuterLaunch.commandLine-cne
+         $fixedCommandLine -or
+       [string]$Contract.policy.nativeOuterLaunch.applicationName-cne
+         $fixedPowerShell -or
+       [string]$Contract.policy.nativeOuterLaunch.workingDirectory-cne
+         $fixedWorkingDirectory){
+      Stop-Observer 67 'Canonical command line drifted.'}
+    $creationFlags=@($Contract.policy.nativeOuterLaunch.creationFlags)
+    if($creationFlags.Count-ne2 -or
+       $creationFlags[0]-isnot[string] -or
+       [string]$creationFlags[0]-cne'CREATE_BREAKAWAY_FROM_JOB' -or
+       $creationFlags[1]-isnot[string] -or
+       [string]$creationFlags[1]-cne'CREATE_NO_WINDOW' -or
+       [string]$Contract.policy.nativeOuterLaunch.numericCreationFlags-cne
+         '0x09000000'){
+      Stop-Observer 67 'Native creation flags drifted.'}
+    $runAs=$Contract.policy.recoveryRunAs
+    $runAsNames=@($runAs.PSObject.Properties|ForEach-Object Name)
+    if($runAsNames.Count-ne5 -or
+       ($runAsNames-join'|')-cne
+         'applicationName|argumentLine|verb|passThru|wait' -or
+       [string]$runAs.applicationName-cne$fixedPowerShell -or
+       [string]$runAs.argumentLine-cne$fixedRecoveryArgumentLine -or
+       [string]$runAs.verb-cne'RunAs' -or
+       $runAs.passThru-isnot[bool] -or -not[bool]$runAs.passThru -or
+       $runAs.wait-isnot[bool] -or -not[bool]$runAs.wait){
+      Stop-Observer 67 'Recovery RunAs policy drifted.'}
+    $expectedArgv=@(
+      'dummy.exe','-NoLogo','-NoProfile','-NonInteractive',
+      '-ExecutionPolicy','Bypass','-File',$fixedWrapperPath)
+    $parsedArgv=@([FslFormalObserverIdentity]::ParseWindowsCommandLine(
+      '"dummy.exe" '+$fixedRecoveryArgumentLine))
+    if($parsedArgv.Count-ne$expectedArgv.Count){
+      Stop-Observer 67 'Recovery argv cardinality drifted.'}
+    for($argvIndex=0;$argvIndex-lt$expectedArgv.Count;$argvIndex++){
+      if([string]$parsedArgv[$argvIndex]-cne[string]$expectedArgv[$argvIndex]){
+        Stop-Observer 67 'Recovery argv drifted.'}}
+    return [pscustomobject][ordered]@{
+      wrapperSha256=Get-Hash $fixedWrapperPath
+      recoveryContractSha256=Get-Hash $fixedRecoveryPath
+      exitCodeToGateId=$exitMap}
+}
+
+function New-Terminal(
+  [string]$Outcome,[AllowNull()][object]$TargetPid,
+  [AllowNull()][object]$ExitCode,[Collections.Generic.Dictionary[int,string]]$Map){
+    if($Outcome-cin@('UacCancelled','LaunchFailed')){
+      return [pscustomobject][ordered]@{
+        outcome=$Outcome;targetPid=$null;exitCode=$null;gateId=$null}}
+    if($Outcome-cne'Exited' -or $TargetPid-isnot[int] -or
+       [int]$TargetPid-le0 -or $ExitCode-isnot[int]){
+      Stop-Observer 78 'Terminal result is invalid.'}
+    $gate=$null
+    if([int]$ExitCode-ne0 -and $Map.ContainsKey([int]$ExitCode)){
+      $gate=$Map[[int]$ExitCode]}
+    return [pscustomobject][ordered]@{
+      outcome='Exited';targetPid=[int]$TargetPid;exitCode=[int]$ExitCode
+      gateId=$gate}
+}
+
+try {
+  if($PSBoundParameters.Count-ne0 -or $args.Count-ne0){
+    Stop-Observer 64 'No runtime metadata is allowed.'}
+  if(Test-Path -LiteralPath (Join-Path(
+       (Split-Path -Parent $fixedObserverPath),'launch-attempt.jsonl'))){
+    Stop-Observer 65 'Latch already exists.'}
+  $raw=[IO.File]::ReadAllText(
+    $fixedContractPath,[Text.UTF8Encoding]::new($false,$true))
+  $contract=$raw|ConvertFrom-Json
+  $contexts=@(Assert-FormalPreLatch $contract $raw)
+  if($contexts.Count-ne1){Stop-Observer 67 'Pre-latch context cardinality drifted.'}
+  $context=$contexts[0]
+  $wrapperHash=[string]$context.wrapperSha256
+  $recoveryHash=[string]$context.recoveryContractSha256
+  $record1=[pscustomobject][ordered]@{
+    schemaVersion=1;recordOrdinal=1;attemptId=$fixedAttemptId;runId=$fixedRunId
+    checkpoint=$fixedCheckpoint;wrapperSha256=$wrapperHash
+    recoveryContractSha256=$recoveryHash;phase='LaunchCommitted';status='Pending'
+    outcome=$null;observerPid=[int]$PID;targetPid=$null;exitCode=$null
+    gateId=$null;timestampUtc=Get-Utc}
+  $stream=[IO.FileStream]::new(
+    $contract.policy.latch.path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,
+    [IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
+  try{Write-Record $stream $record1}finally{$stream.Dispose()}
+  Assert-Latch $contract.policy.latch.path @($record1)
+  $time2=Get-Utc;Assert-Temporal $record1.timestampUtc $time2
+  $record2=[pscustomobject][ordered]@{
+    schemaVersion=1;recordOrdinal=2;attemptId=$fixedAttemptId;runId=$fixedRunId
+    checkpoint=$fixedCheckpoint;wrapperSha256=$wrapperHash
+    recoveryContractSha256=$recoveryHash;phase='RunAsInvoking';status='Pending'
+    outcome=$null;observerPid=[int]$PID;targetPid=$null;exitCode=$null
+    gateId=$null;timestampUtc=$time2}
+  $stream=[IO.FileStream]::new(
+    $contract.policy.latch.path,[IO.FileMode]::Append,[IO.FileAccess]::Write,
+    [IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
+  try{Write-Record $stream $record2}finally{$stream.Dispose()}
+  Assert-Latch $contract.policy.latch.path @($record1,$record2)
+  $child=$null;$childExit=$null;$target=$null;$outcome='LaunchFailed'
+  try{
+    $child=Start-Process -FilePath $fixedPowerShell `
+      -ArgumentList $fixedRecoveryArgumentLine -Verb RunAs -PassThru -Wait
+    $target=[int]$child.Id;$childExit=[int]$child.ExitCode;$outcome='Exited'
+  }
+  catch [ComponentModel.Win32Exception] {
+    if($_.Exception.NativeErrorCode-eq1223){$outcome='UacCancelled'}
+  }
+  catch {$outcome='LaunchFailed'}
+  Assert-Latch $contract.policy.latch.path @($record1,$record2)
+  $time3=Get-Utc;Assert-Temporal $record2.timestampUtc $time3
+  $terminal=New-Terminal $outcome $target $childExit $context.exitCodeToGateId
+  $record3=[pscustomobject][ordered]@{
+    schemaVersion=1;recordOrdinal=3;attemptId=$fixedAttemptId;runId=$fixedRunId
+    checkpoint=$fixedCheckpoint;wrapperSha256=$wrapperHash
+    recoveryContractSha256=$recoveryHash;phase='LaunchResult'
+    status='Completed';outcome=$terminal.outcome;observerPid=[int]$PID
+    targetPid=$terminal.targetPid;exitCode=$terminal.exitCode
+    gateId=$terminal.gateId;timestampUtc=$time3}
+  $stream=[IO.FileStream]::new(
+    $contract.policy.latch.path,[IO.FileMode]::Append,[IO.FileAccess]::Write,
+    [IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
+  try{Write-Record $stream $record3}finally{$stream.Dispose()}
+  Assert-Latch $contract.policy.latch.path @($record1,$record2,$record3)
+  if($outcome-cne'Exited'){Stop-Observer 77 'RunAs failed.'}
+  if($childExit-ne0){Stop-Observer 79 'Recovery returned nonzero.'}
+  exit 0
+}
+catch {Stop-Observer 80 'Observer failed closed.'}
+'@
+    $source = @($Authority.source.files)
+    $text = $template.
+        Replace('@@CONTRACT@@', (ConvertTo-FslFlbLiteral $Policy.files.contractPath)).
+        Replace('@@OBSERVER@@', (ConvertTo-FslFlbLiteral $Policy.files.observerPath)).
+        Replace('@@OUTER@@', (ConvertTo-FslFlbLiteral $Policy.files.outerLauncherPath)).
+        Replace('@@RECOVERY@@', (ConvertTo-FslFlbLiteral $source[1].path)).
+        Replace('@@WRAPPER@@', (ConvertTo-FslFlbLiteral $source[0].path)).
+        Replace('@@REPOSITORY@@', (ConvertTo-FslFlbLiteral $Authority.repository.projectRoot)).
+        Replace('@@GITROOT@@', (ConvertTo-FslFlbLiteral $Authority.repository.gitRoot)).
+        Replace('@@GITDIR@@', (ConvertTo-FslFlbLiteral $Authority.repository.gitDirectory)).
+        Replace('@@GITBRANCH@@', (ConvertTo-FslFlbLiteral $Authority.repository.branch)).
+        Replace('@@GITHEAD@@', (ConvertTo-FslFlbLiteral $Authority.repository.head)).
+        Replace('@@GITTREE@@', (ConvertTo-FslFlbLiteral $Authority.repository.tree)).
+        Replace('@@TRACKEDCLEAN@@', ([string][bool]$Authority.repository.trackedClean)).
+        Replace('@@POWERSHELL@@', (ConvertTo-FslFlbLiteral $Authority.executable.powerShellPath)).
+        Replace('@@WORKING@@', (ConvertTo-FslFlbLiteral $Authority.executable.workingDirectory)).
+        Replace('@@COMMAND@@', (ConvertTo-FslFlbLiteral $Policy.nativeOuterLaunch.commandLine)).
+        Replace('@@RECOVERY_ARGUMENT_LINE@@', (ConvertTo-FslFlbLiteral $Policy.recoveryRunAs.argumentLine)).
+        Replace('@@SID@@', (ConvertTo-FslFlbLiteral $Authority.identity.userSid)).
+        Replace('@@SESSION@@', ([string][int]$Authority.identity.sessionId)).
+        Replace('@@RUNID@@', (ConvertTo-FslFlbLiteral ([string]$Model.runId))).
+        Replace('@@CONTRACT_ID@@', (ConvertTo-FslFlbLiteral ([string]$Model.contractId))).
+        Replace('@@ATTEMPT_ID@@', (ConvertTo-FslFlbLiteral ([string]$Model.attemptId))).
+        Replace('@@CHECKPOINT@@', (ConvertTo-FslFlbLiteral ([string]$Model.checkpoint)))
+    $text = $text.Replace(
+        '@@LATCH_HELPERS@@',
+        $script:FlbLatchHelperTemplate.TrimEnd("`r", "`n"))
+    return $text.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
+}
+
+# Responsibility 6: canonical manifest with non-circular self hash.
+function New-FslFlbContractBase {
+    param(
+        [psobject]$Model,
+        [psobject]$Authority,
+        [psobject]$Policy,
+        [byte[]]$OuterBytes,
+        [byte[]]$ObserverBytes)
+    return [ordered]@{
+        schemaVersion = 1
+        authorityProfile = [string]$Model.authorityProfile
+        contractId = [string]$Model.contractId
+        checkpoint = [string]$Model.checkpoint
+        attemptId = [string]$Model.attemptId
+        runId = [string]$Model.runId
+        formalExecutionEligible = [bool]$Authority.formalExecutionEligible
+        authority = $Authority
+        policy = $Policy
+        bindingManifest = [ordered]@{
+            schemaVersion = 1
+            fileOrder = $script:FlbBundleNames
+            outerLauncher = [ordered]@{
+                name = 'outer-launcher.ps1'
+                length = $OuterBytes.Length
+                sha256 = Get-FslFlbSha256Bytes $OuterBytes
+            }
+            observer = [ordered]@{
+                name = 'launch-observer.ps1'
+                length = $ObserverBytes.Length
+                sha256 = Get-FslFlbSha256Bytes $ObserverBytes
+            }
+            contractName = 'launch-observer-contract.json'
+            contractLength = 0
+            contractCanonicalSha256 = $script:FlbZeros
+            hashRule = $script:FlbSelfHashRule
+            recoveryWrapper = [ordered]@{
+                name = 'elevated-reconcile.ps1'
+                length = [int64]$Authority.source.files[0].length
+                sha256 = [string]$Authority.source.files[0].sha256
+            }
+            recoveryContract = [ordered]@{
+                name = 'recovery-contract.json'
+                length = [int64]$Authority.source.files[1].length
+                sha256 =
+                    [string]$Authority.source.recoveryContractSha256
+            }
+            recoveryGateMapSha256 =
+                [string]$Authority.source.recoveryGateMapSha256
+            currentAuthorityCanonicalSha256 = Get-FslFlbSha256Bytes (
+                Get-FslFlbBytes (
+                    ConvertTo-FslFlbCanonicalJson $Authority))
+        }
+    }
+}
+
+function Complete-FslFlbContract {
+    param([Collections.IDictionary]$Contract)
+    for ($iteration = 0; $iteration -lt 8; $iteration++) {
+        $Contract.bindingManifest.contractCanonicalSha256 = $script:FlbZeros
+        $bytes = Get-FslFlbBytes (ConvertTo-FslFlbCanonicalJson $Contract)
+        if ([int]$Contract.bindingManifest.contractLength -eq $bytes.Length) {
+            break
+        }
+        $Contract.bindingManifest.contractLength = $bytes.Length
+    }
+    $zeroBytes = Get-FslFlbBytes (ConvertTo-FslFlbCanonicalJson $Contract)
+    if ($zeroBytes.Length -ne [int]$Contract.bindingManifest.contractLength) {
+        Stop-FslFlb 'FSL-FLB-V006-BINDING' 'Contract length did not stabilize.' $null
+    }
+    $Contract.bindingManifest.contractCanonicalSha256 =
+        Get-FslFlbSha256Bytes $zeroBytes
+    $actual = Get-FslFlbBytes (ConvertTo-FslFlbCanonicalJson $Contract)
+    if ($actual.Length -ne [int]$Contract.bindingManifest.contractLength) {
+        Stop-FslFlb 'FSL-FLB-V006-BINDING' 'Contract self-hash changed its length.' $null
+    }
+    return ,$actual
+}
+
+# Responsibility 7: AST/static validator and stable errors.
+function New-FslFlbError {
+    param([string]$Code, [string]$Target, [string]$Detail)
+    return [pscustomobject][ordered]@{
+        code = $Code
+        target = $Target
+        detail = $Detail
+    }
+}
+
+function Sort-FslFlbErrors {
+    param([Collections.IList]$Errors)
+    $array = @($Errors)
+    [Array]::Sort($array, [Comparison[object]]{
+        param($left, $right)
+        $value = [string]::Compare(
+            [string]$left.code,
+            [string]$right.code,
+            [StringComparison]::Ordinal)
+        if ($value -eq 0) {
+            $value = [string]::Compare(
+                [string]$left.target,
+                [string]$right.target,
+                [StringComparison]::Ordinal)
+        }
+        if ($value -eq 0) {
+            $value = [string]::Compare(
+                [string]$left.detail,
+                [string]$right.detail,
+                [StringComparison]::Ordinal)
+        }
+        return $value
+    })
+    return $array
+}
+
+function Get-FslFlbAst {
+    param([string]$Path)
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile(
+        $Path,
+        [ref]$tokens,
+        [ref]$errors)
+    return [pscustomobject]@{ ast = $ast; errors = @($errors) }
+}
+
+function Get-FslFlbAndLeaves {
+    param($Ast)
+    if ($Ast -is [Management.Automation.Language.ParenExpressionAst]) {
+        return @(Get-FslFlbAndLeaves $Ast.Pipeline)
+    }
+    if ($Ast -is [Management.Automation.Language.PipelineAst] -and
+        $Ast.PipelineElements.Count -eq 1) {
+        return @(Get-FslFlbAndLeaves $Ast.PipelineElements[0])
+    }
+    if ($Ast -is [Management.Automation.Language.CommandExpressionAst]) {
+        return @(Get-FslFlbAndLeaves $Ast.Expression)
+    }
+    if ($Ast -is [Management.Automation.Language.BinaryExpressionAst] -and
+        $Ast.Operator -eq [Management.Automation.Language.TokenKind]::And) {
+        return @(
+            Get-FslFlbAndLeaves $Ast.Left
+            Get-FslFlbAndLeaves $Ast.Right)
+    }
+    return @($Ast)
+}
+
+function Get-FslFlbPredicateClassification {
+    param([string]$ActualPath, [string]$ExpectedText)
+    $parsed = Get-FslFlbAst $ActualPath
+    if ($parsed.errors.Count -ne 0) { return $null }
+    $assignment = @($parsed.ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+        $node.Left.VariablePath.UserPath -ceq 'contractValid'
+    }, $true))
+    if ($assignment.Count -ne 1) {
+        return [pscustomobject]@{ kind = 'set'; ordinal = 0 }
+    }
+    $leaves = @(Get-FslFlbAndLeaves $assignment[0].Right)
+    if ($leaves.Count -ne 22) {
+        return [pscustomobject]@{ kind = 'set'; ordinal = 0 }
+    }
+    $expected = @(Get-FslFlbPredicateTexts)
+    $different = @()
+    for ($index = 0; $index -lt 22; $index++) {
+        $actual = $leaves[$index].Extent.Text.Trim()
+        while ($actual.StartsWith('(') -and $actual.EndsWith(')')) {
+            $actual = $actual.Substring(1, $actual.Length - 2).Trim()
+        }
+        if ($actual -cne $expected[$index]) { $different += $index }
+    }
+    if ($different.Count -eq 0) { return $null }
+    if ($different.Count -eq 1) {
+        $index = $different[0]
+        return [pscustomobject]@{
+            kind = 'single'
+            ordinal = $index + 1
+        }
+    }
+    return [pscustomobject]@{ kind = 'set'; ordinal = 0 }
+}
+
+function Get-FslFlbObservedFiles {
+    param([string]$Root)
+    $records = @()
+    foreach ($name in $script:FlbBundleNames) {
+        $path = Join-Path $Root $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $records += [pscustomobject][ordered]@{
+                name = $name
+                path = $path
+                length = (Get-Item -LiteralPath $path).Length
+                sha256 = Get-FslFlbSha256 $path
+            }
+        }
+        else {
+            $records += [pscustomobject][ordered]@{
+                name = $name
+                path = $path
+                length = $null
+                sha256 = $null
+            }
+        }
+    }
+    return $records
+}
+
+function Remove-FslFlbPartial {
+    param([string]$Root, [hashtable]$Hashes)
+    if (-not (Test-Path -LiteralPath $Root -PathType Container) -or
+        -not (Test-FslFlbOrdinary $Root $true)) { return }
+    $children = @(Get-ChildItem -LiteralPath $Root -Force)
+    foreach ($child in $children) {
+        if ($child.PSIsContainer -or
+            -not $Hashes.ContainsKey($child.Name) -or
+            -not (Test-FslFlbOrdinary $child.FullName $false) -or
+            (Get-FslFlbSha256 $child.FullName) -cne $Hashes[$child.Name]) {
+            return
+        }
+    }
+    foreach ($child in $children) { [IO.File]::Delete($child.FullName) }
+    if (@(Get-ChildItem -LiteralPath $Root -Force).Count -eq 0) {
+        [IO.Directory]::Delete($Root, $false)
+    }
+}
+
+# Responsibility 8: exact two public commands.
+function New-FslStage4FormalLauncherBundle {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [psobject]$Model)
+    Assert-FslFlbModel $Model
+    $authority = Resolve-FslFlbAuthority $Model
+    $policy = Get-FslFlbPolicy $Model $authority
+    $root = $authority.roots.bundleRoot
+    if (Test-Path -LiteralPath $root) {
+        Stop-FslFlb 'FSL-FLB-V002-ROOT' 'The internal bundle root must not exist.' $null
+    }
+    $parent = Split-Path -Parent $root
+    if (-not (Test-FslFlbOrdinary $parent $true)) {
+        Stop-FslFlb 'FSL-FLB-V002-ROOT' 'The bundle parent identity is invalid.' $null
+    }
+    $outerBytes = Get-FslFlbBytes (
+        Render-FslFlbOuter $Model $authority $policy)
+    $observerBytes = Get-FslFlbBytes (
+        Render-FslFlbObserver $Model $authority $policy)
+    $contract = New-FslFlbContractBase `
+        $Model `
+        $authority `
+        $policy `
+        $outerBytes `
+        $observerBytes
+    $contractBytes = Complete-FslFlbContract $contract
+    $hashes = @{
+        'outer-launcher.ps1' = Get-FslFlbSha256Bytes $outerBytes
+        'launch-observer.ps1' = Get-FslFlbSha256Bytes $observerBytes
+        'launch-observer-contract.json' = Get-FslFlbSha256Bytes $contractBytes
+    }
+    $fileSddl = [string]$authority.source.fileSddl
+    try {
+        [IO.Directory]::CreateDirectory($root) | Out-Null
+        Set-FslFlbSddl $root $authority.source.rootSddl $true
+        if (-not (Test-FslFlbOrdinary $root $true) -or
+            -not (Test-FslFlbProtectedAcl `
+                $root `
+                $true `
+                $authority.identity.userSid `
+                $authority.source.rootSddl)) {
+            Stop-FslFlb 'FSL-FLB-V013-ACL' 'The bundle-root ACL failed.' $null
+        }
+        foreach ($item in @(
+            @('outer-launcher.ps1', $outerBytes),
+            @('launch-observer.ps1', $observerBytes),
+            @('launch-observer-contract.json', $contractBytes))) {
+            $path = Join-Path $root $item[0]
+            Write-FslFlbNew $path ([byte[]]$item[1])
+            Set-FslFlbSddl $path $fileSddl $false
+            if (-not (Test-FslFlbOrdinary $path $false) -or
+                -not (Test-FslFlbProtectedAcl `
+                    $path `
+                    $false `
+                    $authority.identity.userSid `
+                    $fileSddl)) {
+                Stop-FslFlb `
+                    'FSL-FLB-V013-ACL' `
+                    ('A bundle-file identity or ACL failed: ' + $item[0] + '.') `
+                    $null
+            }
+        }
+    }
+    catch {
+        Remove-FslFlbPartial $root $hashes
+        if ($_.Exception.Data.Contains('FslFormalLauncherBundleCode')) { throw }
+        Stop-FslFlb 'FSL-FLB-V002-ROOT' 'Bundle generation failed.' $_.Exception
+    }
+    return [pscustomobject][ordered]@{
+        schemaVersion = 1
+        bundleRoot = $root
+        contractCanonicalSha256 =
+            [string]$contract.bindingManifest.contractCanonicalSha256
+        observedFiles = @(Get-FslFlbObservedFiles $root)
+    }
+}
+
+function Test-FslStage4FormalLauncherBundle {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [psobject]$Model)
+    $errors = [Collections.Generic.List[object]]::new()
+    $root = $null
+    $observed = @()
+    try {
+        Assert-FslFlbModel $Model
+        $authority = Resolve-FslFlbAuthority $Model
+        $policy = Get-FslFlbPolicy $Model $authority
+        $root = $authority.roots.bundleRoot
+        if (-not (Test-Path -LiteralPath $root -PathType Container) -or
+            -not (Test-FslFlbOrdinary $root $true)) {
+            [void]$errors.Add((New-FslFlbError `
+                'FSL-FLB-V002-ROOT' `
+                'bundleRoot' `
+                'The internal bundle root identity is invalid.'))
+        }
+        else {
+            $observed = @(Get-FslFlbObservedFiles $root)
+            $actualNames = @(
+                Get-ChildItem -LiteralPath $root -Force |
+                    ForEach-Object { $_.Name })
+            if (-not (Test-FslFlbExactSet $actualNames $script:FlbBundleNames)) {
+                [void]$errors.Add((New-FslFlbError `
+                    'FSL-FLB-V003-FILESET' `
+                    'bundleRoot' `
+                    'The bundle is not exact-three with exact case.'))
+            }
+            $outerBytes = Get-FslFlbBytes (
+                Render-FslFlbOuter $Model $authority $policy)
+            $observerBytes = Get-FslFlbBytes (
+                Render-FslFlbObserver $Model $authority $policy)
+            $expectedContract = New-FslFlbContractBase `
+                $Model `
+                $authority `
+                $policy `
+                $outerBytes `
+                $observerBytes
+            $contractBytes = Complete-FslFlbContract $expectedContract
+            $outerPath = Join-Path $root 'outer-launcher.ps1'
+            $observerPath = Join-Path $root 'launch-observer.ps1'
+            $contractPath = Join-Path $root 'launch-observer-contract.json'
+            $predicate = if (Test-Path -LiteralPath $outerPath -PathType Leaf) {
+                Get-FslFlbPredicateClassification `
+                    $outerPath `
+                    ([Text.UTF8Encoding]::new($false, $true).GetString($outerBytes))
+            }
+            else { $null }
+            if ($null -ne $predicate) {
+                if ($predicate.kind -ceq 'single') {
+                    [void]$errors.Add((New-FslFlbError `
+                        ('FSL-FLB-V009-PREDICATE-{0:D2}' -f $predicate.ordinal) `
+                        'outer-launcher.ps1' `
+                        'Exactly one exit-68 predicate changed.'))
+                }
+                else {
+                    [void]$errors.Add((New-FslFlbError `
+                        'FSL-FLB-V009-PREDICATE-SET' `
+                        'outer-launcher.ps1' `
+                        'The exact ordered 22-predicate set changed.'))
+                }
+            }
+            else {
+                foreach ($item in @(
+                    @($outerPath, $outerBytes),
+                    @($observerPath, $observerBytes),
+                    @($contractPath, $contractBytes))) {
+                    if (-not (Test-Path -LiteralPath $item[0] -PathType Leaf) -or
+                        -not (Test-FslFlbOrdinary $item[0] $false) -or
+                        (Get-FslFlbSha256 $item[0]) -cne
+                            (Get-FslFlbSha256Bytes ([byte[]]$item[1]))) {
+                        [void]$errors.Add((New-FslFlbError `
+                            'FSL-FLB-V004-FILE-BYTES' `
+                            ([IO.Path]::GetFileName($item[0])) `
+                            'A bundle file is not its canonical byte sequence.'))
+                    }
+                }
+                if (Test-Path -LiteralPath $contractPath -PathType Leaf) {
+                    try {
+                        $raw = [IO.File]::ReadAllText(
+                            $contractPath,
+                            [Text.UTF8Encoding]::new($false, $true))
+                        $parsed = $raw | ConvertFrom-Json
+                        $expectedText = [Text.UTF8Encoding]::new(
+                            $false,
+                            $true).GetString($contractBytes)
+                        if ($raw -cne $expectedText -or
+                            [int]$parsed.bindingManifest.contractLength -ne
+                                [Text.UTF8Encoding]::new(
+                                    $false,
+                                    $true).GetByteCount($raw)) {
+                            [void]$errors.Add((New-FslFlbError `
+                                'FSL-FLB-V005-CONTRACT-CANONICAL' `
+                                'launch-observer-contract.json' `
+                                'The canonical manifest or self hash drifted.'))
+                        }
+                    }
+                    catch {
+                        [void]$errors.Add((New-FslFlbError `
+                            'FSL-FLB-V005-CONTRACT-CANONICAL' `
+                            'launch-observer-contract.json' `
+                            'The contract JSON is invalid.'))
+                    }
+                }
+            }
+            $fileSddl = [string]$authority.source.fileSddl
+            if (-not (Test-FslFlbProtectedAcl `
+                $root `
+                $true `
+                $authority.identity.userSid `
+                $authority.source.rootSddl)) {
+                [void]$errors.Add((New-FslFlbError `
+                    'FSL-FLB-V013-ACL' `
+                    'bundleRoot' `
+                    'The bundle-root ACL drifted.'))
+            }
+            foreach ($name in $script:FlbBundleNames) {
+                $path = Join-Path $root $name
+                if ((Test-Path -LiteralPath $path -PathType Leaf) -and
+                    -not (Test-FslFlbProtectedAcl `
+                        $path `
+                        $false `
+                        $authority.identity.userSid `
+                        $fileSddl)) {
+                    [void]$errors.Add((New-FslFlbError `
+                        'FSL-FLB-V013-ACL' `
+                        $name `
+                        'A bundle-file ACL drifted.'))
+                }
+            }
+            if (Test-Path -LiteralPath (
+                Join-Path $root 'launch-attempt.jsonl')) {
+                [void]$errors.Add((New-FslFlbError `
+                    'FSL-FLB-V012-LATCH' `
+                    'launch-attempt.jsonl' `
+                    'The pre-execution latch must be absent.'))
+            }
+            foreach ($path in @($outerPath, $observerPath)) {
+                if (Test-Path -LiteralPath $path -PathType Leaf) {
+                    $parsed = Get-FslFlbAst $path
+                    if ($parsed.errors.Count -ne 0) {
+                        [void]$errors.Add((New-FslFlbError `
+                            'FSL-FLB-V014-NONEXECUTION' `
+                            ([IO.Path]::GetFileName($path)) `
+                            ('Windows PowerShell 5.1 AST parsing failed: ' +
+                                $parsed.errors[0].Message + ' @ ' +
+                                $parsed.errors[0].Extent.StartLineNumber + ':' +
+                                $parsed.errors[0].Extent.StartColumnNumber + '.')))
+                    }
+                }
+            }
+            if (Test-Path -LiteralPath $observerPath -PathType Leaf) {
+                $observerAst = (Get-FslFlbAst $observerPath).ast
+                $runAs = @($observerAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.CommandAst] -and
+                    $node.GetCommandName() -ceq 'Start-Process'
+                }, $true))
+                $writes = @($observerAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+                    $node.Member.Value -ceq 'new' -and
+                    $node.Expression.Extent.Text -match 'FileStream'
+                }, $true))
+                $gate = @($observerAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.CommandAst] -and
+                    $node.GetCommandName() -ceq 'Assert-FormalPreLatch'
+                }, $true))
+                if ($runAs.Count -ne 1 -or
+                    $writes.Count -lt 1 -or
+                    $gate.Count -ne 1 -or
+                    $gate[0].Extent.StartOffset -gt
+                        $writes[0].Extent.StartOffset -or
+                    $gate[0].Extent.StartOffset -gt
+                        $runAs[0].Extent.StartOffset) {
+                    [void]$errors.Add((New-FslFlbError `
+                        'FSL-FLB-V014-NONEXECUTION' `
+                        'launch-observer.ps1' `
+                        'The full pre-latch gate is not before every write and RunAs.'))
+                }
+            }
+        }
+    }
+    catch {
+        $code = [string]$_.Exception.Data['FslFormalLauncherBundleCode']
+        if ([string]::IsNullOrEmpty($code)) { $code = 'FSL-FLB-V001-MODEL' }
+        [void]$errors.Add((New-FslFlbError `
+            $code `
+            'authority' `
+            $_.Exception.Message))
+    }
+    $sorted = @(Sort-FslFlbErrors $errors)
+    return [pscustomobject][ordered]@{
+        schemaVersion = 1
+        isValid = $sorted.Count -eq 0
+        bundleRoot = $root
+        errors = $sorted
+        observedFiles = $observed
+    }
+}
+
+Export-ModuleMember -Function @(
+    'New-FslStage4FormalLauncherBundle',
+    'Test-FslStage4FormalLauncherBundle')

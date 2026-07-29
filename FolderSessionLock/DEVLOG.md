@@ -1198,3 +1198,39 @@
   ProgramData product roots were absent. No account, UAC, SCM, LocalSystem,
   ACL, certificate, signing, restart, logoff, VMware, push, or other system
   mutation was performed. Root re-verification and reviewer remain pending.
+
+## 2026-07-29 — CP10 tracked formal-launcher bundle generator reviewer PASS
+
+- Formal Attempt002 remains permanently consumed and must not be replayed.
+  Its frozen outer command line was 233 characters because PowerShell
+  single-quoted `\"` produced literal backslashes, while the contract used
+  real quotes and was 229 characters. The read-only exit-68 forensics
+  checkpoint passed reviewer with no findings.
+- Added the tracked, deterministic, non-executing
+  `FolderSessionLock.Stage4.FormalLauncherBundle` generator/validator with
+  exactly two public commands. It canonicalizes the outer, observer, contract,
+  hashes, exact file sets, ACLs, recovery bindings, 22 ordered predicates,
+  durable one-shot latch semantics, Windows argv encoding, token proof, Git
+  object validation, and strict zlib/DEFLATE framing.
+- The frozen outer process flags are intentionally
+  `CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW` (`0x09000000`). The rendered
+  outer uses the independent official constants, the contract binds both the
+  ordered symbolic set and numeric value, and the observer verifies them
+  before any latch write or RunAs. A native non-elevated Job Object test proved
+  both permitted breakaway and fail-closed `ERROR_ACCESS_DENIED` behavior when
+  breakaway is forbidden, with one attempt, no fallback, and zero residue.
+- Root verification passed the PowerShell 5.1 suite with 205/205 cases and
+  267/267 assertions, the C# bridge and native Job Object tests, Release build
+  with 0 warnings and 0 errors, format verification, and `git diff --check`.
+  The non-environment-dependent regression set passed 806/806 with 0 failed
+  and 0 skipped.
+- The unfiltered suite truthfully remained Core 174/174, App 493/500, and
+  Windows 140/141: 807 passed, 8 failed, 0 skipped. All eight failures are
+  still-open formal-install or pending-restart VM gates; they are not recorded
+  as passed and continue to block final Stage 4 completion.
+- The final reviewer returned Standards PASS, Spec/Security PASS, Overall
+  PASS, and `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`. Attempt002, WAL, state,
+  anchors, evidence, the empty Program Files installation directory, and the
+  frozen Release remained unchanged. No Attempt003, fresh formal object, UAC,
+  RunAs, SCM, LocalSystem, restart, logoff, or VMware operation was authorized
+  or executed.

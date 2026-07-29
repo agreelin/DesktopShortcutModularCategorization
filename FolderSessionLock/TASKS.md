@@ -303,6 +303,9 @@
     - [ ] root re-verification 与 reviewer `PASS`。
     - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
   - [ ] `FSL-STAGE4-VM` 当前单一管理员账户的同账户 UAC、SCM、LocalSystem、recovery/readiness/ACL、必要重启或注销、unsigned Release 与 `D-026` schema v2 证据完成。
+    - [x] `CP10-INSTALL-WAL-ROLLBACK-ATTEMPT002-EXIT68-READONLY-FORENSICS` 已完成只读取证并由 reviewer `PASS`；Attempt002 永久 consumed，不得重放。冻结 outer 的命令行使用 PowerShell 单引号 `\"` 产生 233 字符值，而 contract 使用真实引号产生 229 字符值，构成 exit 68 的确定性充分原因。
+    - [x] `CP10-TRACKED-FORMAL-LAUNCHER-BUNDLE-GENERATOR-VALIDATOR` 已实现并由 reviewer 最终 `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。专项 PowerShell 5.1 为 205/205 cases、267/267 assertions；原生 Job Object 正反行为测试通过；Release build 0 warning、0 error；非环境依赖回归 806/806、failed 0、skipped 0。
+    - [ ] 申请新的 fresh formal object preparation 阶段门；当前未创建或授权 Attempt003，未启动新的 outer、observer、RunAs、UAC 或 recovery execution。
 - [ ] 阶段 5：WPF 前端。
 - [ ] 阶段 6：可选访问审计与警告。
 - [ ] 阶段 7：端到端测试与安全加固。

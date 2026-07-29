@@ -1,0 +1,13 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  FolderSessionLock.Core -> C:\FSL-Workspace\Repository\FolderSessionLock\src\FolderSessionLock.Core\bin\Release\net8.0\FolderSessionLock.Core.dll
+  FolderSessionLock.App -> C:\FSL-Workspace\Repository\FolderSessionLock\src\FolderSessionLock.App\bin\Release\net8.0-windows\win-x64\FolderSessionLock.App.dll
+  FolderSessionLock.App -> C:\FSL-Release\.stage4-20260727T144929Z-e5b6c040\app\
+ExitCode=0
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  FolderSessionLock.Core -> C:\FSL-Workspace\Repository\FolderSessionLock\src\FolderSessionLock.Core\bin\Release\net8.0\FolderSessionLock.Core.dll
+  FolderSessionLock.Windows -> C:\FSL-Workspace\Repository\FolderSessionLock\src\FolderSessionLock.Windows\bin\Release\net8.0-windows\FolderSessionLock.Windows.dll
+  FolderSessionLock.Broker -> C:\FSL-Workspace\Repository\FolderSessionLock\src\FolderSessionLock.Broker\bin\Release\net8.0-windows\win-x64\FolderSessionLock.Broker.dll
+  FolderSessionLock.Broker -> C:\FSL-Release\.stage4-20260727T144929Z-e5b6c040\broker\
+ExitCode=0
