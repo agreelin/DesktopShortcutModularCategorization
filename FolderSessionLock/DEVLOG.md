@@ -1258,9 +1258,11 @@
 - Frozen execution remains commit
   `3170d89cfd6066ba494170826cd43626d83c6789`, tree
   `6bee7c4db4c9adde0612aa7c67467a331d20263e`, state sequence 6 /
-  `InstallStarted`, WAL 4, anchors 12/11, recovery 3 directories/8 files,
-  and Release 22 files. The Program Files installation directory is empty
-  and the ProgramData product root is absent.
+  `InstallStarted`, and WAL 4. Authenticated current pre-recovery external
+  anchors are latest/previous generations 11/10; generations 14/13 are only
+  the future successful-recovery postcondition. Recovery remains 3
+  directories/8 files and Release remains 22 files. The Program Files
+  installation directory is empty and the ProgramData product root is absent.
 - This was documentation-only preparation. No Formal source, Attempt003, new
   latch, UAC, RunAs, reconciler, SCM, LocalSystem, restart, logoff, or other
   system execution was created or performed.
@@ -1269,3 +1271,23 @@
   successful recovery, a separately authorized fresh restart; then remaining
   D-026 and Release work. VM, D-026, restart/logoff, Release, and Stage 4
   completion remain unchecked.
+
+## 2026-07-30 — CP10 frozen external-anchor documentation correction
+
+- Reviewer returned `FAIL` for documentation commit
+  `a287d8b198398c7b9d1c3841a1653dab6f34d174`, with no `BLOCKER` and one
+  unique `HIGH`: all seven current-state summaries reported latest generation
+  12 and previous generation 11, while authenticated external-anchor evidence
+  records current pre-recovery latest/previous generations 11/10.
+- Read-only DPAPI/HMAC validation authenticated latest `anchor-1.json` as
+  generation 11 bound to current WAL length 22920 and SHA-256
+  `C299D1FE85E542603BABF5DB4B38796343CD8158817853F9E1D53EEFD15CEF69`.
+  It authenticated previous `anchor-0.json` as generation 10 bound to the
+  prior WAL length 22182 and SHA-256
+  `C535582A1B2545681CAE5A681BC6B7010D5D21E78F7DAE303EBED279EC43B7FF`.
+- The correction changes only the seven authoritative documentation files
+  and now distinguishes current pre-recovery generations 11/10 from future
+  successful-recovery postcondition generations 14/13. Independent root
+  verification, reviewer disposition, and a new commit-freeze remain pending;
+  all later execution, restart, D-026, Release, and Stage 4 gates remain
+  incomplete.

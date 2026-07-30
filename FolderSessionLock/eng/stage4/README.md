@@ -37,8 +37,10 @@ path.
 The current frozen execution is commit
 `3170d89cfd6066ba494170826cd43626d83c6789`, tree
 `6bee7c4db4c9adde0612aa7c67467a331d20263e`, with state sequence 6 /
-`InstallStarted`, WAL 4, anchors 12/11, recovery 3 directories/8 files, and
-Release 22 files. `C:\Program Files\FolderSessionLock` exists and is empty;
+`InstallStarted` and WAL 4. Authenticated current pre-recovery external anchors
+are latest/previous generations 11/10; generations 14/13 are only the future
+successful-recovery postcondition. Recovery has 3 directories/8 files and
+Release has 22 files. `C:\Program Files\FolderSessionLock` exists and is empty;
 `C:\ProgramData\FolderSessionLock` is absent. No final Formal source,
 Attempt003, or new latch exists.
 

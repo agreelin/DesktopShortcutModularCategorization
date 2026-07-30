@@ -120,7 +120,7 @@ Checkpoint：
 
 环境门：唯一获准特权集成环境为 `FSL-STAGE4-VM`，Windows 11 Pro/Enterprise 专用可丢弃 VM，快照 `FolderSessionLock-Stage4-Clean`。机器名不匹配时，允许完成设计、代码、单元测试、非特权测试和静态审查；服务、LocalSystem、自动启动、登录前、UAC、注销、重启和 Program Files/ProgramData ACL 验证必须标记 `BLOCKED`，阶段 4 不得完成。当前位于 `FSL-STAGE4-VM`，但仅机器名匹配不构成 UAC、RunAs、restart/logoff 或系统 mutation 授权；仍须按每个 checkpoint 的明确授权执行。公开/企业签名系统验证不是当前 D-031 Stage 4 完成门。
 
-当前 frozen execution 为 commit `3170d89cfd6066ba494170826cd43626d83c6789`、tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`、state sequence 6 / `InstallStarted`、WAL 4、anchors 12/11、recovery 3 directories/8 files、Release 22 files；Program Files 安装目录为空，ProgramData product root 不存在。当前没有 Formal source、Attempt003、新 latch、UAC 或系统执行。
+当前 frozen execution 为 commit `3170d89cfd6066ba494170826cd43626d83c6789`、tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`、state sequence 6 / `InstallStarted`、WAL 4；认证后的 current pre-recovery anchors 为 latest/previous generation 11/10，future successful recovery postcondition 才是 generation 14/13。recovery 为 3 directories/8 files，Release 为 22 files；Program Files 安装目录为空，ProgramData product root 不存在。当前没有 Formal source、Attempt003、新 latch、UAC 或系统执行。
 
 CP10 剩余顺序不可重排：文档 synchronization 与 commit-freeze → 最终 RAB exact-two + FLB exact-three preparation（只生成并验证，不执行）→ 唯一 one-shot observer/UAC → recovery 成功后另行申请 fresh restart 授权 → 完成剩余 D-026 与 Release。最终 generation 后不得修改仓库或执行 restart；VM、D-026、restart/logoff、Release 与 Stage 4 完成项均保持未完成。
 
