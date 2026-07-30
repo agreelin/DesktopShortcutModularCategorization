@@ -1234,3 +1234,38 @@
   frozen Release remained unchanged. No Attempt003, fresh formal object, UAC,
   RunAs, SCM, LocalSystem, restart, logoff, or VMware operation was authorized
   or executed.
+
+## 2026-07-30 — CP10 post-freeze recovery-authority documentation synchronization
+
+- Preserved all earlier dated verification facts. The reviewed active
+  recovery-authority capability baseline is now commit
+  `aa60c1c6cea2ea05648824acb10f5f3ec2342549`, tree
+  `9b97428f3988c962e7d4b6899d3521f9cd3b7fc1`; final reviewer result is `PASS`
+  with `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`.
+- Active verification is RAB 218/305, Formal 229/299, Stage 4 tooling 7/7,
+  and non-environment-dependent 807/807. The unfiltered result remains
+  truthful: Core 174/174, App 494/501, Windows 140/141, total 808 passed,
+  8 environment failures, 0 skipped. Release build is 0 warnings/0
+  errors; format, four PowerShell parsers, commit diff, and exact public
+  exports passed.
+- The public current-HEAD context gate is unchanged and an old frozen
+  `ReleaseRoot` still exits 2. The private verified adapter binds runId,
+  current machine, `cp10-vm-transfer`, execution/recovery commits and trees,
+  state, and internally derived paths, then executes the repository and
+  mutation gates. The elevated wrapper calls the verified resolver, private
+  adapter, and reconciler exactly once; it has no controller/install,
+  retry, fallback, or second execution path.
+- Frozen execution remains commit
+  `3170d89cfd6066ba494170826cd43626d83c6789`, tree
+  `6bee7c4db4c9adde0612aa7c67467a331d20263e`, state sequence 6 /
+  `InstallStarted`, WAL 4, anchors 12/11, recovery 3 directories/8 files,
+  and Release 22 files. The Program Files installation directory is empty
+  and the ProgramData product root is absent.
+- This was documentation-only preparation. No Formal source, Attempt003, new
+  latch, UAC, RunAs, reconciler, SCM, LocalSystem, restart, logoff, or other
+  system execution was created or performed.
+- Remaining order is strict: documentation commit-freeze; final RAB exact-two
+  plus FLB exact-three preparation; the one-shot observer/UAC; only after
+  successful recovery, a separately authorized fresh restart; then remaining
+  D-026 and Release work. VM, D-026, restart/logoff, Release, and Stage 4
+  completion remain unchecked.

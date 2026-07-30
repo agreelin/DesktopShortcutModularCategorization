@@ -292,7 +292,7 @@
   - [x] reviewer修复轮2/6实现完成：新增`IKnownFolderManager::GetFolderIds` COM wrapper、S_OK/GUID二进制注册检查、`KnownFolderNotRegistered`原因、固定flags0 SH调用、调用前null pointer与全路径pointer释放；精确允许`0x80070002`/`0x80070003`，其他HRESULT fail closed。最低矩阵28/28通过，禁止flags/mask/raw值静态测试通过。
   - [x] reviewer修复轮2/6完整验证：restore退出0；Release build0 warning、0 error；全量串行Core174/174、App462/462、Windows140/140，总计776/776、failed0、skipped0；format、diff、八文档UTF-8/围栏/尾空白/合同覆盖、静态扫描与残留检查全部通过。
   - [x] 同一 reviewer 完成 CP9 当前环境实现的最终只读复审并输出 `PASS`，无 `BLOCKER` 或 `HIGH`；第 1/6 与第 2/6 修复轮全部关闭。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped；CP9 当前 `AGREELIN` 范围完成，CP10 尚未开始。
-  - [ ] `CP10-SCOPE-LOCAL-SINGLE-ADMIN` 权威范围修订。
+  - [x] `CP10-SCOPE-LOCAL-SINGLE-ADMIN` 权威范围修订。
     - [x] 用户决定 `LOCAL_SINGLE_USER_ADMINISTRATOR_ONLY`，旧双账户与证书阻塞标记为 `RESOLVED BY PRODUCT SCOPE DECISION`；D-031 编号获批准。
     - [x] `stage_director` 返回 `READY`，只读 planner 给出文档、controller、verifier、schema v2 与测试的最小实施计划。
     - [x] coder 已实现 D-031、D-026 schema v2、显式 unsigned verifier/controller 路径及直接测试；coder checks 通过。
@@ -300,12 +300,19 @@
     - [x] coder 聚焦修复已实现上述三个缺口并更新直接行为测试；parser、Slice4、Stage4 Slice All、Release build 0 warning/0 error 与 Broker verifier 22/22 通过。
     - [x] reviewer 修复轮识别两个 `HIGH`：Stage 7 文档仍存在可误用到当前本地范围的无条件签名门；Finalize 接受 evidence 自报的任意格式合法 64-hex hash。
     - [x] coder 已把未来公开/企业/签名 checkpoint 固定为需另一个明确产品决定才激活且不得阻止 D-031 Stage 4/Stage 5，并把 unsigned evidence hash 绑定受保护 state、frozen descriptor、精确六 PE 和实际文件 SHA-256；不同但格式合法 hash 的直接拒绝测试通过。
-    - [ ] root re-verification 与 reviewer `PASS`。
+    - [x] root re-verification 与 reviewer `PASS`；最终 `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。
     - `CANCELLED / NOT REQUIRED`：Create `FSL-Standard`；Create `FSL-Admin`；validate standard-user to separate-admin credential elevation；collect real dual-account evidence；block Stage 5 solely on missing dual-account evidence。
   - [ ] `FSL-STAGE4-VM` 当前单一管理员账户的同账户 UAC、SCM、LocalSystem、recovery/readiness/ACL、必要重启或注销、unsigned Release 与 `D-026` schema v2 证据完成。
     - [x] `CP10-INSTALL-WAL-ROLLBACK-ATTEMPT002-EXIT68-READONLY-FORENSICS` 已完成只读取证并由 reviewer `PASS`；Attempt002 永久 consumed，不得重放。冻结 outer 的命令行使用 PowerShell 单引号 `\"` 产生 233 字符值，而 contract 使用真实引号产生 229 字符值，构成 exit 68 的确定性充分原因。
-    - [x] `CP10-TRACKED-FORMAL-LAUNCHER-BUNDLE-GENERATOR-VALIDATOR` 已实现并由 reviewer 最终 `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。专项 PowerShell 5.1 为 205/205 cases、267/267 assertions；原生 Job Object 正反行为测试通过；Release build 0 warning、0 error；非环境依赖回归 806/806、failed 0、skipped 0。
-    - [ ] 申请新的 fresh formal object preparation 阶段门；当前未创建或授权 Attempt003，未启动新的 outer、observer、RunAs、UAC 或 recovery execution。
+    - [x] `CP10-TRACKED-FORMAL-LAUNCHER-BUNDLE-GENERATOR-VALIDATOR` 历史 checkpoint 已实现并通过 reviewer；其 2026-07-29 的 205/267 与 806/806 是当时事实，不改写。
+    - [x] `CP10-DUAL-AUTHORITY-RECOVERY-CONTEXT-CONSTRUCTION-COMMIT-FREEZE` 已完成：capability commit `aa60c1c6cea2ea05648824acb10f5f3ec2342549`、tree `9b97428f3988c962e7d4b6899d3521f9cd3b7fc1`；reviewer `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。RAB 218/305、Formal 229/299、tooling 7/7、非环境依赖 807/807；未过滤 Core 174/174、App 494/501、Windows 140/141，共 808 passed、8 environment failures、0 skipped；build 0/0，format/parser/diff/exports 通过。
+    - [x] dual-authority private seam 已冻结：公共 current-HEAD gate 不变、旧 `ReleaseRoot` exit 2；private adapter 绑定 run/machine/branch、execution/recovery commit/tree、state 与内部派生路径并执行 repository/mutation gates；wrapper exact-once resolver/context/reconciler，禁止 controller/install/retry/fallback。
+    - [x] 当前 frozen prestate 已复核：execution `3170d89cfd6066ba494170826cd43626d83c6789` / tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`，state sequence 6 / `InstallStarted`，WAL 4，anchors 12/11，recovery 3 directories/8 files，Release 22 files，Program Files 目录为空，ProgramData root 不存在；无 Formal source、Attempt003、新 latch、UAC 或系统执行。
+    - [ ] 完成当前七文档 synchronization 的独立审查与 commit-freeze；不得修改 capability source/tests/evidence。
+    - [ ] 在文档 commit-freeze 后生成并验证最终 RAB exact-two 与 FLB exact-three；preparation 阶段不得执行 outer、observer、RunAs、UAC 或 reconciler，generation 后不得再修改仓库。
+    - [ ] 使用最终对象执行唯一 one-shot observer/UAC；不得 retry、fallback、第二次 Install 或复用旧 latch/attempt。
+    - [ ] 仅在 recovery 成功后另行申请 fresh restart 授权；该项当前未授权且保持未完成。
+    - [ ] 完成其余 D-026 schema v2、unsigned Release、ACL/SCM/LocalSystem/restart 或 logoff 证据与最终清理；VM、D-026、Release 和 Stage 4 完成门保持未完成。
 - [ ] 阶段 5：WPF 前端。
 - [ ] 阶段 6：可选访问审计与警告。
 - [ ] 阶段 7：端到端测试与安全加固。

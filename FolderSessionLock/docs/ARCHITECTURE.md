@@ -1,6 +1,8 @@
 # Folder Session Lock 架构
 
-状态：阶段 3 与阶段 4 CP1–CP9 已完成；CP10 工具实现最近验证为 799/799、0 failed、0 skipped、Release 0 warning/0 error。D-031 将当前交付范围修订为本地单用户管理员；同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 证据尚未完成，阶段 4 不得完成。
+状态：阶段 3 与阶段 4 CP1–CP9 已完成；CP10 recovery-authority capability 已冻结于 `aa60c1c6cea2ea05648824acb10f5f3ec2342549`（tree `9b97428f3988c962e7d4b6899d3521f9cd3b7fc1`），最终 reviewer 为 `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 证据尚未完成，阶段 4 不得完成。
+
+当前验证矩阵为 RAB 218/305、Formal 229/299、tooling 7/7、非环境依赖 807/807；未过滤结果为 Core 174/174、App 494/501、Windows 140/141，共 808 passed、8 environment failures、0 skipped。Release build 0 warning/0 error，format、parser、diff 与 exports 均通过。
 
 ## 1. 选择 WPF
 
@@ -314,7 +316,7 @@ CP4 固定架构：
 
 - 唯一特权集成环境：计算机名 `FSL-STAGE4-VM`，Windows 11 Pro/Enterprise 专用可丢弃 VM，快照 `FolderSessionLock-Stage4-Clean`。
 - 非该机器时，服务、LocalSystem、自动启动、登录前执行、UAC、注销、重启和 Program Files/ProgramData ACL 测试停止；设计、实现、单元测试、非特权测试和静态审查继续。公开/企业签名系统验证为未来 Stage 7 checkpoint，当前不激活且不阻止 D-031 本地 unsigned Stage 4/Stage 5。
-- 当前机器 `AGREELIN` 不是获准 VM。
+- 只有 `FSL-STAGE4-VM` 可以产生特权或系统级 `PASS` 证据；任何其他机器只能执行设计、实现、单元测试、非特权测试和静态检查，不得替代 VM 证据或完成阶段 4。
 - VM 内只允许操作服务 `FolderSessionLockRecovery`；禁止修改其他服务或 SCM 全局配置。最多 3 次注销、3 次完整重启，每次前保存证据、确认目标只位于 `%TEMP%\FolderSessionLock.Tests\<Guid>`、记录已提交且无仓库或真实用户目录目标，并输出场景编号。
 - 测试身份：仅使用当前本地管理员账户；不得创建 `FSL-Standard`、`FSL-Admin` 或替代专用测试账户。同账户 UAC consent 由当前用户人工确认。
 - 当前本地 Release 使用显式 unsigned 模式；不得创建测试签名证书。六个第一方 PE 的实际 Authenticode 状态必须为 `NotSigned` 且 signer 为 null。Finalize 通过受保护 state 的 ReleaseRoot/ReleaseDescriptorSha256 重验 frozen descriptor、精确六 PE 集合和实际 SHA-256，再与有序 evidence 逐项精确比较。
@@ -367,7 +369,7 @@ CP4 固定架构：
 - canonical 删除只对已验证同一 handle 使用 FileDispositionInfoEx POSIX delete；disposition 成功后关闭该 handle，再由 retained directory handle 确认名称消失并复核目录 identity。名称仍存在、枚举失败、identity 变化或无法证明关闭/删除时进入 RecoveryRequired。temp 清理仍只使用同一 temp handle；禁止所有路径 move/replace/delete、重新打开后删除 replacement 与 SetNamedSecurityInfo。
 - post-commit 按 temp identity、links、owner/DACL、完整 payload、唯一目录映射、目录 identity 顺序验证；失败统一 `FSL_E_RECOVERY_FILE_POST_COMMIT_VERIFICATION_FAILED` 并进入 RecoveryRequired。
 - 配对辅助构件必须完成 handle identity、SYSTEM owner、精确 DACL验证后才 auxiliary；安全不匹配使用 `FSL_E_RECOVERY_ARTIFACT_SECURITY_INVALID` 并 blocking。
-- `AGREELIN` 只验证 wrapper/fake/TEMP 句柄操作和 failure injection；真实 ProgramData SYSTEM owner/service SID DACL/LocalSystem writer/普通用户拒绝仅 `FSL-STAGE4-VM`。
+- wrapper、fake、TEMP 句柄操作和 failure injection 可在非特权环境验证；真实 ProgramData SYSTEM owner、service SID DACL、LocalSystem writer 和普通用户拒绝只有 `FSL-STAGE4-VM` 可以产生系统级 `PASS` 证据，其他机器不得替代或完成阶段 4。
 
 ## 22. consent elevation 与 consent-broker 生产生命周期
 
@@ -400,4 +402,12 @@ CP4 固定架构：
 ## 25. D-030 生产组合边界
 
 - production composition必须注入真实machine readiness store、repository classifier、Cloud Files/SkyDrive classifier、fixed duration policy、single scheduler model和protected logger factory；禁止in-memory/always-ready、empty repository、always-not-sync、Console/Debug/Null/test logger或user-writable path provider。
-- `AGREELIN`只验证interfaces、fakes、TEMP handle operations、failure injection、rotation/retention、static composition、build/tests/format/reviewer。真实ProgramData ACL、service SID、LocalSystem publisher、SCM Stop、跨用户读取、真实Cloud Files/OneDrive、生产Logs ACL、并发日志和reboot stale只在`FSL-STAGE4-VM`。
+- interfaces、fakes、TEMP handle operations、failure injection、rotation/retention、static composition、build/tests/format/reviewer 可在其他机器验证；真实 ProgramData ACL、service SID、LocalSystem publisher、SCM Stop、跨用户读取、真实 Cloud Files/OneDrive、生产 Logs ACL、并发日志和 reboot stale 只有 `FSL-STAGE4-VM` 可以产生系统级 `PASS` 证据，其他机器不得替代或完成阶段 4。
+
+## 26. CP10 dual-authority frozen recovery context
+
+- 公共 current-HEAD context gate 保持不变；公共 `Get-FslContext` 不接受旧 execution release，旧 `ReleaseRoot` 固定 exit 2。
+- RAB validator 从 execution state 与 recovery toolchain 建立双 authority。私有 verified adapter 只接收经过完整 RAB 验证的 authority，绑定 runId、当前 machine、`cp10-vm-transfer`、execution/recovery commit 与 tree、state sequence/transition、repository/evidence/install/ProgramData/external-anchor 派生路径，并在返回前执行既有 repository 与 mutation gates。authority 中的路径只能作为比较证据，不能成为路径选择器。
+- elevated wrapper 固定导入 tracked RAB 与 Stage 4 module，精确一次调用 verified resolver、private context adapter 与 WAL reconciler；它不读取 raw state，不调用公共 context/controller/install，不含 retry、fallback 或第二执行分支。
+- 当前 frozen execution 为 commit `3170d89cfd6066ba494170826cd43626d83c6789`、tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`，state 为 sequence 6 / `InstallStarted`，WAL 4、anchors 12/11、recovery 3 directories/8 files、Release 22 files；Program Files 安装目录存在且为空，ProgramData product root 不存在。
+- 当前未创建 Formal source、Attempt003 或新 latch，且文档/准备阶段未执行 UAC、RunAs、SCM、LocalSystem、restart、logoff 或其他系统 mutation。剩余顺序固定为文档 commit-freeze，随后最终 RAB exact-two + FLB exact-three preparation，再执行唯一 one-shot observer/UAC；只有 recovery 成功后才可另行取得 fresh restart 授权，最后完成其余 D-026 与 Release 门。

@@ -1,6 +1,8 @@
 # Folder Session Lock 安全边界
 
-状态：阶段 3 与阶段 4 CP1–CP9 基线已完成；CP10 工具实现最近验证为 799/799、0 failed、0 skipped、Release 0 warning/0 error。D-031 将当前范围修订为本地单用户管理员和显式 unsigned 本地发布；同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 安全证据仍未完成，阶段 4 不得完成。
+状态：阶段 3 与阶段 4 CP1–CP9 基线已完成；CP10 recovery-authority capability 已冻结于 `aa60c1c6cea2ea05648824acb10f5f3ec2342549`（tree `9b97428f3988c962e7d4b6899d3521f9cd3b7fc1`），最终 reviewer 为 `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。D-031 将当前范围修订为本地单用户管理员和显式 unsigned 本地发布；同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 安全证据仍未完成，阶段 4 不得完成。
+
+冻结基线的验证为 RAB 218/305、Formal 229/299、tooling 7/7、非环境依赖 807/807；未过滤矩阵为 Core 174/174、App 494/501、Windows 140/141，共 808 passed、8 environment failures、0 skipped。Release build 0 warning/0 error，format、parser、diff 与 exports 均通过；环境门失败不得改写为通过。
 
 ## 1. 安全定位
 
@@ -284,7 +286,7 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
 - 阶段 2 Windows 占位服务对创建和四种明确解除意图均返回 `windows.acl.not_implemented`，不得把占位行为解释为真实锁定成功。
 - 阶段 3 新增真实 Windows 实现，但产品 Broker 尚未组合该实现；直接调用只存在于 Windows 临时目录集成测试。
 - 阶段 3 真实测试验证权限矩阵、同句柄添加与移除、rollback、匹配 0/1/>1、ACL 漂移、父目录不变、继承边界和路径替换。每次写入使用 `try/finally` 与进程级安全停止门，最终临时目录残留为 0。
-- 阶段 4 唯一获准特权集成环境为计算机名 `FSL-STAGE4-VM`、Windows 11 Pro/Enterprise 专用可丢弃 VM、快照 `FolderSessionLock-Stage4-Clean`。当前机器 `AGREELIN` 不满足该条件。
+- 阶段 4 唯一获准特权集成环境为计算机名 `FSL-STAGE4-VM`、Windows 11 Pro/Enterprise 专用可丢弃 VM、快照 `FolderSessionLock-Stage4-Clean`。只有该 VM 可以产生特权或系统级 `PASS` 证据；任何其他机器只能执行设计、代码实现、单元测试、非特权测试和静态检查，不得替代 VM 证据或完成阶段 4。
 - 非获准 VM 只能进行设计、代码实现、单元测试、非特权测试和静态审查；不得创建/删除服务、使用 LocalSystem、配置自动启动、执行登录前测试、UAC、注销、重启、Program Files/ProgramData ACL 或签名系统测试。
 - VM 只允许操作服务 `FolderSessionLockRecovery`；禁止修改其他服务或 SCM 全局配置。最多 3 次注销和 3 次完整重启。
 - 注销/重启前必须保存证据、输出场景编号、确认目标仅为 `%TEMP%\FolderSessionLock.Tests\<Guid>`、恢复记录已原子提交、不存在仓库或真实用户目录目标。每轮后验证 ACL、服务、记录、证书信任和临时目录清理。
@@ -388,3 +390,11 @@ signer、publisher 不匹配，或任一模式 identity 改变，均只返回 `F
   anti-rollback 保证；D-026 证据不得把这些非目标宣称为已解决。
 - reviewer verdict 只允许单个大写 `PASS` 或 `FAIL` token；重复、冲突、正文和
   大小写别名均拒绝，且仅 `PASS` 允许 finalization。
+
+## 15. CP10 frozen recovery authority 安全门
+
+- 公共 current-HEAD context gate 未放宽；旧 execution `ReleaseRoot` 仍以 exit 2 拒绝。只有完整验证后的 private adapter 可构造 frozen recovery context。
+- verified authority 与 private adapter 必须双重绑定 runId、当前 machine、`cp10-vm-transfer`、execution/recovery commit 与 tree、state sequence 6 / `InstallStarted`、以及从 module repository 与 Windows known folders 内部派生的全部路径。repository gate 与 mutation gate 必须在 reconciler 前执行；authority payload 路径不得成为选择器。
+- wrapper 只允许 exact-once resolver → adapter → reconciler。禁止 raw-state 信任、controller/install 调用、retry、fallback、第二次 Install、第二个 RunAs 或任意可替代执行路径。
+- 当前 frozen execution commit/tree 为 `3170d89cfd6066ba494170826cd43626d83c6789` / `6bee7c4db4c9adde0612aa7c67467a331d20263e`；WAL 4 records、anchors 12/11、recovery 3 directories/8 files、Release 22 files。Program Files 安装目录为空，ProgramData product root 不存在。
+- 文档同步和最终 object preparation 都是非执行阶段：不得创建 latch、Attempt003、UAC、RunAs 或系统副作用。最终 generation 后不得再修改仓库或授权 restart。必须先完成文档 commit-freeze，再生成最终 RAB exact-two 与 FLB exact-three；随后才允许 one-shot observer/UAC。recovery 成功仅解除申请 fresh restart 授权的前置门，不构成 restart 授权本身。其余 D-026、Release、VM、restart/注销与 Stage 4 完成门继续保持未完成。

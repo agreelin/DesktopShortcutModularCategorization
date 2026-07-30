@@ -1,6 +1,12 @@
 # Folder Session Lock 需求规格
 
-状态：阶段 3 与阶段 4 CP1–CP9 已完成；CP10 工具实现的最近独立验证为 799/799、0 failed、0 skipped、Release 0 warning/0 error。D-031 已将当前交付范围修订为本地单用户管理员；CP10 的同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 证据尚未完成，阶段 4 不得完成。审计功能尚未实现。
+状态：阶段 3 与阶段 4 CP1–CP9 已完成；CP10 已冻结经过审查的 recovery-authority capability 基线 `aa60c1c6cea2ea05648824acb10f5f3ec2342549`（tree `9b97428f3988c962e7d4b6899d3521f9cd3b7fc1`），reviewer 为 `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。D-031 已将当前交付范围修订为本地单用户管理员；CP10 的同账户 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、重启/注销与 D-026 schema v2 证据尚未完成，阶段 4 不得完成。审计功能尚未实现。
+
+当前能力验证为 RAB 218/305、Formal 229/299、Stage 4 tooling 7/7、非环境依赖 807/807；未过滤结果如实为 Core 174/174、App 494/501、Windows 140/141，共 808 passed、8 environment failures、0 skipped。Release build 为 0 warning/0 error，format、四个 PowerShell parser、commit diff 与 public exports 均通过。
+
+CP10 dual-authority recovery seam 不改变公共 current-HEAD gate；公共 `Get-FslContext` 仍只接受当前 HEAD，传入旧 frozen `ReleaseRoot` 仍以 exit 2 拒绝。仅私有 verified adapter 可从已验证 authority 构造 frozen recovery context；它必须绑定 runId、当前 machine、`cp10-vm-transfer`、execution/recovery commit 与 tree、state、全部内部派生路径，并在返回前执行 repository gate 与 mutation gate。elevated wrapper 必须精确各调用一次 verified resolver、private adapter 和 reconciler，禁止 controller/install、retry、fallback 或第二次执行路径。
+
+当前 frozen execution 为 commit `3170d89cfd6066ba494170826cd43626d83c6789`、tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`，state sequence 6 / `InstallStarted`、WAL 4、anchors 12/11、recovery 3 directories/8 files、Release 22 files；Program Files 安装目录为空，ProgramData product root 不存在。当前没有 Formal source、Attempt003、新 latch、UAC、RunAs 或其他系统执行。
 
 ## 1. 产品目标
 
@@ -193,6 +199,9 @@ v1 只接受本机固定磁盘、NTFS 文件系统、普通目录和可安全规
 - `FR-047` scheduler 必须提供一次扫描和单一串行可取消循环；生产按 D-030 使用 monotonic remaining 与最大30-second分段等待。取消只停止尚未开始的delay，不把活动任务标为 `Completed`；lifecycle随后执行既有Cleanup，ACL临界区取消无效，scheduler error只进入protected logger。
 - `FR-048` 路径冲突检查、添加和状态替换必须在同一同步门内完成；规范化后相同、祖先和后代关系均拒绝；查询只返回不可变快照。
 - `FR-049` WPF Window 和 ViewModel 不拥有 scheduler 或 ACL 生命周期，不公开提前解除入口。
+- `FR-050` frozen execution authority 与 current recovery toolchain authority 必须互不相同、建立严格 ancestor 绑定，并验证 current recovery toolchain、repository gate 与 repository mutation gate。
+- `FR-051` frozen recovery context 只能由私有 verified dual-authority adapter 构造；repository、evidence、Release、install、ProgramData、external anchor 与 WAL 路径必须全部内部派生，禁止调用方提供路径选择。
+- `FR-052` 公共/current controller 必须保持 current-HEAD-only，并对 old execution `ReleaseRoot` 固定返回 exit 2；private recovery seam 不得成为公共绕过路径。
 
 ### 3.9 阶段 4 恢复 payload 与验证证据
 
@@ -210,6 +219,7 @@ v1 只接受本机固定磁盘、NTFS 文件系统、普通目录和可安全规
 - 阶段 4 证据固定写入 `docs\evidence\stage-4\<RunId>\`，`RunId` 为 `yyyyMMddTHHmmssZ-<short-guid>`；`scenario-results.json` 与 `manifest.json` 必须使用 D-026 schema v2。
 - 当前本地 Release 允许 unsigned；六个第一方 PE 必须如实记录 `Authenticode = NotSigned`、null signer 和 SHA-256。Finalize 必须使用受保护 state 的 ReleaseRoot/ReleaseDescriptorSha256 重验 frozen descriptor、精确六 PE 集合和实际文件 hash，并逐项拒绝 evidence 中任何不相等的自报 hash。不得创建自签名/测试证书冒充正式签名；真实签名证书缺失不阻止本地交付。
 - Cleanup 必须在 `cleanup-results.txt` 写入精确 `CertificatesRemaining=0`，且 FinalizeEvidence 必须把缺失、重复或非零值作为完成阻断。
+- 当前 checkpoint 注记：frozen execution 为 commit `3170d89cfd6066ba494170826cd43626d83c6789`、tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`，state sequence 6 / `InstallStarted`，WAL 4，anchors 12/11。这些仅是 frozen pre-recovery facts，不证明 recovery、D-026 或 Stage 4 已完成。
 
 ## 4. 非功能需求
 
@@ -243,4 +253,4 @@ ACL 对 ACE 生效后的新访问执行访问检查。它不撤销已打开句�
 
 ## 7. 决策状态与阶段实现状态
 
-`D-001` 至 `D-031` 均已决定。D-031 在当前部署范围上取代旧双账户与强制签名冲突条款。CP8 class 65 rename、FileDispositionInfoEx POSIX canonical 删除顺序和文件级安全实现已经通过最终 reviewer；CP10 的范围修订与剩余真实 VM 验证按固定串行 gate 推进。
+`D-001` 至 `D-031` 均已决定。D-031 在当前部署范围上取代旧双账户与强制签名冲突条款。CP8 class 65 rename、FileDispositionInfoEx POSIX canonical 删除顺序和文件级安全实现已经通过最终 reviewer；CP10 recovery-authority capability 已冻结，剩余工作严格按“文档 commit-freeze → 最终 RAB exact-two 与 FLB exact-three preparation → one-shot observer/UAC → recovery 成功后另行取得 fresh restart 授权 → 剩余 D-026/Release”推进。VM、D-026、restart/注销、Release 与阶段 4 完成门保持未完成。

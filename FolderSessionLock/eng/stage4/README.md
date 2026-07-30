@@ -12,6 +12,51 @@ The D-031 supported deployment is
 certificate. Use only the current local administrator account and same-account
 UAC consent.
 
+## Current frozen recovery authority
+
+The reviewed capability baseline is commit
+`aa60c1c6cea2ea05648824acb10f5f3ec2342549`, tree
+`9b97428f3988c962e7d4b6899d3521f9cd3b7fc1`. Reviewer result is `PASS` with
+`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`. Validation passed RAB 218/305, Formal
+229/299, Stage 4 tooling 7/7, and non-environment-dependent 807/807. The
+unfiltered suite is Core 174/174, App 494/501, Windows 140/141: 808 passed,
+8 environment failures, and 0 skipped. Build is 0 warnings/0 errors;
+format, parser, diff, and exact exports pass.
+
+The public current-HEAD context gate is unchanged. Supplying the old frozen
+`ReleaseRoot` to the public context path exits 2. Recovery uses a private seam:
+the RAB validator produces verified dual authority; the private adapter binds
+runId, current machine, `cp10-vm-transfer`, execution and recovery commits and
+trees, state, and independently derived repository/evidence/install/
+ProgramData/external-anchor paths. It then runs the repository and mutation
+gates. Authority paths are comparison evidence, never selectors. The elevated
+wrapper calls the verified resolver, private adapter, and reconciler exactly
+once. It has no public controller/install, retry, fallback, or second execution
+path.
+
+The current frozen execution is commit
+`3170d89cfd6066ba494170826cd43626d83c6789`, tree
+`6bee7c4db4c9adde0612aa7c67467a331d20263e`, with state sequence 6 /
+`InstallStarted`, WAL 4, anchors 12/11, recovery 3 directories/8 files, and
+Release 22 files. `C:\Program Files\FolderSessionLock` exists and is empty;
+`C:\ProgramData\FolderSessionLock` is absent. No final Formal source,
+Attempt003, or new latch exists.
+
+Operator order is strict:
+
+1. Commit-freeze the synchronized documentation.
+2. Prepare and validate the final RAB exact-two and FLB exact-three objects.
+   Preparation must not execute the outer, observer, RunAs, UAC, reconciler, or
+   any system mutation.
+3. Execute the single one-shot observer/UAC using only those final objects.
+4. Only after recovery succeeds, request fresh authorization for restart.
+5. Complete the remaining D-026 and unsigned Release gates.
+
+Do not modify the repository or restart/log off Windows after final object
+generation. Generation is not execution, recovery success is not restart
+authorization, and VM/D-026/restart/Release/Stage completion remain open until
+their own evidence gates pass.
+
 Run `Preflight` from a non-elevated Windows PowerShell. Its platform
 attestation sources are read-only: the fixed 64-bit registry value
 `HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State\UEFISecureBootEnabled`,

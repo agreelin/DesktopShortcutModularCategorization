@@ -116,9 +116,13 @@ Checkpoint：
 
 ## 阶段 4：提升 Broker、IPC 与恢复生命周期
 
-前置决定：用户已确认 `D-022` 至 `D-030` 及 D-022.10/D-022.11/D-023.1/D-024.1/D-024.2，并批准 class 65 rename 与 canonical POSIX delete 关闭顺序勘误。CP1–CP9 当前 `AGREELIN` 允许范围的实现已完成；CP9 reviewer 第 1/6 与第 2/6 修复轮均已关闭，同一 reviewer 最终结论为 `PASS`，无 `BLOCKER` 或 `HIGH`。最终验证为 Core 174/174、App 462/462、Windows 140/140，总计 776/776、0 failed、0 skipped，Release build 0 warning、0 error，format、diff、文档、静态扫描和清理检查通过。CP10 尚未开始；真实 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、真实 OneDrive/Cloud Files、unsigned Authenticode 证据、注销/重启及 `FSL-STAGE4-VM` 证据仍未执行并继续阻止阶段 4 完成。缺少真实签名证书或签名流水线不阻止 D-031 本地 unsigned Stage 4 或 Stage 5。
+前置决定：用户已确认 `D-022` 至 `D-030` 及 D-022.10/D-022.11/D-023.1/D-024.1/D-024.2，并批准 class 65 rename 与 canonical POSIX delete 关闭顺序勘误。CP1–CP9 已完成；CP10 recovery-authority capability 已在 commit `aa60c1c6cea2ea05648824acb10f5f3ec2342549`、tree `9b97428f3988c962e7d4b6899d3521f9cd3b7fc1` 冻结，reviewer 最终 `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。验证为 RAB 218/305、Formal 229/299、tooling 7/7、非环境依赖 807/807；未过滤 Core 174/174、App 494/501、Windows 140/141，共 808 passed、8 environment failures、0 skipped；Release build 0 warning/0 error，format、parser、diff、exports 均通过。真实 UAC、SCM、LocalSystem、ProgramData/ProgramFiles ACL、真实 service SID ACL、恢复、必要 restart/logoff、unsigned Release 与 D-026 仍继续阻止阶段 4 完成。缺少真实签名证书或签名流水线不阻止 D-031 本地 unsigned Stage 4 或 Stage 5。
 
-环境门：唯一获准特权集成环境为 `FSL-STAGE4-VM`，Windows 11 Pro/Enterprise 专用可丢弃 VM，快照 `FolderSessionLock-Stage4-Clean`。机器名不匹配时，允许完成设计、代码、单元测试、非特权测试和静态审查；服务、LocalSystem、自动启动、登录前、UAC、注销、重启和 Program Files/ProgramData ACL 验证必须标记 `BLOCKED`，阶段 4 不得完成。当前机器 `AGREELIN` 不满足特权环境门。公开/企业签名系统验证不是当前 D-031 Stage 4 完成门。
+环境门：唯一获准特权集成环境为 `FSL-STAGE4-VM`，Windows 11 Pro/Enterprise 专用可丢弃 VM，快照 `FolderSessionLock-Stage4-Clean`。机器名不匹配时，允许完成设计、代码、单元测试、非特权测试和静态审查；服务、LocalSystem、自动启动、登录前、UAC、注销、重启和 Program Files/ProgramData ACL 验证必须标记 `BLOCKED`，阶段 4 不得完成。当前位于 `FSL-STAGE4-VM`，但仅机器名匹配不构成 UAC、RunAs、restart/logoff 或系统 mutation 授权；仍须按每个 checkpoint 的明确授权执行。公开/企业签名系统验证不是当前 D-031 Stage 4 完成门。
+
+当前 frozen execution 为 commit `3170d89cfd6066ba494170826cd43626d83c6789`、tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`、state sequence 6 / `InstallStarted`、WAL 4、anchors 12/11、recovery 3 directories/8 files、Release 22 files；Program Files 安装目录为空，ProgramData product root 不存在。当前没有 Formal source、Attempt003、新 latch、UAC 或系统执行。
+
+CP10 剩余顺序不可重排：文档 synchronization 与 commit-freeze → 最终 RAB exact-two + FLB exact-three preparation（只生成并验证，不执行）→ 唯一 one-shot observer/UAC → recovery 成功后另行申请 fresh restart 授权 → 完成剩余 D-026 与 Release。最终 generation 后不得修改仓库或执行 restart；VM、D-026、restart/logoff、Release 与 Stage 4 完成项均保持未完成。
 
 Checkpoint：
 
@@ -147,7 +151,7 @@ Checkpoint：
    - 先完成用户合同所称 CP6 的 `IProtectedPathSecurityVerifier`、enum、结果模型、orchestration、fail-closed、fake verifier 与单元测试；生产组合在 Windows verifier 前返回 `FSL_E_PROTECTED_PATH_POLICY_UNSUPPORTED`。
    - 再完成用户合同所称 CP8 的 `WindowsProtectedPathSecurityVerifier`、handle/final path/reparse/FILE_ID_128、owner/DACL/ACE/继承校验、安装与 Recovery/Replay ACL 创建验证、service SID ACL 及 `FSL-STAGE4-VM` 安全集成矩阵。
    - D-022.11：三类记录文件唯一 SYSTEM owner、精确 protected 三 ACE DACL（mask `0x001F01FF`）、`IRecoveryRecordFileSecurity`、SeRestorePrivilege finally、`Global\FolderSessionLock.RecoveryStore.v1`、Records/temp/old canonical 持续句柄、user-mode `NtSetInformationFile(FileRenameInformationEx = 65)` rename、同 handle FileDispositionInfoEx delete、`FSL_E_RECOVERY_FILE_POST_COMMIT_VERIFICATION_FAILED`、auxiliary security与禁止路径 API。
-   - 当前 `AGREELIN` 只允许接口、控制流、产品代码、单元/非特权测试和静态审查；SCM、LocalSystem、ProgramFiles/ProgramData ACL 写入与 VM 真实验证保持环境阻塞。
+   - 只有 `FSL-STAGE4-VM` 可以产生 SCM、LocalSystem、ProgramFiles/ProgramData ACL 与其他特权或系统级 `PASS` 证据；任何其他机器只允许接口、控制流、产品代码、单元/非特权测试和静态审查，不得替代 VM 证据或完成阶段 4。
 9. 当前本地管理员同账户 consent elevation；跨账户作为不支持路径 fail closed。
    - 身份错误按 D-029 分为 UI launcher、elevated bootstrap 与 connected Pipe handshake。bootstrap Account SID 不同 exit 20；connected `FSL_E_ACCOUNT_SID_MISMATCH` 只在 UI elevation 边界转换为 `FSL_E_CROSS_ACCOUNT_ELEVATION_NOT_SUPPORTED`；Logon/Session/PID/identity/Pipe/unauthorized 错误禁止转换。
    - UI 在 UAC 前从自身 token 读取 Account SID、唯一 Logon SID、Session ID，并取得 PID + creation FILETIME。CLI 只增加 `--client-process-id` 与 `--client-process-creation-filetime`；Broker 在创建 Pipe 前重开 UI process/token并重新读取身份。
