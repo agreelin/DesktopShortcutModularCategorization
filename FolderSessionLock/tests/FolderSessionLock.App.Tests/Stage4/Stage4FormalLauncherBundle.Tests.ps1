@@ -751,7 +751,8 @@ try {
         'A missing loose branch after HEAD drift was accepted.')
     Write-Utf8 (Join-Path $syntheticGit 'HEAD') "ref: refs/heads/main`n"
 
-    [void](Invoke-Git $repositoryRoot @('init', '-b', 'main'))
+    [void](Invoke-Git $repositoryRoot @(
+        'init', '-b', 'cp10-vm-transfer'))
     [void](Invoke-Git $repositoryRoot @(
         'config', 'user.name', 'FolderSessionLock Test'))
     [void](Invoke-Git $repositoryRoot @(
@@ -783,6 +784,9 @@ try {
 
     $statePath = Join-Path $evidenceRoot 'stage4-state.json'
     Write-Utf8 $statePath (([pscustomobject][ordered]@{
+        runId = '20260729T120000Z-1234abcd'
+        machineName = [Environment]::MachineName
+        branch = 'cp10-vm-transfer'
         gitCommit = $executionCommit
         sequence = 6
         transition = 'InstallStarted'

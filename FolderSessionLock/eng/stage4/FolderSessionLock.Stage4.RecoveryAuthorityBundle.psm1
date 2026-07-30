@@ -59,6 +59,20 @@ $script:RabRunIdPattern = '^\d{8}T\d{6}Z-[0-9a-f]{8}$'
 $script:RabGitPattern = '^[0-9a-f]{40}$'
 $script:RabShaPattern = '^[0-9A-F]{64}$'
 $script:RabZeros = '0' * 64
+$script:RabVerifiedAuthorityNames = @(
+    'schemaVersion',
+    'authorityKind',
+    'runId',
+    'repositoryRoot',
+    'evidenceRoot',
+    'installDirectory',
+    'programDataRoot',
+    'externalAnchorRoot',
+    'executionGitCommit',
+    'executionGitTree',
+    'recoveryGitCommit',
+    'recoveryGitTree',
+    'state')
 $script:RabSelfHashRule =
     'SHA256(canonical UTF-8 bytes after replacing only bindingManifest.contractCanonicalSha256 with 64 ASCII zeroes)'
 $script:RabAllowedWrites = @(
@@ -1181,13 +1195,26 @@ function Get-FslRabExecutionAuthority {
         Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
             'The fixed Stage 4 state is invalid.') $_.Exception
     }
-    if ($state.gitCommit -isnot [string] -or
+    $stateNames = @($state.PSObject.Properties | ForEach-Object Name)
+    if (@(@('runId', 'machineName', 'branch', 'gitCommit', 'sequence',
+                'transition') |
+            Where-Object { $stateNames -cnotcontains $_ }).Count -ne 0 -or
+        $state.runId -isnot [string] -or
+        [string]$state.runId -cne [string]$Model.runId -or
+        $state.machineName -isnot [string] -or
+        [string]$state.machineName -cne [Environment]::MachineName -or
+        $state.branch -isnot [string] -or
+        [string]$state.branch -cne [string]$Repository.branch -or
+        ([string]$Model.authorityProfile -ceq 'Formal' -and
+            ([string]$Repository.branch -cne 'cp10-vm-transfer' -or
+                [string]$state.branch -cne 'cp10-vm-transfer')) -or
+        $state.gitCommit -isnot [string] -or
         [string]$state.gitCommit -cnotmatch $script:RabGitPattern -or
         $state.sequence -isnot [int] -or
         [int]$state.sequence -ne 6 -or
         [string]$state.transition -cne 'InstallStarted') {
         Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
-            'The execution-state commit/sequence/transition drifted.') $null
+            'The execution-state identity/commit/sequence/transition drifted.') $null
     }
     if (-not (Test-FslRabAncestor `
             $Repository.gitDirectory `
@@ -1215,9 +1242,9 @@ function Get-FslRabExecutionAuthority {
         installWal = Get-FslRabFileRecord $walPath
     }
     return [pscustomobject][ordered]@{
-        machineName = [Environment]::MachineName
-        runId = [string]$Model.runId
-        branch = [string]$Repository.branch
+        machineName = [string]$state.machineName
+        runId = [string]$state.runId
+        branch = [string]$state.branch
         gitCommit = [string]$state.gitCommit
         gitTree = $oldTree
         stateSequence = [int]$state.sequence
@@ -1306,41 +1333,73 @@ function ConvertTo-FslRabLiteral {
 function Render-FslRabWrapper {
     param(
         [psobject]$Model,
-        [psobject]$Roots,
-        [psobject]$Repository,
-        [psobject]$Execution,
-        [psobject]$Release)
-    $modulePath = Join-Path $Repository.repository (
+        [psobject]$Repository)
+    $stage4ModulePath = Join-Path $Repository.repository (
         'eng\stage4\FolderSessionLock.Stage4.psm1')
-    $statePath = [string]$Execution.files.state.path
+    $recoveryModulePath = Join-Path $Repository.repository (
+        'eng\stage4\FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')
+    $fixtureIdLiteral = if ($null -eq $Model.rootBinding.fixtureId) {
+        '$null'
+    }
+    else {
+        ConvertTo-FslRabLiteral ([string]$Model.rootBinding.fixtureId)
+    }
     $template = @'
 param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$fixedRunId = @@RUN_ID@@
-$fixedReleaseRoot = @@RELEASE_ROOT@@
-$fixedModulePath = @@MODULE_PATH@@
-$fixedStatePath = @@STATE_PATH@@
+$fixedStage4ModulePath = @@STAGE4_MODULE_PATH@@
+$fixedRecoveryModulePath = @@RECOVERY_MODULE_PATH@@
+$fixedModel = [pscustomobject][ordered]@{
+    schemaVersion = 1
+    authorityProfile = @@AUTHORITY_PROFILE@@
+    contractId = @@CONTRACT_ID@@
+    checkpoint = @@CHECKPOINT@@
+    runId = @@RUN_ID@@
+    rootBinding = [pscustomobject][ordered]@{
+        fixtureId = @@FIXTURE_ID@@
+        sourceLeafName = @@SOURCE_LEAF@@
+    }
+}
 if ($PSBoundParameters.Count -ne 0 -or $args.Count -ne 0) { exit 84 }
-$module = Import-Module $fixedModulePath -Force -PassThru
-$state = [IO.File]::ReadAllText(
-    $fixedStatePath,
-    [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
-$context = & $module {
-    param($runId, $releaseRoot)
-    Get-FslContext $runId $releaseRoot
-} $fixedRunId $fixedReleaseRoot
-& $module {
-    param($context, $state)
-    Invoke-FslReconcileInstallWal $context $state
-} $context $state
+$recoveryModule = Import-Module $fixedRecoveryModulePath -Force -PassThru
+$stage4Module = Import-Module $fixedStage4ModulePath -Force -PassThru
+$authority = & $recoveryModule {
+    param($model)
+    Resolve-FslRabVerifiedRecoveryAuthority $model
+} $fixedModel
+$context = & $stage4Module {
+    param($verifiedAuthority)
+    Get-FslFrozenRecoveryContext $verifiedAuthority
+} $authority
+& $stage4Module {
+    param($frozenContext, $verifiedAuthority)
+    Invoke-FslReconcileInstallWal $frozenContext $verifiedAuthority.state
+} $context $authority
 exit 0
 '@
     return $template.
+        Replace(
+            '@@STAGE4_MODULE_PATH@@',
+            (ConvertTo-FslRabLiteral $stage4ModulePath)).
+        Replace(
+            '@@RECOVERY_MODULE_PATH@@',
+            (ConvertTo-FslRabLiteral $recoveryModulePath)).
+        Replace(
+            '@@AUTHORITY_PROFILE@@',
+            (ConvertTo-FslRabLiteral ([string]$Model.authorityProfile))).
+        Replace(
+            '@@CONTRACT_ID@@',
+            (ConvertTo-FslRabLiteral ([string]$Model.contractId))).
+        Replace(
+            '@@CHECKPOINT@@',
+            (ConvertTo-FslRabLiteral ([string]$Model.checkpoint))).
         Replace('@@RUN_ID@@', (ConvertTo-FslRabLiteral ([string]$Model.runId))).
-        Replace('@@RELEASE_ROOT@@', (ConvertTo-FslRabLiteral ([string]$Release.root))).
-        Replace('@@MODULE_PATH@@', (ConvertTo-FslRabLiteral $modulePath)).
-        Replace('@@STATE_PATH@@', (ConvertTo-FslRabLiteral $statePath)).
+        Replace('@@FIXTURE_ID@@', $fixtureIdLiteral).
+        Replace(
+            '@@SOURCE_LEAF@@',
+            (ConvertTo-FslRabLiteral (
+                [string]$Model.rootBinding.sourceLeafName))).
         Replace("`r`n", "`n")
 }
 
@@ -1357,6 +1416,16 @@ function Test-FslRabWrapperAst {
         param($node)
         $node -is [Management.Automation.Language.CommandAst]
     }, $true))
+    $imports = @($commands | Where-Object {
+        $_.GetCommandName() -ceq 'Import-Module'
+    })
+    $resolver = @($commands | Where-Object {
+        $_.GetCommandName() -ceq
+            'Resolve-FslRabVerifiedRecoveryAuthority'
+    })
+    $context = @($commands | Where-Object {
+        $_.GetCommandName() -ceq 'Get-FslFrozenRecoveryContext'
+    })
     $reconcile = @($commands | Where-Object {
         $_.GetCommandName() -ceq 'Invoke-FslReconcileInstallWal'
     })
@@ -1364,10 +1433,19 @@ function Test-FslRabWrapperAst {
         $_.GetCommandName() -cin @(
             'Start-Process',
             'Invoke-Expression',
+            'Get-FslContext',
+            'Invoke-FslStage4Command',
             'Invoke-FslStage4',
             'Invoke-FslInstall')
     })
-    return $reconcile.Count -eq 1 -and $forbidden.Count -eq 0
+    return $null -ne $ast.ParamBlock -and
+        $ast.ParamBlock.Parameters.Count -eq 0 -and
+        $imports.Count -eq 2 -and
+        $resolver.Count -eq 1 -and
+        $context.Count -eq 1 -and
+        $reconcile.Count -eq 1 -and
+        $forbidden.Count -eq 0 -and
+        $Text -notmatch '(?i)\b(?:fallback|retry)\b'
 }
 
 function Get-FslRabAuthority {
@@ -1694,10 +1772,7 @@ function New-FslStage4RecoveryAuthorityBundle {
     }
     $wrapperText = Render-FslRabWrapper `
         $Model `
-        $authority.roots `
-        $authority.repository `
-        $authority.execution `
-        $authority.release
+        $authority.repository
     if (-not (Test-FslRabWrapperAst $wrapperText)) {
         Stop-FslRab 'FSL-RAB-V016-WRAPPER' (
             'The generated wrapper AST is not the exact non-duplicated reconciler form.') $null
@@ -1765,10 +1840,7 @@ function Test-FslStage4RecoveryAuthorityBundle {
         }
         $wrapperText = Render-FslRabWrapper `
             $Model `
-            $authority.roots `
-            $authority.repository `
-            $authority.execution `
-            $authority.release
+            $authority.repository
         $wrapperBytes = Get-FslRabBytes $wrapperText
         $expected = New-FslRabContractBase $Model $authority $wrapperBytes
         $contractBytes = Complete-FslRabContract $expected
@@ -1825,6 +1897,8 @@ function Test-FslStage4RecoveryAuthorityBundle {
                 [string]$parsed.bindingManifest.recoveryGateMapSha256
             executionGitCommit =
                 [string]$parsed.executionStateAuthority.gitCommit
+            executionGitTree =
+                [string]$parsed.executionStateAuthority.gitTree
             recoveryGitCommit =
                 [string]$parsed.recoveryToolchainAuthority.gitCommit
             recoveryGitTree =
@@ -1869,6 +1943,113 @@ function Test-FslStage4RecoveryAuthorityBundle {
         observedFiles = $observed
         opaqueAuthority = $opaque
     }
+}
+
+function Resolve-FslRabVerifiedRecoveryAuthority {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [psobject]$Model
+    )
+
+    Assert-FslRabModel $Model
+    $validation = Test-FslStage4RecoveryAuthorityBundle -Model $Model
+    if (-not $validation.isValid -or
+        $validation.errors.Count -ne 0 -or
+        $null -eq $validation.opaqueAuthority) {
+        $failure = @($validation.errors | Select-Object -First 1)
+        $code = if ($failure.Count -eq 1) {
+            [string]$failure[0].code
+        }
+        else { 'FSL-RAB-V006-EXECUTION-AUTHORITY' }
+        $detail = if ($failure.Count -eq 1) {
+            [string]$failure[0].detail
+        }
+        else { 'The recovery authority did not produce a verified result.' }
+        Stop-FslRab $code $detail $null
+    }
+
+    $opaque = $validation.opaqueAuthority
+    $stateRecord = $opaque.executionEvidence.state
+    try {
+        $stateBytes = [IO.File]::ReadAllBytes([string]$stateRecord.path)
+        $state = [Text.UTF8Encoding]::new($false, $true).GetString(
+            $stateBytes) | ConvertFrom-Json
+    }
+    catch {
+        Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
+            'The verified execution state could not be read.') $_.Exception
+    }
+    if ([int64]$stateRecord.length -ne [int64]$stateBytes.Length -or
+        $stateRecord.sha256 -isnot [string] -or
+        [string]$stateRecord.sha256 -cne
+            (Get-FslRabSha256Bytes $stateBytes)) {
+        Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
+            'The verified execution state byte binding drifted.') $null
+    }
+    $stateNames = @($state.PSObject.Properties | ForEach-Object Name)
+    if (@(@('runId', 'machineName', 'branch', 'gitCommit') |
+            Where-Object { $stateNames -cnotcontains $_ }).Count -ne 0 -or
+        $state.runId -isnot [string] -or
+        [string]$state.runId -cne [string]$Model.runId -or
+        $state.machineName -isnot [string] -or
+        [string]$state.machineName -cne [Environment]::MachineName -or
+        $state.branch -isnot [string] -or
+        [string]$state.branch -cne [string]$opaque.recoveryBranch -or
+        ([string]$Model.authorityProfile -ceq 'Formal' -and
+            ([string]$opaque.recoveryBranch -cne 'cp10-vm-transfer' -or
+                [string]$state.branch -cne 'cp10-vm-transfer')) -or
+        $state.gitCommit -isnot [string] -or
+        [string]$state.gitCommit -cne [string]$opaque.executionGitCommit) {
+        Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
+            'The verified execution state identity binding drifted.') $null
+    }
+    if ($state.ReleaseRoot -isnot [string] -or
+        -not [IO.Path]::IsPathRooted([string]$state.ReleaseRoot)) {
+        Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
+            'The verified execution state release binding drifted.') $null
+    }
+
+    $repositoryRoot =
+        [IO.Path]::GetFullPath([string]$opaque.recoveryRepository).TrimEnd('\')
+    $evidenceRoot = Join-Path $repositoryRoot (
+        Join-Path 'docs\evidence\stage-4' ([string]$Model.runId))
+    $programFiles = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::ProgramFiles)
+    $programData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::CommonApplicationData)
+    $localAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData)
+    foreach ($knownFolder in @($programFiles, $programData, $localAppData)) {
+        if ([string]::IsNullOrWhiteSpace($knownFolder) -or
+            -not [IO.Path]::IsPathRooted($knownFolder)) {
+            Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
+                'A verified recovery context known folder is unavailable.') $null
+        }
+    }
+    $resolved = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        authorityKind =
+            'FolderSessionLock.Stage4.VerifiedFrozenRecoveryAuthority.v1'
+        runId = [string]$Model.runId
+        repositoryRoot = $repositoryRoot
+        evidenceRoot = $evidenceRoot
+        installDirectory = Join-Path $programFiles 'FolderSessionLock'
+        programDataRoot = Join-Path $programData 'FolderSessionLock'
+        externalAnchorRoot = Join-Path $localAppData (
+            Join-Path 'FolderSessionLock\Stage4\Anchors' (
+                [string]$Model.runId))
+        executionGitCommit = [string]$opaque.executionGitCommit
+        executionGitTree = [string]$opaque.executionGitTree
+        recoveryGitCommit = [string]$opaque.recoveryGitCommit
+        recoveryGitTree = [string]$opaque.recoveryGitTree
+        state = $state
+    }
+    if (-not (Test-FslRabNames $resolved $script:RabVerifiedAuthorityNames)) {
+        Stop-FslRab 'FSL-RAB-V006-EXECUTION-AUTHORITY' (
+            'The verified recovery authority shape drifted.') $null
+    }
+    return $resolved
 }
 
 Export-ModuleMember -Function @(

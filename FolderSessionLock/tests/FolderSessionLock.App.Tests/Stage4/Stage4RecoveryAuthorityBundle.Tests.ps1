@@ -92,10 +92,13 @@ function Get-PropertyNames {
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $modulePath = Join-Path $projectRoot (
     'eng\stage4\FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')
+$stage4ModulePath = Join-Path $projectRoot (
+    'eng\stage4\FolderSessionLock.Stage4.psm1')
 $tempBase = Join-Path ([IO.Path]::GetTempPath()) 'FolderSessionLock.Tests'
 [IO.Directory]::CreateDirectory($tempBase) | Out-Null
 $fixtureRoot = $null
 $module = $null
+$stage4Module = $null
 
 try {
     $fixtureId = [Guid]::NewGuid().ToString('D')
@@ -118,7 +121,8 @@ try {
         [IO.Directory]::CreateDirectory($path) | Out-Null
     }
 
-    [void](Invoke-Git $repositoryRoot @('init', '-b', 'main'))
+    [void](Invoke-Git $repositoryRoot @(
+        'init', '-b', 'cp10-vm-transfer'))
     [void](Invoke-Git $repositoryRoot @(
         'config', 'user.name', 'FolderSessionLock Test'))
     [void](Invoke-Git $repositoryRoot @(
@@ -131,15 +135,40 @@ try {
         'eng/stage4/Invoke-Stage4.ps1',
         'eng/stage4/FolderSessionLock.Stage4.FormalLauncherBundle.psm1',
         'tests/FolderSessionLock.App.Tests/Stage4/Stage4FormalLauncherBundle.Tests.ps1')
+    $productionStage4Text = [IO.File]::ReadAllText(
+        $stage4ModulePath,
+        [Text.UTF8Encoding]::new($false, $true)).TrimEnd("`r", "`n")
+    $productionNativeText = [IO.File]::ReadAllText(
+        (Join-Path $projectRoot (
+            'eng\stage4\FolderSessionLock.Stage4.Native.cs')),
+        [Text.UTF8Encoding]::new($false, $true))
     for ($index = 0; $index -lt $fixedFiles.Count; $index++) {
         $path = Join-Path $repositoryRoot $fixedFiles[$index].Replace('/', '\')
         [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
         $content = if ($index -eq 0) {
-            (('A' * 8192) + "`nold execution source`n" + ('B' * 8192) + "`n")
+            $productionStage4Text + "`n# " + ('A' * 8192) +
+                "`n# old execution source`n# " + ('B' * 8192) + "`n"
+        }
+        elseif ($index -eq 1) {
+            $productionNativeText
         }
         else { "old toolchain source $index`n" }
         Write-Utf8 $path $content
     }
+    $fixtureRecoveryModulePath = Join-Path $repositoryRoot (
+        'eng\stage4\FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')
+    Write-Utf8 $fixtureRecoveryModulePath ([IO.File]::ReadAllText(
+        $modulePath,
+        [Text.UTF8Encoding]::new($false, $true)))
+    $fixtureProjectPath = Join-Path $repositoryRoot (
+        'src\FolderSessionLock.App\FolderSessionLock.App.csproj')
+    [IO.Directory]::CreateDirectory(
+        (Split-Path -Parent $fixtureProjectPath)) | Out-Null
+    Write-Utf8 $fixtureProjectPath (
+        "<Project Sdk=`"Microsoft.NET.Sdk`">`n" +
+        "</Project>`n")
+    Write-Utf8 (Join-Path $repositoryRoot 'FolderSessionLock.sln') (
+        "Microsoft Visual Studio Solution File, Format Version 12.00`n")
     [void](Invoke-Git $repositoryRoot @('add', '--', '.'))
     [void](Invoke-Git $repositoryRoot @(
         'commit', '-m', 'old execution authority'))
@@ -147,7 +176,8 @@ try {
     $executionTree = Invoke-Git $repositoryRoot @('rev-parse', 'HEAD^{tree}')
     Write-Utf8 (
         Join-Path $repositoryRoot $fixedFiles[0].Replace('/', '\')) (
-        (('A' * 8192) + "`nnew recovery source`n" + ('B' * 8192) + "`n"))
+        $productionStage4Text + "`n# " + ('A' * 8192) +
+            "`n# new recovery source`n# " + ('B' * 8192) + "`n")
     [void](Invoke-Git $repositoryRoot @('add', '--', '.'))
     [void](Invoke-Git $repositoryRoot @(
         'commit', '-m', 'descendant recovery toolchain'))
@@ -192,10 +222,14 @@ try {
 
     $statePath = Join-Path $executionRoot 'stage4-state.json'
     $state = [pscustomobject][ordered]@{
+        runId = '20260729T180000Z-1234abcd'
+        machineName = [Environment]::MachineName
+        branch = 'cp10-vm-transfer'
         gitCommit = $executionCommit
         sequence = 6
         transition = 'InstallStarted'
-        releaseRoot = $releaseRoot
+        releaseRoot = Join-Path (
+            Join-Path 'C:\FSL-Release' '1.0.0') $executionCommit
     }
     Write-Utf8 $statePath (($state | ConvertTo-Json) + "`n")
     Write-Utf8 (Join-Path $executionRoot 'stage4-journal.jsonl') (
@@ -437,7 +471,7 @@ try {
         { $refDeltaObserved },
         { $ofsDeltaObserved },
         { -not (Test-Path -LiteralPath (
-                Join-Path $gitDirectory 'refs\heads\main')) },
+                Join-Path $gitDirectory 'refs\heads\cp10-vm-transfer')) },
         { $packFiles.Count -ge 2 })
     for ($index = 0; $index -lt 12; $index++) {
         Assert-Case ([bool](& $gitChecks[$index])) (
@@ -798,7 +832,232 @@ try {
             $reconcileCommands.Count -eq 1)
     }
 
-    if ($script:Cases -ne 188 -or $script:Assertions -ne 260) {
+    # Group 8: verified recovery context seam, 30 / 45.
+    $verifiedAuthority = & $module {
+        param($Model)
+        Resolve-FslRabVerifiedRecoveryAuthority $Model
+    } $model
+    $fixtureStage4ModulePath = Join-Path $repositoryRoot (
+        'eng\stage4\FolderSessionLock.Stage4.psm1')
+    $fixtureRecoveryModulePath = Join-Path $repositoryRoot (
+        'eng\stage4\FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')
+    $stage4Module = Import-Module $fixtureStage4ModulePath -Force -PassThru
+    $frozenContext = & $stage4Module {
+        param($Authority, $ApprovedCommit)
+        $script:ApprovedCommit = $ApprovedCommit
+        Get-FslFrozenRecoveryContext $Authority
+    } $verifiedAuthority $executionCommit
+    $forbiddenMutationPath = Join-Path $repositoryRoot (
+        'forbidden-recovery-mutation.txt')
+    $mutationGateCode = $null
+    try {
+        Write-Utf8 $forbiddenMutationPath "forbidden mutation`n"
+        $mutationGateCode = & $stage4Module {
+            param($Authority)
+            try {
+                Get-FslFrozenRecoveryContext $Authority | Out-Null
+                return $null
+            }
+            catch {
+                return [int]$_.Exception.Data['FslStage4ExitCode']
+            }
+        } $verifiedAuthority
+    }
+    finally {
+        [IO.File]::Delete($forbiddenMutationPath)
+    }
+    $publicOldReleaseCode = & $stage4Module {
+        param($RunId, $OldReleaseRoot)
+        try {
+            Get-FslContext $RunId $OldReleaseRoot | Out-Null
+            return $null
+        }
+        catch {
+            return [int]$_.Exception.Data['FslStage4ExitCode']
+        }
+    } $model.runId (
+        Join-Path (Join-Path 'C:\FSL-Release' '1.0.0') $executionCommit)
+    $invokeTamperedContext = {
+        param($Authority)
+        return & $stage4Module {
+            param($Value)
+            try {
+                Get-FslFrozenRecoveryContext $Value | Out-Null
+                return $null
+            }
+            catch {
+                return [int]$_.Exception.Data['FslStage4ExitCode']
+            }
+        } $Authority
+    }
+    $tamperedAuthorities = [Collections.Generic.List[object]]::new()
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered | Add-Member unexpectedProperty forbidden
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.repositoryRoot = Join-Path $fixtureRoot 'wrong-repository'
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.evidenceRoot = Join-Path $fixtureRoot 'wrong-evidence'
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.installDirectory = Join-Path $fixtureRoot 'wrong-install'
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.programDataRoot = Join-Path $fixtureRoot 'wrong-program-data'
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.externalAnchorRoot = Join-Path $fixtureRoot 'wrong-anchors'
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.state.ReleaseRoot = Join-Path $fixtureRoot 'wrong-release'
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.recoveryGitCommit = 'f' * 40
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.recoveryGitTree = 'f' * 40
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.state.sequence = 5
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.state.machineName = 'WRONG-STAGE4-MACHINE'
+    $tamperedAuthorities.Add($tampered)
+    $tampered = Copy-Object $verifiedAuthority
+    $tampered.state.branch = 'wrong-stage4-branch'
+    $tamperedAuthorities.Add($tampered)
+    $tamperCodes = @($tamperedAuthorities | ForEach-Object {
+        & $invokeTamperedContext $_
+    })
+    $wrapperCommands = @($wrapperAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.CommandAst]
+    }, $true))
+    $resolverCommands = @($wrapperCommands | Where-Object {
+        $_.GetCommandName() -ceq
+            'Resolve-FslRabVerifiedRecoveryAuthority'
+    })
+    $contextCommands = @($wrapperCommands | Where-Object {
+        $_.GetCommandName() -ceq 'Get-FslFrozenRecoveryContext'
+    })
+    $importCommands = @($wrapperCommands | Where-Object {
+        $_.GetCommandName() -ceq 'Import-Module'
+    })
+    $forbiddenWrapperCommands = @($wrapperCommands | Where-Object {
+        $_.GetCommandName() -cin @(
+            'Get-FslContext',
+            'Invoke-FslStage4Command',
+            'Invoke-FslStage4',
+            'Invoke-FslInstall',
+            'Start-Process',
+            'Invoke-Expression')
+    })
+    $verifiedNames = @(
+        'schemaVersion','authorityKind','runId','repositoryRoot','evidenceRoot',
+        'installDirectory','programDataRoot','externalAnchorRoot',
+        'executionGitCommit','executionGitTree','recoveryGitCommit',
+        'recoveryGitTree','state')
+    $expectedEvidenceRoot = Join-Path $repositoryRoot (
+        Join-Path 'docs\evidence\stage-4' $model.runId)
+    $expectedInstallDirectory = Join-Path (
+        [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::ProgramFiles)) 'FolderSessionLock'
+    $expectedProgramDataRoot = Join-Path (
+        [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::CommonApplicationData)) (
+            'FolderSessionLock')
+    $expectedAnchorRoot = Join-Path (
+        [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::LocalApplicationData)) (
+            Join-Path 'FolderSessionLock\Stage4\Anchors' $model.runId)
+    $expectedReleaseRoot = Join-Path (
+        Join-Path 'C:\FSL-Release' '1.0.0') $executionCommit
+    $liveProductionCommit = Invoke-Git $projectRoot @('rev-parse', 'HEAD')
+    $liveProductionTree = Invoke-Git $projectRoot @(
+        'rev-parse', 'HEAD^{tree}')
+    $stage4ModuleText = [IO.File]::ReadAllText(
+        $stage4ModulePath,
+        [Text.UTF8Encoding]::new($false, $true))
+    $combinedProductionText = $moduleText + "`n" + $stage4ModuleText
+    $seamChecks = @(
+        { (Get-PropertyNames $verifiedAuthority) -join '|' -ceq
+            ($verifiedNames -join '|') },
+        { $verifiedAuthority.schemaVersion -eq 1 -and
+            $verifiedAuthority.authorityKind -ceq
+                'FolderSessionLock.Stage4.VerifiedFrozenRecoveryAuthority.v1' },
+        { $verifiedAuthority.runId -ceq $model.runId },
+        { $verifiedAuthority.repositoryRoot -ceq $repositoryRoot },
+        { $verifiedAuthority.evidenceRoot -ceq $expectedEvidenceRoot },
+        { $verifiedAuthority.installDirectory -ceq
+                $expectedInstallDirectory -and
+            $verifiedAuthority.programDataRoot -ceq
+                $expectedProgramDataRoot -and
+            $verifiedAuthority.externalAnchorRoot -ceq $expectedAnchorRoot },
+        { $verifiedAuthority.executionGitCommit -ceq $executionCommit -and
+            $verifiedAuthority.executionGitTree -ceq $executionTree },
+        { $verifiedAuthority.recoveryGitCommit -ceq $toolchainCommit -and
+            $verifiedAuthority.recoveryGitTree -ceq $toolchainTree },
+        { $verifiedAuthority.state.runId -ceq $model.runId -and
+            $verifiedAuthority.state.machineName -ceq
+                [Environment]::MachineName -and
+            $verifiedAuthority.state.branch -ceq 'cp10-vm-transfer' -and
+            $verifiedAuthority.state.gitCommit -ceq $executionCommit -and
+            $verifiedAuthority.state.ReleaseRoot -ceq $expectedReleaseRoot },
+        { $frozenContext.RunId -ceq $model.runId -and
+            $frozenContext.RepositoryRoot -ceq $repositoryRoot },
+        { $frozenContext.EvidenceRoot -ceq $expectedEvidenceRoot -and
+            $frozenContext.InstallDirectory -ceq
+                $expectedInstallDirectory },
+        { $frozenContext.ProgramDataRoot -ceq $expectedProgramDataRoot -and
+            $frozenContext.ExternalAnchorRoot -ceq $expectedAnchorRoot },
+        { [string]::Equals(
+            [IO.Path]::GetFullPath([string]$frozenContext.ReleaseRoot),
+            [IO.Path]::GetFullPath($expectedReleaseRoot),
+            [StringComparison]::OrdinalIgnoreCase) },
+        { $frozenContext.ReleaseRoot -notmatch
+            [regex]::Escape($toolchainCommit) },
+        { $publicOldReleaseCode -eq 2 },
+        { $resolverCommands.Count -eq 1 },
+        { $contextCommands.Count -eq 1 },
+        { $reconcileCommands.Count -eq 1 },
+        { $importCommands.Count -eq 2 },
+        { @($wrapperCommands | Where-Object {
+                $_.GetCommandName() -ceq 'Get-FslContext'
+            }).Count -eq 0 },
+        { $forbiddenWrapperCommands.Count -eq 0 },
+        { $null -ne $wrapperAst.ParamBlock -and
+            $wrapperAst.ParamBlock.Parameters.Count -eq 0 },
+        { $wrapperText -notmatch '(?i)\b(?:fallback|retry)\b' },
+        { $wrapperText -match [regex]::Escape($fixtureStage4ModulePath) -and
+            $wrapperText -match [regex]::Escape(
+                $fixtureRecoveryModulePath) },
+        { $wrapperText -notmatch
+            '(?i)\b(?:ReadAllText|ConvertFrom-Json)\b' },
+        { ($exports -join '|') -ceq
+            'New-FslStage4RecoveryAuthorityBundle|Test-FslStage4RecoveryAuthorityBundle' },
+        { (@($stage4Module.ExportedFunctions.Keys) -join '|') -ceq
+            'Invoke-FslStage4Command' },
+        { $combinedProductionText -notmatch
+                [regex]::Escape($liveProductionCommit) -and
+            $combinedProductionText -notmatch
+                [regex]::Escape($liveProductionTree) },
+        { $tamperCodes.Count -eq 12 -and
+            @($tamperCodes | Where-Object { $_ -ne 8 }).Count -eq 0 },
+        { $mutationGateCode -eq 3 -and
+            $stage4ModuleText -match
+                '(?s)function Get-FslFrozenRecoveryContext.+Assert-FslRepositoryGate\s+\$context.+Assert-FslRepositoryMutationGate\s+\$context' -and
+            (Get-ChildItem -LiteralPath $sourceRoot -Force).Count -eq 2 -and
+            -not (Test-Path -LiteralPath (
+                Join-Path $sourceRoot 'launch-attempt.jsonl')) })
+    for ($index = 0; $index -lt 30; $index++) {
+        Assert-Case ([bool](& $seamChecks[$index])) (
+            "Recovery context seam case $index failed; tamper codes: " +
+            ($tamperCodes -join ',') + '.') ($index -lt 15) (
+            $validation.isValid)
+    }
+
+    if ($script:Cases -ne 218 -or $script:Assertions -ne 305) {
         throw "Counter drift: Cases=$script:Cases Assertions=$script:Assertions."
     }
     Write-Output (
@@ -808,6 +1067,9 @@ try {
 finally {
     if ($null -ne $module) {
         Remove-Module $module -Force -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $stage4Module) {
+        Remove-Module $stage4Module -Force -ErrorAction SilentlyContinue
     }
     if ($null -ne $fixtureRoot -and
         (Test-Path -LiteralPath $fixtureRoot -PathType Container)) {

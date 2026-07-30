@@ -219,23 +219,50 @@ function Get-FslKnownFolder {
     return [System.IO.Path]::GetFullPath($path)
 }
 
-function Get-FslContext {
+function New-FslContextCore {
     param(
         [Parameter(Mandatory = $true)][string]$RunId,
-        [string]$ReleaseRoot
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$ReleaseCommit
     )
 
     if ($RunId -cnotmatch $script:RunIdPattern) {
-        Stop-FslStage4 $script:ExitCodes.InvalidArguments 'RunId must match yyyyMMddTHHmmssZ-<8 lowercase hex>.'
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'The context run identifier is invalid.')
+    }
+    $canonicalRepository = Get-FslRepositoryRoot
+    try {
+        $repository =
+            [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
+    }
+    catch {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'The context repository root is invalid.')
+    }
+    if (-not [string]::Equals(
+            $repository,
+            $canonicalRepository,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'The context repository root is not the module repository.')
+    }
+    if ($ReleaseCommit -cnotmatch '^[0-9a-f]{40}$') {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'The context release commit is invalid.')
     }
 
-    $repository = Get-FslRepositoryRoot
-    $evidence = Join-Path $repository (Join-Path 'docs\evidence\stage-4' $RunId)
-    $programFiles = Get-FslKnownFolder ([Environment+SpecialFolder]::ProgramFiles)
-    $programData = Get-FslKnownFolder ([Environment+SpecialFolder]::CommonApplicationData)
-    $localAppData = Get-FslKnownFolder ([Environment+SpecialFolder]::LocalApplicationData)
+    $evidence = Join-Path $repository (
+        Join-Path 'docs\evidence\stage-4' $RunId)
+    $programFiles =
+        Get-FslKnownFolder ([Environment+SpecialFolder]::ProgramFiles)
+    $commonApplicationData =
+        Get-FslKnownFolder ([Environment+SpecialFolder]::CommonApplicationData)
+    $localApplicationData =
+        Get-FslKnownFolder ([Environment+SpecialFolder]::LocalApplicationData)
     $install = Join-Path $programFiles 'FolderSessionLock'
-    $data = Join-Path $programData 'FolderSessionLock'
+    $data = Join-Path $commonApplicationData 'FolderSessionLock'
+    $externalAnchors = Join-Path $localApplicationData (
+        Join-Path 'FolderSessionLock\Stage4\Anchors' $RunId)
     $version = '1.0.0'
     [xml]$project = Get-Content -LiteralPath (
         Join-Path $repository 'src\FolderSessionLock.App\FolderSessionLock.App.csproj') -Raw
@@ -246,28 +273,12 @@ function Get-FslContext {
     if ($declaredVersion.Count -eq 1) {
         $version = [string]$declaredVersion[0]
     }
-    $commit = (& git.exe -C $repository rev-parse HEAD 2>$null | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$') {
-        Stop-FslStage4 $script:ExitCodes.EnvironmentGate 'The release commit could not be determined.'
-    }
-    $expectedRelease = Join-Path (Join-Path 'C:\FSL-Release' $version) $commit
-    $release = $expectedRelease
-    if (-not [string]::IsNullOrWhiteSpace($ReleaseRoot) -and
-        -not [string]::Equals(
-            [System.IO.Path]::GetFullPath($ReleaseRoot),
-            [System.IO.Path]::GetFullPath($expectedRelease),
-            [StringComparison]::OrdinalIgnoreCase)) {
-        Stop-FslStage4 $script:ExitCodes.InvalidArguments (
-            'ReleaseRoot must be exactly C:\FSL-Release\<version>\<commit>.')
-    }
-
-    $release = [System.IO.Path]::GetFullPath($release)
+    $release = [System.IO.Path]::GetFullPath((
+        Join-Path (Join-Path 'C:\FSL-Release' $version) $ReleaseCommit))
     if (-not $release.StartsWith('C:\FSL-Release\', [StringComparison]::OrdinalIgnoreCase)) {
         Stop-FslStage4 $script:ExitCodes.InvalidArguments 'ReleaseRoot must be below C:\FSL-Release\.'
     }
 
-    $externalAnchorRoot = Join-Path $localAppData (
-        Join-Path 'FolderSessionLock\Stage4\Anchors' $RunId)
     return [pscustomobject]@{
         RunId = $RunId
         RepositoryRoot = $repository
@@ -282,11 +293,211 @@ function Get-FslContext {
         AnchorPath = (Join-Path $evidence 'stage4-anchor.json')
         InstallWalPath = (Join-Path $evidence 'install-wal.jsonl')
         CommandsPath = (Join-Path $evidence 'commands.txt')
-        ExternalAnchorRoot = $externalAnchorRoot
-        ExternalAnchorKeyPath = (Join-Path $externalAnchorRoot 'key.dpapi')
-        ExternalAnchorSlot0Path = (Join-Path $externalAnchorRoot 'anchor-0.json')
-        ExternalAnchorSlot1Path = (Join-Path $externalAnchorRoot 'anchor-1.json')
+        ExternalAnchorRoot = $externalAnchors
+        ExternalAnchorKeyPath = (Join-Path $externalAnchors 'key.dpapi')
+        ExternalAnchorSlot0Path = (Join-Path $externalAnchors 'anchor-0.json')
+        ExternalAnchorSlot1Path = (Join-Path $externalAnchors 'anchor-1.json')
     }
+}
+
+function Get-FslContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [string]$ReleaseRoot
+    )
+
+    if ($RunId -cnotmatch $script:RunIdPattern) {
+        Stop-FslStage4 $script:ExitCodes.InvalidArguments 'RunId must match yyyyMMddTHHmmssZ-<8 lowercase hex>.'
+    }
+
+    $repository = Get-FslRepositoryRoot
+    $commit = (& git.exe -C $repository rev-parse HEAD 2>$null |
+        Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$') {
+        Stop-FslStage4 $script:ExitCodes.EnvironmentGate (
+            'The release commit could not be determined.')
+    }
+    $context = New-FslContextCore `
+        $RunId `
+        $repository `
+        $commit
+    if (-not [string]::IsNullOrWhiteSpace($ReleaseRoot) -and
+        -not [string]::Equals(
+            [System.IO.Path]::GetFullPath($ReleaseRoot),
+            $context.ReleaseRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-FslStage4 $script:ExitCodes.InvalidArguments (
+            'ReleaseRoot must be exactly C:\FSL-Release\<version>\<commit>.')
+    }
+    return $context
+}
+
+function Get-FslFrozenRecoveryContext {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [psobject]$VerifiedAuthority
+    )
+
+    $expectedNames = @(
+        'schemaVersion',
+        'authorityKind',
+        'runId',
+        'repositoryRoot',
+        'evidenceRoot',
+        'installDirectory',
+        'programDataRoot',
+        'externalAnchorRoot',
+        'executionGitCommit',
+        'executionGitTree',
+        'recoveryGitCommit',
+        'recoveryGitTree',
+        'state')
+    $actualNames = @($VerifiedAuthority.PSObject.Properties |
+        ForEach-Object Name)
+    if (($actualNames -join '|') -cne ($expectedNames -join '|') -or
+        $VerifiedAuthority.schemaVersion -isnot [int] -or
+        [int]$VerifiedAuthority.schemaVersion -ne 1 -or
+        $VerifiedAuthority.authorityKind -isnot [string] -or
+        [string]$VerifiedAuthority.authorityKind -cne
+            'FolderSessionLock.Stage4.VerifiedFrozenRecoveryAuthority.v1' -or
+        $VerifiedAuthority.runId -isnot [string] -or
+        [string]$VerifiedAuthority.runId -cnotmatch $script:RunIdPattern -or
+        $VerifiedAuthority.executionGitCommit -isnot [string] -or
+        [string]$VerifiedAuthority.executionGitCommit -cnotmatch
+            '^[0-9a-f]{40}$' -or
+        $VerifiedAuthority.executionGitTree -isnot [string] -or
+        [string]$VerifiedAuthority.executionGitTree -cnotmatch
+            '^[0-9a-f]{40}$' -or
+        $VerifiedAuthority.recoveryGitCommit -isnot [string] -or
+        [string]$VerifiedAuthority.recoveryGitCommit -cnotmatch
+            '^[0-9a-f]{40}$' -or
+        $VerifiedAuthority.recoveryGitTree -isnot [string] -or
+        [string]$VerifiedAuthority.recoveryGitTree -cnotmatch
+            '^[0-9a-f]{40}$' -or
+        [string]$VerifiedAuthority.executionGitCommit -ceq
+            [string]$VerifiedAuthority.recoveryGitCommit -or
+        [string]$VerifiedAuthority.executionGitTree -ceq
+            [string]$VerifiedAuthority.recoveryGitTree) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'The verified frozen recovery authority shape is invalid.')
+    }
+
+    foreach ($path in @(
+        [string]$VerifiedAuthority.repositoryRoot,
+        [string]$VerifiedAuthority.evidenceRoot,
+        [string]$VerifiedAuthority.installDirectory,
+        [string]$VerifiedAuthority.programDataRoot,
+        [string]$VerifiedAuthority.externalAnchorRoot)) {
+        if (-not (Test-FslFullyQualifiedPath $path)) {
+            Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                'A verified frozen recovery authority path is invalid.')
+        }
+    }
+    $repository = Get-FslRepositoryRoot
+    $context = New-FslContextCore `
+        ([string]$VerifiedAuthority.runId) `
+        $repository `
+        ([string]$VerifiedAuthority.executionGitCommit)
+    try {
+        $authorityPaths = @(
+            [IO.Path]::GetFullPath(
+                [string]$VerifiedAuthority.repositoryRoot).TrimEnd('\'),
+            [IO.Path]::GetFullPath(
+                [string]$VerifiedAuthority.evidenceRoot).TrimEnd('\'),
+            [IO.Path]::GetFullPath(
+                [string]$VerifiedAuthority.installDirectory).TrimEnd('\'),
+            [IO.Path]::GetFullPath(
+                [string]$VerifiedAuthority.programDataRoot).TrimEnd('\'),
+            [IO.Path]::GetFullPath(
+                [string]$VerifiedAuthority.externalAnchorRoot).TrimEnd('\'))
+        $derivedPaths = @(
+            [string]$context.RepositoryRoot,
+            [string]$context.EvidenceRoot,
+            [string]$context.InstallDirectory,
+            [string]$context.ProgramDataRoot,
+            [string]$context.ExternalAnchorRoot)
+        for ($index = 0; $index -lt $derivedPaths.Count; $index++) {
+            if (-not [string]::Equals(
+                    $authorityPaths[$index],
+                    $derivedPaths[$index],
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+                    'A verified frozen recovery authority path drifted.')
+            }
+        }
+    }
+    catch {
+        if ($_.Exception.Data.Contains('FslStage4ExitCode')) {
+            throw
+        }
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'A verified frozen recovery authority path is invalid.')
+    }
+
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $liveCommit = (& git.exe -C $repository rev-parse HEAD 2>$null |
+            Out-String).Trim()
+        $liveCommitExit = $LASTEXITCODE
+        $liveTree = (& git.exe -C $repository rev-parse 'HEAD^{tree}' 2>$null |
+            Out-String).Trim()
+        $liveTreeExit = $LASTEXITCODE
+        $liveBranch = (& git.exe -C $repository branch --show-current 2>$null |
+            Out-String).Trim()
+        $liveBranchExit = $LASTEXITCODE
+        $executionTree = (& git.exe -C $repository rev-parse (
+                ([string]$VerifiedAuthority.executionGitCommit) + '^{tree}') `
+                2>$null | Out-String).Trim()
+        $executionTreeExit = $LASTEXITCODE
+        & git.exe -C $repository merge-base --is-ancestor `
+            ([string]$VerifiedAuthority.executionGitCommit) `
+            ([string]$VerifiedAuthority.recoveryGitCommit) 2>$null |
+            Out-Null
+        $ancestorExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    if ($liveCommitExit -ne 0 -or $liveTreeExit -ne 0 -or
+        $liveBranchExit -ne 0 -or
+        $executionTreeExit -ne 0 -or $ancestorExit -ne 0 -or
+        $liveBranch -cne $script:ExpectedBranch -or
+        $liveCommit -cne [string]$VerifiedAuthority.recoveryGitCommit -or
+        $liveTree -cne [string]$VerifiedAuthority.recoveryGitTree -or
+        $executionTree -cne [string]$VerifiedAuthority.executionGitTree) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'The verified frozen recovery Git authority drifted.')
+    }
+
+    $state = $VerifiedAuthority.state
+    if ($null -eq $state -or
+        $state.runId -isnot [string] -or
+        [string]$state.runId -cne [string]$VerifiedAuthority.runId -or
+        $state.machineName -isnot [string] -or
+        [string]$state.machineName -cne [Environment]::MachineName -or
+        $state.branch -isnot [string] -or
+        [string]$state.branch -cne $script:ExpectedBranch -or
+        $state.gitCommit -isnot [string] -or
+        [string]$state.gitCommit -cne
+            [string]$VerifiedAuthority.executionGitCommit -or
+        $state.sequence -isnot [int] -or [int]$state.sequence -ne 6 -or
+        $state.transition -isnot [string] -or
+        [string]$state.transition -cne 'InstallStarted' -or
+        $state.ReleaseRoot -isnot [string] -or
+        -not (Test-FslFullyQualifiedPath ([string]$state.ReleaseRoot)) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$state.ReleaseRoot),
+            [string]$context.ReleaseRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-FslStage4 $script:ExitCodes.ValidationEvidence (
+            'The verified frozen recovery state binding drifted.')
+    }
+
+    Assert-FslRepositoryGate $context
+    Assert-FslRepositoryMutationGate $context
+    return $context
 }
 
 function Assert-FslMachineGate {
