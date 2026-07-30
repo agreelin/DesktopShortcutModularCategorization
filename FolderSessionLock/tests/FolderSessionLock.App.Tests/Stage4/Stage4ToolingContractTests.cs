@@ -46,13 +46,14 @@ public sealed class Stage4ToolingContractTests
     [Fact]
     public void PowerShell51_WalCrossProcessContractPasses()
     {
-        ProcessResult result = RunPowerShell(
+        ProcessResult result = RunPowerShellWithTimeout(
             Path.Combine(
                 FindSolutionRoot(),
                 "tests",
                 "FolderSessionLock.App.Tests",
                 "Stage4",
-                "Stage4WalCrossProcess.Tests.ps1"));
+                "Stage4WalCrossProcess.Tests.ps1"),
+            240_000);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains(
@@ -90,11 +91,30 @@ public sealed class Stage4ToolingContractTests
                 "FolderSessionLock.App.Tests",
                 "Stage4",
                 "Stage4FormalLauncherBundle.Tests.ps1"),
-            120_000);
+            180_000);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains(
             "STAGE4_FORMAL_LAUNCHER_BUNDLE_PASS",
+            result.Output,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PowerShell51_RecoveryAuthorityBundleContractPasses()
+    {
+        ProcessResult result = RunPowerShellWithTimeout(
+            Path.Combine(
+                FindSolutionRoot(),
+                "tests",
+                "FolderSessionLock.App.Tests",
+                "Stage4",
+                "Stage4RecoveryAuthorityBundle.Tests.ps1"),
+            120_000);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains(
+            "STAGE4_RECOVERY_AUTHORITY_BUNDLE_PASS Cases=188 Assertions=260",
             result.Output,
             StringComparison.Ordinal);
     }
@@ -203,11 +223,44 @@ public sealed class Stage4ToolingContractTests
         }
 
         using Process process = Process.Start(start)!;
-        string standardOutput = process.StandardOutput.ReadToEnd();
-        string standardError = process.StandardError.ReadToEnd();
-        Assert.True(
-            process.WaitForExit(timeoutMilliseconds),
-            "Windows PowerShell 5.1 did not exit.");
+        Task<string> standardOutputTask =
+            process.StandardOutput.ReadToEndAsync();
+        Task<string> standardErrorTask =
+            process.StandardError.ReadToEndAsync();
+        bool exited = process.WaitForExit(timeoutMilliseconds);
+        if (!exited)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+                // The process exited between the timeout and the kill.
+            }
+
+            process.WaitForExit(10_000);
+            Task.WaitAll(
+                [standardOutputTask, standardErrorTask],
+                10_000);
+            string timeoutOutput =
+                (standardOutputTask.IsCompletedSuccessfully
+                    ? standardOutputTask.Result
+                    : "<stdout drain incomplete>") +
+                Environment.NewLine +
+                (standardErrorTask.IsCompletedSuccessfully
+                    ? standardErrorTask.Result
+                    : "<stderr drain incomplete>");
+            Assert.Fail(
+                "Windows PowerShell 5.1 did not exit." +
+                Environment.NewLine +
+                timeoutOutput);
+        }
+
+        process.WaitForExit();
+        Task.WaitAll(standardOutputTask, standardErrorTask);
+        string standardOutput = standardOutputTask.Result;
+        string standardError = standardErrorTask.Result;
         return new ProcessResult(
             process.ExitCode,
             standardOutput + Environment.NewLine + standardError);

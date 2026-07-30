@@ -47,6 +47,24 @@ function Write-Utf8 {
         [Text.UTF8Encoding]::new($false, $true))
 }
 
+function Invoke-Git {
+    param([string]$Root, [string[]]$Arguments)
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& git.exe @('-C', $Root) @Arguments 2>&1)
+    }
+    finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "Git fixture command failed: $($Arguments -join ' ')`n" +
+            ($output -join "`n"))
+    }
+    return (@($output | ForEach-Object { [string]$_ }) -join "`n").Trim()
+}
+
 function Get-Sha {
     param([string]$Path)
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
@@ -375,6 +393,8 @@ function Write-RehashedBundleContract {
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $modulePath = Join-Path $projectRoot (
     'eng\stage4\FolderSessionLock.Stage4.FormalLauncherBundle.psm1')
+$recoveryModulePath = Join-Path $projectRoot (
+    'eng\stage4\FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')
 $nativePath = Join-Path $projectRoot (
     'eng\stage4\FolderSessionLock.Stage4.Native.cs')
 $controllerPath = Join-Path $projectRoot 'eng\stage4\Invoke-Stage4.ps1'
@@ -392,19 +412,22 @@ try {
     $bundleLeaf = "bundle output's authority"
     $sourceRoot = Join-Path $fixtureRoot $sourceLeaf
     $bundleRoot = Join-Path $fixtureRoot $bundleLeaf
-    $evidenceRoot = Join-Path $fixtureRoot 'canonical-evidence'
-    $anchorRoot = Join-Path $fixtureRoot 'external-anchors'
-    $releaseRoot = Join-Path $fixtureRoot 'frozen-release'
-    $transactionRoot = Join-Path $fixtureRoot 'install-prestate'
+    $authorityRoot = Join-Path $fixtureRoot 'recovery-authority-fixture'
+    $repositoryRoot = Join-Path $authorityRoot 'repository'
+    $evidenceRoot = Join-Path $authorityRoot 'execution-state'
+    $predecessorRoot = Join-Path $authorityRoot 'install-wal-rollback-1'
+    $anchorRoot = Join-Path $authorityRoot 'external-anchors'
+    $releaseRoot = Join-Path $authorityRoot 'frozen-release'
+    $transactionRoot = Join-Path $authorityRoot 'install-prestate'
     foreach ($path in @(
-        $sourceRoot,
+        $repositoryRoot,
         $evidenceRoot,
+        $predecessorRoot,
         $anchorRoot,
         $releaseRoot,
         $transactionRoot)) {
         [IO.Directory]::CreateDirectory($path) | Out-Null
     }
-    Set-TestAcl $sourceRoot $userSid $true
 
     # Strict process-free Git authority is exercised only against a synthetic
     # temporary repository. The real repository's .git is never written.
@@ -728,150 +751,116 @@ try {
         'A missing loose branch after HEAD drift was accepted.')
     Write-Utf8 (Join-Path $syntheticGit 'HEAD') "ref: refs/heads/main`n"
 
-    $wrapperPath = Join-Path $sourceRoot 'elevated-reconcile.ps1'
-    $recoveryPath = Join-Path $sourceRoot 'recovery-contract.json'
-    Write-Utf8 $wrapperPath (
-        "Set-StrictMode -Version Latest`n" +
-        "throw 'TEST_FIXTURE_NEVER_EXECUTE'`n")
-    Set-TestAcl $wrapperPath $userSid $false
+    [void](Invoke-Git $repositoryRoot @('init', '-b', 'main'))
+    [void](Invoke-Git $repositoryRoot @(
+        'config', 'user.name', 'FolderSessionLock Test'))
+    [void](Invoke-Git $repositoryRoot @(
+        'config', 'user.email', 'stage4@example.invalid'))
+    [void](Invoke-Git $repositoryRoot @(
+        'config', 'core.autocrlf', 'false'))
+    $fixedFiles = @(
+        'eng/stage4/FolderSessionLock.Stage4.psm1',
+        'eng/stage4/FolderSessionLock.Stage4.Native.cs',
+        'eng/stage4/Invoke-Stage4.ps1',
+        'eng/stage4/FolderSessionLock.Stage4.FormalLauncherBundle.psm1',
+        'tests/FolderSessionLock.App.Tests/Stage4/Stage4FormalLauncherBundle.Tests.ps1')
+    for ($index = 0; $index -lt $fixedFiles.Count; $index++) {
+        $path = Join-Path $repositoryRoot $fixedFiles[$index].Replace('/', '\')
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+        Write-Utf8 $path ("old execution source $index`n")
+    }
+    [void](Invoke-Git $repositoryRoot @('add', '--', '.'))
+    [void](Invoke-Git $repositoryRoot @(
+        'commit', '-m', 'old execution authority'))
+    $executionCommit = Invoke-Git $repositoryRoot @('rev-parse', 'HEAD')
+    $executionTree = Invoke-Git $repositoryRoot @('rev-parse', 'HEAD^{tree}')
+    Write-Utf8 (
+        Join-Path $repositoryRoot $fixedFiles[0].Replace('/', '\')) (
+        "new recovery toolchain source`n")
+    [void](Invoke-Git $repositoryRoot @('add', '--', '.'))
+    [void](Invoke-Git $repositoryRoot @(
+        'commit', '-m', 'descendant recovery toolchain'))
 
+    $statePath = Join-Path $evidenceRoot 'stage4-state.json'
+    Write-Utf8 $statePath (([pscustomobject][ordered]@{
+        gitCommit = $executionCommit
+        sequence = 6
+        transition = 'InstallStarted'
+        releaseRoot = $releaseRoot
+    } | ConvertTo-Json) + "`n")
+    Write-Utf8 (Join-Path $evidenceRoot 'stage4-journal.jsonl') (
+        "{`"sequence`":6,`"transition`":`"InstallStarted`"}`n")
+    $walLines = @()
+    for ($index = 1; $index -le 4; $index++) {
+        $walLines += "{`"sequence`":$index,`"phase`":`"Prefix$index`"}"
+    }
+    Write-Utf8 (Join-Path $evidenceRoot 'install-wal.jsonl') (
+        ($walLines -join "`n") + "`n")
+    Write-Utf8 (Join-Path $evidenceRoot 'build-results.txt') (
+        "Release build 0 warnings 0 errors`n")
+    Write-Utf8 (Join-Path $evidenceRoot 'commands.txt') (
+        "frozen Stage 4 commands`n")
+    Write-Utf8 (Join-Path $evidenceRoot 'prestate.json') (
+        "{`"runId`":`"20260729T120000Z-1234abcd`"}`n")
+    Write-Utf8 (Join-Path $evidenceRoot 'signature-verification.txt') (
+        "unsigned TestFixture authority`n")
+    Write-Utf8 (Join-Path $evidenceRoot 'stage4-anchor.json') (
+        "{`"sequence`":6}`n")
+    Write-Utf8 (Join-Path $predecessorRoot 'elevated-reconcile.ps1') (
+        "throw 'frozen predecessor wrapper'`n")
+    Write-Utf8 (Join-Path $predecessorRoot 'recovery-contract.json') (
+        "{`"schemaVersion`":2}`n")
     $evidencePaths = @(
-        Join-Path $evidenceRoot 'evidence-a.txt'
-        Join-Path $evidenceRoot 'evidence-b.json')
-    Write-Utf8 $evidencePaths[0] "fixture evidence a`n"
-    Write-Utf8 $evidencePaths[1] "{`"fixture`":true}`n"
+        Join-Path $evidenceRoot 'build-results.txt'
+        Join-Path $evidenceRoot 'commands.txt'
+        Join-Path $evidenceRoot 'prestate.json'
+        Join-Path $evidenceRoot 'signature-verification.txt'
+        Join-Path $evidenceRoot 'stage4-anchor.json')
     $anchorPaths = @(
         Join-Path $anchorRoot 'anchor-0.json'
-        Join-Path $anchorRoot 'anchor-1.json')
-    Write-Utf8 $anchorPaths[0] "{`"generation`":14}`n"
-    Write-Utf8 $anchorPaths[1] "{`"generation`":13}`n"
+        Join-Path $anchorRoot 'anchor-1.json'
+        Join-Path $anchorRoot 'key.dpapi')
+    Write-Utf8 $anchorPaths[0] "{`"generation`":12}`n"
+    Write-Utf8 $anchorPaths[1] "{`"generation`":11}`n"
+    [IO.File]::WriteAllBytes($anchorPaths[2], [byte[]](1..32))
 
     $releasePaths = @(
-        Join-Path $releaseRoot 'payload.bin'
+        Join-Path $releaseRoot 'payload.exe'
         Join-Path $releaseRoot 'release-descriptor.json'
         Join-Path $releaseRoot 'release-manifest.json'
         Join-Path $releaseRoot 'SHA256SUMS.txt')
-    Write-Utf8 $releasePaths[0] "payload`n"
+    Write-Utf8 $releasePaths[0] "fixture release`n"
     Write-Utf8 $releasePaths[1] "{`"version`":`"1.0.0`"}`n"
     Write-Utf8 $releasePaths[2] "{`"files`":4}`n"
     Write-Utf8 $releasePaths[3] "fixture sums`n"
-    $releaseFiles = @(Get-ChildItem -LiteralPath $releaseRoot -File -Force)
-    $releaseLines = @($releaseFiles | Sort-Object Name | ForEach-Object {
-        $_.Name + '|' + $_.Length + '|' + (Get-Sha $_.FullName)
-    })
 
-    $repo = & $module { Get-FslFlbRepository }
-    $directory = & $module {
-        param($Path)
-        Get-FslFlbDirectoryRecord $Path
-    } $transactionRoot
+    $recoveryContractId = 'FSL-CP10-DUAL-AUTHORITY-FLB-TEST'
+    $recoveryModel = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        authorityProfile = 'TestFixture'
+        contractId = $recoveryContractId
+        checkpoint =
+            'CP10-TRACKED-DUAL-AUTHORITY-RECOVERY-BUNDLE-GENERATOR-VALIDATOR'
+        runId = '20260729T120000Z-1234abcd'
+        rootBinding = [pscustomobject][ordered]@{
+            fixtureId = $fixtureId
+            sourceLeafName = $sourceLeaf
+        }
+    }
+    $recoveryModule = Import-Module $recoveryModulePath -Force -PassThru
+    $null = & $recoveryModule {
+        param($RecoveryModel)
+        New-FslStage4RecoveryAuthorityBundle -Model $RecoveryModel
+    } $recoveryModel
+    $wrapperPath = Join-Path $sourceRoot 'elevated-reconcile.ps1'
+    $recoveryPath = Join-Path $sourceRoot 'recovery-contract.json'
+    $recovery = [IO.File]::ReadAllText(
+        $recoveryPath,
+        [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
+    $gates = @($recovery.contractStageGates)
     $powerShell = Join-Path (
         [Environment]::GetFolderPath([Environment+SpecialFolder]::System)) (
         'WindowsPowerShell\v1.0\powershell.exe')
-    $gates = @()
-    for ($index = 1; $index -le 171; $index++) {
-        $gates += [pscustomobject][ordered]@{
-            gateId = 'FSL-CG-{0:D3}-TEST-FIXTURE-GATE' -f $index
-            exitCode = 83 + $index
-        }
-    }
-    $recoveryContractId = 'FSL-CP10-TEST-RECOVERY-CONTRACT'
-    $recovery = [pscustomobject][ordered]@{
-        schemaVersion = 2
-        contractId = $recoveryContractId
-        checkpoint = 'CP10-INSTALL-WAL-ROLLBACK-OBSERVER-EXECUTION'
-        contractStageGates = $gates
-        identity = [pscustomobject][ordered]@{
-            machineName = [Environment]::MachineName
-            repository = $repo.projectRoot
-            branch = $repo.branch
-            gitCommit = $repo.head
-            gitTree = $repo.tree
-            runId = '20260729T120000Z-1234abcd'
-            userSid = $userSid
-        }
-        source = [pscustomobject][ordered]@{
-            module = Get-FileRecord $modulePath
-            native = Get-FileRecord $nativePath
-            controller = Get-FileRecord $controllerPath
-        }
-        canonical = [pscustomobject][ordered]@{
-            evidenceRoot = $evidenceRoot
-            evidenceFiles = @($evidencePaths | ForEach-Object {
-                Get-FileRecord $_
-            })
-            externalAnchorRoot = $anchorRoot
-            externalAnchorFiles = @($anchorPaths | ForEach-Object {
-                Get-FileRecord $_
-            })
-        }
-        transaction = [pscustomobject][ordered]@{
-            transactionId = 'Install-test-transaction'
-            workflow = 'Install'
-            recoveryMode = 'Rollback'
-            planHash = 'A' * 64
-            planCount = 50
-            operationIdentitySha256 = 'B' * 64
-            prefixRecordSha256 = 'C' * 64
-            directory = [pscustomobject][ordered]@{
-                path = $directory.path
-                finalPath = $directory.finalPath
-                fileId = $directory.fileId
-                aclSddl = $directory.aclSddl
-                ordinaryDirectory = $true
-                nonReparse = $true
-                childCount = $directory.childCount
-            }
-            expectedPost = [pscustomobject][ordered]@{
-                walRecordCount = 7
-                latestGeneration = 14
-                latestSlot = 'anchor-0.json'
-                previousGeneration = 13
-                previousSlot = 'anchor-1.json'
-                stateSequence = 6
-                stateTransition = 'InstallStarted'
-                directoryAbsent = $true
-                programDataAbsent = $true
-                serviceAbsent = $true
-                addedPhases = @(
-                    '1|InstallDirectorySetAcl|RolledBack',
-                    '0|InstallDirectoryCreate|RolledBack',
-                    '-1|transaction|Aborted')
-            }
-        }
-        release = [pscustomobject][ordered]@{
-            root = $releaseRoot
-            fileCount = $releaseFiles.Count
-            fingerprintSha256 = Get-TextSha ($releaseLines -join "`n")
-            descriptorSha256 = Get-Sha $releasePaths[1]
-            manifestSha256 = Get-Sha $releasePaths[2]
-            sumsSha256 = Get-Sha $releasePaths[3]
-        }
-        allowedWrites = @('Test fixture allows no execution.')
-        forbiddenActions = @('The sentinel wrapper must never execute.')
-        futureInvocation = [pscustomobject][ordered]@{
-            filePath = $powerShell
-            arguments = @(
-                '-NoLogo',
-                '-NoProfile',
-                '-NonInteractive',
-                '-ExecutionPolicy',
-                'Bypass',
-                '-File',
-                $wrapperPath)
-            verb = 'RunAs'
-            passThru = $true
-            wait = $true
-            redirectStandardOutput = $false
-            redirectStandardError = $false
-        }
-        binding = [pscustomobject][ordered]@{
-            wrapperSha256 = Get-Sha $wrapperPath
-        }
-    }
-    Write-Utf8 $recoveryPath (
-        ($recovery | ConvertTo-Json -Depth 32) + "`n")
-    Set-TestAcl $recoveryPath $userSid $false
     $model = New-PublicModel `
         $fixtureId `
         $sourceLeaf `
@@ -1142,14 +1131,14 @@ try {
         (Copy-Object $latchRecord1),
         (Copy-Object $latchRecord2),
         (Copy-Object $latchRecord3))
-    $caseRecords[2].gateId = 'FSL-CG-002-WRONG-MAPPING'
+    $caseRecords[2].gateId = 'FSL-RAB-CG-002-WRONG-MAPPING'
     $invalidLatchSets.Add($caseRecords)
     $caseRecords = @(
         (Copy-Object $latchRecord1),
         (Copy-Object $latchRecord2),
         (Copy-Object $latchRecord3))
     $caseRecords[2].exitCode = -1
-    $caseRecords[2].gateId = 'FSL-CG-001-FORBIDDEN'
+    $caseRecords[2].gateId = 'FSL-RAB-CG-001-FORBIDDEN'
     $invalidLatchSets.Add($caseRecords)
     $caseRecords = @((Copy-Object $latchRecord1))
     $caseRecords[0].observerPid = '4242'
@@ -1316,6 +1305,8 @@ try {
         'schemaVersion|fileOrder|outerLauncher|observer|contractName|' +
         'contractLength|contractCanonicalSha256|hashRule|recoveryWrapper|' +
         'recoveryContract|recoveryGateMapSha256|' +
+        'executionStateAuthoritySha256|recoveryToolchainAuthoritySha256|' +
+        'toolchainRepositorySha256|' +
         'currentAuthorityCanonicalSha256') (
         'The binding manifest nested shape drifted.')
     Assert-Equal $contract.bindingManifest.outerLauncher.name (
@@ -1735,95 +1726,42 @@ try {
         Restore-Bytes $outerPath $outerBytes
     }
 
-    # Recovery current-authority drift is rejected even when the public hash is
-    # recomputed by the caller.
+    # Schema-3 recovery authority drift is rejected even when the public hash
+    # is recomputed by the caller.
     $recoveryOriginal = [IO.File]::ReadAllBytes($recoveryPath)
-    foreach ($mutation in @(
-        @('machine', { param($r) $r.identity.machineName = 'OTHER-MACHINE' }),
-        @('repository', { param($r) $r.identity.repository = 'C:\Other' }),
-        @('branch', { param($r) $r.identity.branch = 'other-branch' }),
-        @('head', { param($r) $r.identity.gitCommit = 'd' * 40 }),
-        @('tree', { param($r) $r.identity.gitTree = 'e' * 40 }),
-        @('run', { param($r) $r.identity.runId = '20260729T120001Z-deadbeef' }),
-        @('sid', { param($r) $r.identity.userSid = 'S-1-5-18' }))) {
-        $caseRecovery = Copy-Object $recovery
-        & $mutation[1] $caseRecovery
-        Set-RecoveryContract $recoveryPath $caseRecovery $userSid $model
-        Assert-CodeSet (
-            Test-FslStage4FormalLauncherBundle -Model $model) (
-            @('FSL-FLB-V010-SOURCE-RECOVERY')) (
-            "Rehashed recovery $($mutation[0]) drift was accepted.")
-        Restore-Bytes $recoveryPath $recoveryOriginal
-        Set-TestAcl $recoveryPath $userSid $false
-        $model.recoveryAuthority.contractSha256 = Get-Sha $recoveryPath
-    }
-
-    $nestedRecoveryMutations = @(
+    $recoveryOriginalSddl = Get-Sddl $recoveryPath $false
+    $schema3Mutations = @(
+        { param($r) $r.schemaVersion = 2 },
+        { param($r) $r.authorityProfile = 'Other' },
+        { param($r) $r.contractId = 'OTHER-CONTRACT' },
+        { param($r) $r.checkpoint = 'OTHER-CHECKPOINT' },
+        { param($r) $r.runId = '20260729T180001Z-deadbeef' },
+        { param($r) $r.executionStateAuthority.gitCommit = 'd' * 40 },
+        { param($r) $r.executionStateAuthority.gitTree = 'e' * 40 },
+        { param($r) $r.recoveryToolchainAuthority.gitCommit = 'a' * 40 },
+        { param($r) $r.recoveryToolchainAuthority.gitTree = 'b' * 40 },
+        { param($r) $r.operatorIdentity.userSid = 'S-1-5-18' },
+        { param($r) $r.recoverySource.wrapper.sha256 = 'A' * 64 },
+        { param($r) $r.recoverySource.contract.schemaVersion = 4 },
+        { param($r) $r.transaction.walPrefixRecordCount = '4' },
         {
             param($r)
             $r.transaction.expectedPost.PSObject.Properties.Remove(
                 'addedPhases')
         },
+        { param($r) $r.canonicalEvidence.files[0].sha256 = 'B' * 64 },
         {
             param($r)
-            $r.futureInvocation | Add-Member `
-                -NotePropertyName executable `
-                -NotePropertyValue 'forbidden'
+            $r.canonicalEvidence.predecessorFiles[0].sha256 = 'C' * 64
         },
-        {
-            param($r)
-            $old = $r.identity
-            $r.identity = [pscustomobject][ordered]@{
-                repository = $old.repository
-                machineName = $old.machineName
-                branch = $old.branch
-                gitCommit = $old.gitCommit
-                gitTree = $old.gitTree
-                runId = $old.runId
-                userSid = $old.userSid
-            }
-        },
-        { param($r) $r.transaction.planCount = '50' },
-        {
-            param($r)
-            $r.source.module | Add-Member `
-                -NotePropertyName finalPath `
-                -NotePropertyValue 'forbidden'
-        },
-        {
-            param($r)
-            $r.canonical.evidenceFiles[0].PSObject.Properties.Remove('sha256')
-        },
+        { param($r) $r.externalAnchors.files[0].sha256 = 'D' * 64 },
+        { param($r) $r.release.files[0].sha256 = 'E' * 64 },
+        { param($r) $r.systemPrestate.programDataAbsent = $false },
         { param($r) $r.futureInvocation.passThru = 1 },
-        { param($r) $r.transaction.expectedPost.addedPhases = 'not-an-array' })
-    foreach ($nestedMutation in $nestedRecoveryMutations) {
-        $caseRecovery = Copy-Object $recovery
-        & $nestedMutation $caseRecovery
-        Set-RecoveryContract $recoveryPath $caseRecovery $userSid $model
-        Assert-CodeSet (
-            Test-FslStage4FormalLauncherBundle -Model $model) (
-            @('FSL-FLB-V010-SOURCE-RECOVERY')) (
-            'A nested recovery missing/extra/order/type mutation was accepted.')
-        Restore-Bytes $recoveryPath $recoveryOriginal
-        Set-TestAcl $recoveryPath $userSid $false
-        $model.recoveryAuthority.contractSha256 = Get-Sha $recoveryPath
-    }
-
-    # The full 171-entry map is semantic authority, not merely a count.
-    foreach ($gateIndex in @(0, 85, 170)) {
-        $caseRecovery = Copy-Object $recovery
-        $caseRecovery.contractStageGates[$gateIndex].exitCode++
-        Set-RecoveryContract $recoveryPath $caseRecovery $userSid $model
-        Assert-CodeSet (
-            Test-FslStage4FormalLauncherBundle -Model $model) (
-            @('FSL-FLB-V010-SOURCE-RECOVERY')) (
-            "A rehashed gate-map mutation at $gateIndex was accepted.")
-        Restore-Bytes $recoveryPath $recoveryOriginal
-        Set-TestAcl $recoveryPath $userSid $false
-        $model.recoveryAuthority.contractSha256 = Get-Sha $recoveryPath
-    }
-    $gateMutations = @(
-        { param($r) $r.contractStageGates = @($r.contractStageGates[0..169]) },
+        {
+            param($r)
+            $r.contractStageGates = @($r.contractStageGates[0..54])
+        },
         {
             param($r)
             $temporary = $r.contractStageGates[0]
@@ -1835,23 +1773,20 @@ try {
             $r.contractStageGates[1].gateId =
                 $r.contractStageGates[0].gateId
         },
-        {
-            param($r)
-            $r.contractStageGates[1].exitCode =
-                $r.contractStageGates[0].exitCode
-        },
-        { param($r) $r.contractStageGates[0].exitCode = '84' },
-        { param($r) $r.contractStageGates[0] = $null })
-    foreach ($gateMutation in $gateMutations) {
+        { param($r) $r.contractStageGates[0].exitCode = '84' })
+    foreach ($schema3Mutation in $schema3Mutations) {
         $caseRecovery = Copy-Object $recovery
-        & $gateMutation $caseRecovery
+        & $schema3Mutation $caseRecovery
         Set-RecoveryContract $recoveryPath $caseRecovery $userSid $model
         Assert-CodeSet (
             Test-FslStage4FormalLauncherBundle -Model $model) (
             @('FSL-FLB-V010-SOURCE-RECOVERY')) (
-            'A gate count/order/duplicate/type/null mutation was accepted.')
+            'A schema-3 recovery authority mutation was accepted.')
         Restore-Bytes $recoveryPath $recoveryOriginal
-        Set-TestAcl $recoveryPath $userSid $false
+        & $module {
+            param($Path, $Sddl)
+            Set-FslFlbSddl $Path $Sddl $false
+        } $recoveryPath $recoveryOriginalSddl
         $model.recoveryAuthority.contractSha256 = Get-Sha $recoveryPath
     }
 
@@ -2006,10 +1941,106 @@ try {
         'Frozen release drift was accepted.')
     Restore-Bytes $releasePaths[0] $releaseOriginal
 
+    # The schema-v3 dual-authority seam is intentionally exercised here as
+    # static preparation behavior. The dedicated recovery-authority suite
+    # owns its full schema, packed-object, mutation, and ACL matrices.
+    $moduleText = [IO.File]::ReadAllText(
+        $modulePath,
+        [Text.UTF8Encoding]::new($false, $true))
+    $observerText = [IO.File]::ReadAllText(
+        $observerPath,
+        [Text.UTF8Encoding]::new($false, $true))
+    $helper = @($moduleAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq 'Test-FslFlbRecoveryAuthorityV3'
+    }, $true))
+    $helperCommands = @($helper[0].Body.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.CommandAst]
+    }, $true))
+    $seamChecks = @(
+        { $helper.Count -eq 1 },
+        { @($helperCommands | Where-Object {
+                    $_.GetCommandName() -ceq
+                        'Test-FslStage4RecoveryAuthorityBundle'
+                }).Count -eq 1 },
+        { @($helperCommands | Where-Object {
+                    $_.GetCommandName() -ceq
+                        'New-FslStage4RecoveryAuthorityBundle'
+                }).Count -eq 0 },
+        { $moduleText -match
+            'FolderSessionLock\.Stage4\.RecoveryAuthorityBundle\.psm1' },
+        { $moduleText -match
+            'CP10-TRACKED-DUAL-AUTHORITY-RECOVERY-BUNDLE-GENERATOR-VALIDATOR' },
+        { $moduleText -match
+            'executionStateAuthoritySha256' },
+        { $moduleText -match
+            'recoveryToolchainAuthoritySha256' },
+        { $moduleText -match 'toolchainRepositorySha256' },
+        { $moduleText -match 'recoveryGateMapSha256' },
+        { $moduleText -match '\$Gates\.Count -ne 56' },
+        { $moduleText -match "'FSL-RAB-CG-'" },
+        { $observerText -match
+            '\$fixedRecoveryValidatorPath\s*=' },
+        { $observerText -match
+            'Test-FslStage4RecoveryAuthorityBundle -Model \$recoveryModel' },
+        { $observerText -match
+            '\$gates=@\(\$opaque\.gates\);\$gatePrefix=''FSL-RAB-CG-'';\$gateCount=56' },
+        { $observerText -match
+            'Opaque recovery bindings drifted\.' },
+        { $observerText -match
+            'Dual recovery authority drifted\.' },
+        { $observerText -match
+            'executionStateAuthoritySha256' },
+        { $observerText -match
+            'recoveryToolchainAuthoritySha256' },
+        { $observerText -match
+            'toolchainRepositorySha256' },
+        { $observerText -match
+            'recoveryGateMapSha256' },
+        { $contract.bindingManifest.PSObject.Properties.Name -contains
+            'executionStateAuthoritySha256' },
+        { $contract.bindingManifest.PSObject.Properties.Name -contains
+            'recoveryToolchainAuthoritySha256' },
+        { $contract.bindingManifest.PSObject.Properties.Name -contains
+            'toolchainRepositorySha256' },
+        { @($module.ExportedFunctions.Keys | Sort-Object) -join '|' -ceq
+            'New-FslStage4FormalLauncherBundle|Test-FslStage4FormalLauncherBundle' })
+    $additionalSeamChecks = @(
+        { $moduleAst.EndBlock.Extent.Text.Length -gt 0 },
+        { @($module.ExportedFunctions.Keys).Count -eq 2 },
+        { Test-Path -LiteralPath (
+                Join-Path $projectRoot (
+                    'eng\stage4\FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')) },
+        { @($helperCommands | Where-Object {
+                    $_.GetCommandName() -ceq 'Import-Module'
+                }).Count -eq 1 },
+        { $observerText -notmatch
+            'New-FslStage4RecoveryAuthorityBundle' },
+        { $observerText -match
+            'schemaVersion=1;authorityProfile=\$fixedRecoveryAuthorityProfile' },
+        { $observerText -match
+            'sourceLeafName=\$fixedRecoverySourceLeaf' },
+        { $observerText -match
+            '\[string\]\$opaque\.executionGitCommit-ceq\s+\[string\]\$opaque\.recoveryGitCommit' })
+    for ($index = 0; $index -lt 24; $index++) {
+        $script:Cases++
+        Assert-True ([bool](& $seamChecks[$index])) (
+            "Schema-v3 Formal seam case $index failed.")
+        if ($index -lt 8) {
+            Assert-True ([bool](& $additionalSeamChecks[$index])) (
+                "Schema-v3 Formal seam additional assertion $index failed.")
+        }
+    }
+
     $final = Test-FslStage4FormalLauncherBundle -Model $model
     $script:Cases++
     Assert-True $final.isValid (
-        'The fixture did not return to a valid final state.')
+        'The fixture did not return to a valid final state: ' +
+        (@($final.errors | ForEach-Object {
+            $_.code + ':' + $_.target + ':' + $_.detail
+        }) -join '|'))
     Assert-True (-not (Test-Path -LiteralPath $latchPath)) (
         'Preparation or validation created the one-shot latch.')
 
@@ -2020,6 +2051,8 @@ try {
 finally {
     if ($null -ne $fixtureRoot -and
         (Test-Path -LiteralPath $fixtureRoot -PathType Container)) {
+        Get-ChildItem -LiteralPath $fixtureRoot -Recurse -Force -File |
+            ForEach-Object { $_.IsReadOnly = $false }
         [IO.Directory]::Delete($fixtureRoot, $true)
     }
     Remove-Module $module -Force -ErrorAction SilentlyContinue

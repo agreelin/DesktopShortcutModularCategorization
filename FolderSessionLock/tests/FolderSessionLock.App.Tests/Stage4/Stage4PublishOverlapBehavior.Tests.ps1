@@ -18,6 +18,7 @@ function Invoke-Publish {
     $arguments = @(
         'publish',
         $Project,
+        '--disable-build-servers',
         '-c', 'Release',
         '-r', 'win-x64',
         '--self-contained', 'false',

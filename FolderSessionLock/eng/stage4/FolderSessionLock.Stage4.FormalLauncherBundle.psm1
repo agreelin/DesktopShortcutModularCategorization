@@ -24,20 +24,6 @@ $script:FlbBundleNames = @(
 $script:FlbSourceNames = @(
     'elevated-reconcile.ps1',
     'recovery-contract.json')
-$script:FlbRecoveryNames = @(
-    'schemaVersion',
-    'contractId',
-    'checkpoint',
-    'contractStageGates',
-    'identity',
-    'source',
-    'canonical',
-    'transaction',
-    'release',
-    'allowedWrites',
-    'forbiddenActions',
-    'futureInvocation',
-    'binding')
 $script:FlbProfiles = @('Formal', 'TestFixture')
 $script:FlbZeros = '0' * 64
 $script:FlbSelfHashRule =
@@ -239,14 +225,14 @@ function Test-FslFlbLatchBytes {
                     ([int]$terminal.exitCode -eq 0 -and
                         $null -ne $terminal.gateId) -or
                     ([int]$terminal.exitCode -ge 84 -and
-                        [int]$terminal.exitCode -le 254 -and (
+                        [int]$terminal.exitCode -le 139 -and (
                             $terminal.gateId -isnot [string] -or
                             -not ([string]$terminal.gateId).StartsWith(
-                                ('FSL-CG-{0:D3}-' -f
+                                ('FSL-RAB-CG-{0:D3}-' -f
                                     ([int]$terminal.exitCode - 83)),
                                 [StringComparison]::Ordinal))) -or
                     (([int]$terminal.exitCode -lt 84 -or
-                        [int]$terminal.exitCode -gt 254) -and
+                        [int]$terminal.exitCode -gt 139) -and
                         [int]$terminal.exitCode -ne 0 -and
                         $null -ne $terminal.gateId)) {
                     return $false
@@ -2018,139 +2004,6 @@ function Test-FslFlbIndexClean {
         VerifyGitIndexAndTree($GitRoot, $GitDirectory, $ExpectedTree)
 }
 
-function Assert-FslFlbRecoveryShape {
-    param([psobject]$Recovery)
-    if (-not (Test-FslFlbNames $Recovery $script:FlbRecoveryNames) -or
-        $Recovery.schemaVersion -isnot [int] -or
-        [int]$Recovery.schemaVersion -ne 2 -or
-        -not (Test-FslFlbNames `
-            $Recovery.identity `
-            @(
-                'machineName',
-                'repository',
-                'branch',
-                'gitCommit',
-                'gitTree',
-                'runId',
-                'userSid')) -or
-        -not (Test-FslFlbNames `
-            $Recovery.source `
-            @('module', 'native', 'controller')) -or
-        -not (Test-FslFlbNames `
-            $Recovery.canonical `
-            @(
-                'evidenceRoot',
-                'evidenceFiles',
-                'externalAnchorRoot',
-                'externalAnchorFiles')) -or
-        -not (Test-FslFlbNames `
-            $Recovery.transaction `
-            @(
-                'transactionId',
-                'workflow',
-                'recoveryMode',
-                'planHash',
-                'planCount',
-                'operationIdentitySha256',
-                'prefixRecordSha256',
-                'directory',
-                'expectedPost')) -or
-        -not (Test-FslFlbNames `
-            $Recovery.transaction.directory `
-            @(
-                'path',
-                'finalPath',
-                'fileId',
-                'aclSddl',
-                'ordinaryDirectory',
-                'nonReparse',
-                'childCount')) -or
-        -not (Test-FslFlbNames `
-            $Recovery.transaction.expectedPost `
-            @(
-                'walRecordCount',
-                'latestGeneration',
-                'latestSlot',
-                'previousGeneration',
-                'previousSlot',
-                'stateSequence',
-                'stateTransition',
-                'directoryAbsent',
-                'programDataAbsent',
-                'serviceAbsent',
-                'addedPhases')) -or
-        -not (Test-FslFlbNames `
-            $Recovery.release `
-            @(
-                'root',
-                'fileCount',
-                'fingerprintSha256',
-                'descriptorSha256',
-                'manifestSha256',
-                'sumsSha256')) -or
-        -not (Test-FslFlbNames `
-            $Recovery.futureInvocation `
-            @(
-                'filePath',
-                'arguments',
-                'verb',
-                'passThru',
-                'wait',
-                'redirectStandardOutput',
-                'redirectStandardError')) -or
-        -not (Test-FslFlbNames $Recovery.binding @('wrapperSha256'))) {
-        Stop-FslFlb `
-            'FSL-FLB-V010-SOURCE-RECOVERY' `
-            'The recovery contract nested shape, order, case, or type is invalid.' `
-            $null
-    }
-    if ($Recovery.identity.machineName -isnot [string] -or
-        $Recovery.identity.repository -isnot [string] -or
-        $Recovery.identity.branch -isnot [string] -or
-        $Recovery.identity.gitCommit -isnot [string] -or
-        $Recovery.identity.gitTree -isnot [string] -or
-        $Recovery.identity.runId -isnot [string] -or
-        $Recovery.identity.userSid -isnot [string] -or
-        $Recovery.transaction.planCount -isnot [int] -or
-        $Recovery.transaction.directory.childCount -isnot [int] -or
-        $Recovery.transaction.directory.ordinaryDirectory -isnot [bool] -or
-        $Recovery.transaction.directory.nonReparse -isnot [bool] -or
-        $Recovery.transaction.expectedPost.walRecordCount -isnot [int] -or
-        $Recovery.transaction.expectedPost.latestGeneration -isnot [int] -or
-        $Recovery.transaction.expectedPost.previousGeneration -isnot [int] -or
-        $Recovery.transaction.expectedPost.stateSequence -isnot [int] -or
-        $Recovery.transaction.expectedPost.directoryAbsent -isnot [bool] -or
-        $Recovery.transaction.expectedPost.programDataAbsent -isnot [bool] -or
-        $Recovery.transaction.expectedPost.serviceAbsent -isnot [bool] -or
-        $Recovery.release.fileCount -isnot [int] -or
-        $Recovery.futureInvocation.passThru -isnot [bool] -or
-        $Recovery.futureInvocation.wait -isnot [bool] -or
-        $Recovery.futureInvocation.redirectStandardOutput -isnot [bool] -or
-        $Recovery.futureInvocation.redirectStandardError -isnot [bool] -or
-        $Recovery.allowedWrites -isnot [object[]] -or
-        $Recovery.forbiddenActions -isnot [object[]] -or
-        $Recovery.futureInvocation.arguments -isnot [object[]] -or
-        $Recovery.transaction.expectedPost.addedPhases -isnot [object[]]) {
-        Stop-FslFlb `
-            'FSL-FLB-V010-SOURCE-RECOVERY' `
-            'The recovery contract nested value types are invalid.' `
-            $null
-    }
-    foreach ($name in @('module', 'native', 'controller')) {
-        if (-not (Test-FslFlbNames `
-            (Get-FslFlbValue $Recovery.source $name) `
-            @('path', 'length', 'sha256'))) {
-            Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'A source binding shape is invalid.' $null
-        }
-    }
-    foreach ($entry in @($Recovery.canonical.evidenceFiles) +
-        @($Recovery.canonical.externalAnchorFiles)) {
-        if (-not (Test-FslFlbNames $entry @('path', 'length', 'sha256'))) {
-            Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'A canonical binding shape is invalid.' $null
-        }
-    }
-}
-
 function Get-FslFlbFileRecord {
     param([string]$Path)
     $identity = Get-FslFlbIdentity $Path $false
@@ -2191,6 +2044,42 @@ function Assert-FslFlbBoundFile {
             [string]$Record.aclSddl) {
         Stop-FslFlb 'FSL-FLB-V013-ACL' 'A bound file ACL drifted.' $null
     }
+}
+
+function Test-FslFlbRecoveryAuthorityV3 {
+    param([psobject]$Model)
+    $modulePath = Join-Path $PSScriptRoot (
+        'FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')
+    if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The tracked recovery-authority validator is unavailable.' `
+            $null
+    }
+    $validator = Import-Module $modulePath -Force -PassThru
+    $recoveryModel = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        authorityProfile = [string]$Model.authorityProfile
+        contractId = [string]$Model.recoveryAuthority.contractId
+        checkpoint =
+            'CP10-TRACKED-DUAL-AUTHORITY-RECOVERY-BUNDLE-GENERATOR-VALIDATOR'
+        runId = [string]$Model.runId
+        rootBinding = [pscustomobject][ordered]@{
+            fixtureId = $Model.rootBinding.fixtureId
+            sourceLeafName = [string]$Model.rootBinding.sourceLeafName
+        }
+    }
+    $result = Test-FslStage4RecoveryAuthorityBundle -Model $recoveryModel
+    if (-not [bool]$result.isValid -or
+        $null -eq $result.opaqueAuthority) {
+        $codes = @($result.errors | ForEach-Object code) -join ','
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            ('The tracked recovery-authority validator failed closed: ' +
+                $codes + '.') `
+            $null
+    }
+    return $result
 }
 
 function Resolve-FslFlbAuthority {
@@ -2270,55 +2159,76 @@ function Resolve-FslFlbAuthority {
             Stop-FslFlb 'FSL-FLB-V013-ACL' 'A source file identity or ACL is invalid.' $null
         }
     }
-    if ([string]$Model.authorityProfile -ceq 'TestFixture') {
-        $wrapperText = [IO.File]::ReadAllText(
-            $wrapperPath,
-            [Text.UTF8Encoding]::new($false, $true))
-        if ($wrapperText -cnotmatch
-            "(?m)^\s*throw 'TEST_FIXTURE_NEVER_EXECUTE'\s*$") {
-            Stop-FslFlb `
-                'FSL-FLB-V010-SOURCE-RECOVERY' `
-                'A TestFixture wrapper must be an explicit non-executable sentinel.' `
-                $null
-        }
-    }
     $recoveryHash = Get-FslFlbSha256 $recoveryPath
     if ($recoveryHash -cne
             [string]$Model.recoveryAuthority.contractSha256) {
         Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The public recovery hash binding drifted.' $null
     }
-    $rawRecovery = [IO.File]::ReadAllText(
-        $recoveryPath,
-        [Text.UTF8Encoding]::new($false, $true))
-    $recovery = $rawRecovery | ConvertFrom-Json
-    Assert-FslFlbRecoveryShape $recovery
-    if ([string]$recovery.contractId -cne
-            [string]$Model.recoveryAuthority.contractId) {
-        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The recovery contract ID drifted.' $null
+    $validated = Test-FslFlbRecoveryAuthorityV3 $Model
+    $opaque = $validated.opaqueAuthority
+    if ([string]$opaque.contractId -cne
+            [string]$Model.recoveryAuthority.contractId -or
+        [string]$opaque.contractSha256 -cne $recoveryHash -or
+        [string]$opaque.executionGitCommit -ceq
+            [string]$opaque.recoveryGitCommit) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The opaque schema-v3 dual-authority binding failed.' `
+            $null
     }
-    $gates = @($recovery.contractStageGates)
-    if ($gates.Count -ne 171) {
-        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The recovery gate count drifted.' $null
+    $repository = [pscustomobject][ordered]@{
+        projectRoot = [string]$opaque.recoveryRepository
+        gitRoot = [string]$opaque.recoveryGitRoot
+        gitDirectory = [string]$opaque.recoveryGitDirectory
+        branch = [string]$opaque.recoveryBranch
+        head = [string]$opaque.recoveryGitCommit
+        tree = [string]$opaque.recoveryGitTree
+        trackedClean = [bool]$opaque.recoveryTrackedClean
     }
+    $directoryRecord = Get-FslFlbDirectoryRecord (
+        [string]$opaque.systemPrestate.installDirectory)
+    $transaction = $opaque.transaction |
+        ConvertTo-Json -Depth 32 -Compress |
+        ConvertFrom-Json
+    $transaction | Add-Member `
+        -NotePropertyName directory `
+        -NotePropertyValue ([pscustomobject][ordered]@{
+            path = $directoryRecord.path
+            finalPath = $directoryRecord.finalPath
+            fileId = $directoryRecord.fileId
+            aclSddl = $directoryRecord.aclSddl
+            ordinaryDirectory = $true
+            nonReparse = $true
+            childCount = $directoryRecord.childCount
+        })
+    $recovery = [pscustomobject][ordered]@{
+        schemaVersion = 3
+        contractId = [string]$opaque.contractId
+        checkpoint = [string]$Model.checkpoint
+        contractStageGates = @($opaque.gates)
+        canonical = [pscustomobject][ordered]@{
+            evidenceRoot = [string]$opaque.canonicalEvidence.root
+            evidenceFiles = @(
+                $opaque.executionEvidence.state
+                $opaque.executionEvidence.journal
+                $opaque.executionEvidence.installWal
+                @($opaque.canonicalEvidence.files))
+            externalAnchorRoot = [string]$opaque.externalAnchors.root
+            externalAnchorFiles = @($opaque.externalAnchors.files)
+        }
+        transaction = $transaction
+        release = $opaque.release
+        futureInvocation = $opaque.futureInvocation
+        binding = [pscustomobject][ordered]@{
+            wrapperSha256 = [string]$opaque.wrapperSha256
+        }
+    }
+    $gates = @($opaque.gates)
     if (-not (Test-FslFlbGateMapDto $gates)) {
         Stop-FslFlb `
             'FSL-FLB-V010-SOURCE-RECOVERY' `
             'The recovery gate map drifted.' `
             $null
-    }
-    $repository = Get-FslFlbRepository
-    if ([string]$recovery.identity.machineName -cne [Environment]::MachineName -or
-        [string]$recovery.identity.repository -cne $repository.projectRoot -or
-        [string]$recovery.identity.branch -cne $repository.branch -or
-        [string]$recovery.identity.gitCommit -cne $repository.head -or
-        [string]$recovery.identity.gitTree -cne $repository.tree -or
-        [string]$recovery.identity.runId -cne [string]$Model.runId -or
-        [string]$recovery.identity.userSid -cne $sid) {
-        Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'Recovery/current authority cross-check failed.' $null
-    }
-    foreach ($name in @('module', 'native', 'controller')) {
-        $record = Get-FslFlbValue $recovery.source $name
-        Assert-FslFlbBoundFile $record $false
     }
     if ((Get-FslFlbSha256 $wrapperPath) -cne
         [string]$recovery.binding.wrapperSha256) {
@@ -2354,16 +2264,17 @@ function Resolve-FslFlbAuthority {
     }
     $releaseRoot = [string]$recovery.release.root
     $releaseFiles = @(Get-ChildItem -LiteralPath $releaseRoot -File -Force)
-    if ($releaseFiles.Count -ne [int]$recovery.release.fileCount) {
+    foreach ($record in @($recovery.release.files)) {
+        Assert-FslFlbBoundFile $record $false
+    }
+    $releaseExpected = @($recovery.release.files |
+        ForEach-Object { [string]$_.path })
+    if ($releaseFiles.Count -ne [int]$recovery.release.fileCount -or
+        -not (Test-FslFlbExactSet (
+            @($releaseFiles | ForEach-Object FullName)) $releaseExpected)) {
         Stop-FslFlb 'FSL-FLB-V010-SOURCE-RECOVERY' 'The Release exact set drifted.' $null
     }
-    $releaseLines = @($releaseFiles | Sort-Object Name | ForEach-Object {
-        $_.Name + '|' + $_.Length + '|' + (Get-FslFlbSha256 $_.FullName)
-    })
-    if ((Get-FslFlbSha256Bytes (
-            Get-FslFlbBytes ($releaseLines -join "`n"))) -cne
-            [string]$recovery.release.fingerprintSha256 -or
-        (Get-FslFlbSha256 (
+    if ((Get-FslFlbSha256 (
             Join-Path $releaseRoot 'release-descriptor.json')) -cne
             [string]$recovery.release.descriptorSha256 -or
         (Get-FslFlbSha256 (
@@ -2469,6 +2380,18 @@ function Resolve-FslFlbAuthority {
             recoveryContractId = [string]$recovery.contractId
             recoveryContractSha256 = $recoveryHash
             recoveryGateMapSha256 = Get-FslFlbMapHash $gates
+            executionStateAuthoritySha256 = if ($null -eq $opaque) {
+                $null
+            }
+            else { [string]$opaque.executionStateAuthoritySha256 }
+            recoveryToolchainAuthoritySha256 = if ($null -eq $opaque) {
+                $null
+            }
+            else { [string]$opaque.recoveryToolchainAuthoritySha256 }
+            toolchainRepositorySha256 = if ($null -eq $opaque) {
+                $null
+            }
+            else { [string]$opaque.toolchainRepositorySha256 }
         }
         currentBindings = [pscustomobject][ordered]@{
             sourceRoot = Get-FslFlbDirectoryRecord $roots.sourceRoot
@@ -2629,8 +2552,8 @@ function Get-FslFlbPolicy {
             temporalRelation =
                 'record1.timestampUtc <= record2.timestampUtc <= record3.timestampUtc'
             preAppendReadOnly = $true
-            recoveryGateMappingSchemaVersion = 2
-            recoveryGateMappingCount = 171
+            recoveryGateMappingSchemaVersion = 3
+            recoveryGateMappingCount = 56
         }
         exitCodes = [pscustomobject]$script:FlbExitCodes
         allowedWrites = $script:FlbAllowedWrites
@@ -2674,18 +2597,18 @@ function Get-FslFlbPredicateTexts {
 
 function Test-FslFlbGateMapDto {
     param([object[]]$Gates)
-    if ($Gates.Count -ne 171) { return $false }
+    if ($Gates.Count -ne 56) { return $false }
     $gateIds = [Collections.Generic.HashSet[string]]::new(
         [StringComparer]::Ordinal)
     $exitCodes = [Collections.Generic.HashSet[int]]::new()
-    for ($index = 0; $index -lt 171; $index++) {
+    for ($index = 0; $index -lt 56; $index++) {
         $gate = $Gates[$index]
         if ($null -eq $gate -or
             -not (Test-FslFlbNames $gate @('gateId', 'exitCode')) -or
             $gate.gateId -isnot [string] -or
             $gate.exitCode -isnot [int] -or
             -not ([string]$gate.gateId).StartsWith(
-                ('FSL-CG-{0:D3}-' -f ($index + 1)),
+                ('FSL-RAB-CG-{0:D3}-' -f ($index + 1)),
                 [StringComparison]::Ordinal) -or
             [int]$gate.exitCode -ne 84 + $index -or
             -not $gateIds.Add([string]$gate.gateId) -or
@@ -2873,6 +2796,11 @@ $fixedObserverPath = @@OBSERVER@@
 $fixedOuterPath = @@OUTER@@
 $fixedRecoveryPath = @@RECOVERY@@
 $fixedWrapperPath = @@WRAPPER@@
+$fixedRecoveryValidatorPath = @@RECOVERY_VALIDATOR@@
+$fixedRecoveryAuthorityProfile = @@RECOVERY_PROFILE@@
+$fixedRecoveryAuthorityContractId = @@RECOVERY_CONTRACT_ID@@
+$fixedRecoveryFixtureId = @@RECOVERY_FIXTURE_ID@@
+$fixedRecoverySourceLeaf = @@RECOVERY_SOURCE_LEAF@@
 $fixedRepository = @@REPOSITORY@@
 $fixedGitRoot = @@GITROOT@@
 $fixedGitDirectory = @@GITDIR@@
@@ -3747,17 +3675,40 @@ function Assert-FormalPreLatch([psobject]$Contract,[string]$Raw) {
        [string]$Contract.bindingManifest.recoveryContract.sha256){
       Stop-Observer 70 'Recovery hash drifted.'}
     $recovery=$recoveryRaw|ConvertFrom-Json
-    $gates=@($recovery.contractStageGates)
-    if([int]$recovery.schemaVersion-ne2 -or $gates.Count-ne171){
+    if([int]$recovery.schemaVersion-ne3){
       Stop-Observer 70 'Recovery schema drifted.'}
+    Import-Module $fixedRecoveryValidatorPath -Force
+    $recoveryModel=[pscustomobject][ordered]@{
+      schemaVersion=1;authorityProfile=$fixedRecoveryAuthorityProfile
+      contractId=$fixedRecoveryAuthorityContractId
+      checkpoint='CP10-TRACKED-DUAL-AUTHORITY-RECOVERY-BUNDLE-GENERATOR-VALIDATOR'
+      runId=$fixedRunId
+      rootBinding=[pscustomobject][ordered]@{
+        fixtureId=$fixedRecoveryFixtureId
+        sourceLeafName=$fixedRecoverySourceLeaf}}
+    $validated=Test-FslStage4RecoveryAuthorityBundle -Model $recoveryModel
+    if(-not[bool]$validated.isValid -or $null-eq$validated.opaqueAuthority){
+      Stop-Observer 70 'Recovery authority validation failed.'}
+    $opaque=$validated.opaqueAuthority
+    if([string]$opaque.executionStateAuthoritySha256-cne
+         [string]$Contract.bindingManifest.executionStateAuthoritySha256 -or
+       [string]$opaque.recoveryToolchainAuthoritySha256-cne
+         [string]$Contract.bindingManifest.recoveryToolchainAuthoritySha256 -or
+       [string]$opaque.toolchainRepositorySha256-cne
+         [string]$Contract.bindingManifest.toolchainRepositorySha256 -or
+       [string]$opaque.recoveryGateMapSha256-cne
+         [string]$Contract.bindingManifest.recoveryGateMapSha256){
+      Stop-Observer 70 'Opaque recovery bindings drifted.'}
+    $gates=@($opaque.gates);$gatePrefix='FSL-RAB-CG-';$gateCount=56
+    if($gates.Count-ne$gateCount){Stop-Observer 70 'Recovery gate count drifted.'}
     $map=@();$exitMap=[Collections.Generic.Dictionary[int,string]]::new()
-    for($i=0;$i-lt171;$i++){
+    for($i=0;$i-lt$gateCount;$i++){
       if(@($gates[$i].PSObject.Properties).Count-ne2 -or
          $gates[$i].PSObject.Properties[0].Name-cne'gateId' -or
          $gates[$i].PSObject.Properties[1].Name-cne'exitCode' -or
          $gates[$i].exitCode-isnot[int] -or
          -not([string]$gates[$i].gateId).StartsWith(
-           ('FSL-CG-{0:D3}-'-f($i+1)),[StringComparison]::Ordinal) -or
+           ($gatePrefix+('{0:D3}-'-f($i+1))),[StringComparison]::Ordinal) -or
          [int]$gates[$i].exitCode-ne84+$i -or
          $exitMap.ContainsKey([int]$gates[$i].exitCode)){
          Stop-Observer 70 'Recovery gate map drifted.'}
@@ -3766,11 +3717,12 @@ function Assert-FormalPreLatch([psobject]$Contract,[string]$Raw) {
     if((Get-TextHash($map-join"`n"))-cne
        [string]$Contract.authority.source.recoveryGateMapSha256){
       Stop-Observer 70 'Recovery gate-map hash drifted.'}
-    if([string]$recovery.identity.repository-cne$fixedRepository -or
-       [string]$recovery.identity.machineName-cne[Environment]::MachineName -or
-       [string]$recovery.identity.runId-cne$fixedRunId -or
-       [string]$recovery.identity.userSid-cne$fixedSid){
-      Stop-Observer 71 'Recovery identity drifted.'}
+    if([string]$opaque.recoveryRepository-cne$fixedRepository -or
+       [string]$opaque.recoveryGitCommit-cne$fixedGitHead -or
+       [string]$opaque.recoveryGitTree-cne$fixedGitTree -or
+       [string]$opaque.executionGitCommit-ceq
+         [string]$opaque.recoveryGitCommit){
+      Stop-Observer 71 'Dual recovery authority drifted.'}
     Assert-GitAuthority $Contract
     Assert-CurrentRoot $Contract.authority.currentBindings.evidenceRoot 72
     foreach($file in @($Contract.authority.currentBindings.evidenceFiles)){
@@ -3955,12 +3907,31 @@ try {
 catch {Stop-Observer 80 'Observer failed closed.'}
 '@
     $source = @($Authority.source.files)
+    $recoveryValidatorPath = Join-Path $PSScriptRoot (
+        'FolderSessionLock.Stage4.RecoveryAuthorityBundle.psm1')
+    $fixtureLiteral = if ($null -eq $Model.rootBinding.fixtureId) {
+        '$null'
+    }
+    else {
+        ConvertTo-FslFlbLiteral ([string]$Model.rootBinding.fixtureId)
+    }
     $text = $template.
         Replace('@@CONTRACT@@', (ConvertTo-FslFlbLiteral $Policy.files.contractPath)).
         Replace('@@OBSERVER@@', (ConvertTo-FslFlbLiteral $Policy.files.observerPath)).
         Replace('@@OUTER@@', (ConvertTo-FslFlbLiteral $Policy.files.outerLauncherPath)).
         Replace('@@RECOVERY@@', (ConvertTo-FslFlbLiteral $source[1].path)).
         Replace('@@WRAPPER@@', (ConvertTo-FslFlbLiteral $source[0].path)).
+        Replace('@@RECOVERY_VALIDATOR@@', (
+            ConvertTo-FslFlbLiteral $recoveryValidatorPath)).
+        Replace('@@RECOVERY_PROFILE@@', (
+            ConvertTo-FslFlbLiteral ([string]$Model.authorityProfile))).
+        Replace('@@RECOVERY_CONTRACT_ID@@', (
+            ConvertTo-FslFlbLiteral (
+                [string]$Model.recoveryAuthority.contractId))).
+        Replace('@@RECOVERY_FIXTURE_ID@@', $fixtureLiteral).
+        Replace('@@RECOVERY_SOURCE_LEAF@@', (
+            ConvertTo-FslFlbLiteral (
+                [string]$Model.rootBinding.sourceLeafName))).
         Replace('@@REPOSITORY@@', (ConvertTo-FslFlbLiteral $Authority.repository.projectRoot)).
         Replace('@@GITROOT@@', (ConvertTo-FslFlbLiteral $Authority.repository.gitRoot)).
         Replace('@@GITDIR@@', (ConvertTo-FslFlbLiteral $Authority.repository.gitDirectory)).
@@ -4032,6 +4003,12 @@ function New-FslFlbContractBase {
             }
             recoveryGateMapSha256 =
                 [string]$Authority.source.recoveryGateMapSha256
+            executionStateAuthoritySha256 =
+                $Authority.source.executionStateAuthoritySha256
+            recoveryToolchainAuthoritySha256 =
+                $Authority.source.recoveryToolchainAuthoritySha256
+            toolchainRepositorySha256 =
+                $Authority.source.toolchainRepositorySha256
             currentAuthorityCanonicalSha256 = Get-FslFlbSha256Bytes (
                 Get-FslFlbBytes (
                     ConvertTo-FslFlbCanonicalJson $Authority))
