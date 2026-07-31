@@ -1485,3 +1485,58 @@
   and FLB-7/Attempt007, including the complete generated pre-latch runtime
   diagnostic, before any UAC activity. WAL rollback, anchors 14/13,
   installation, restart, D-026, Release, and final Stage 4 remain incomplete.
+
+## 2026-07-31 — CP10 Attempt007 cache TREE sibling-order repair
+
+- From clean commit `4195d49ffb2887b3ae7dd8e8f07ac536401edbcb`, tree
+  `b840ad6335b18594059d80b223a262b6c5ee45e5`, formal preparation created
+  immutable RAB-6 `install-wal-rollback-6` and FLB-7
+  `install-wal-rollback-launch-observer-7` for Attempt007. The RAB canonical
+  SHA-256 was
+  `0AD74E42E42904F56DBF5B3347979BF879BE724E4B0272E81E5CCB3CF772E40F`;
+  its wrapper and contract file SHA-256 values were
+  `CC0A2EF28889ABF575BC80C6331633E07C1D41BFE63311BD426FE87DBBDB19A3`
+  and `44B25FC6948D64B9A9AEF816F5F942B917D09BC23496A1BCC6FF8490E3BC5261`.
+  The FLB canonical SHA-256 was
+  `33DB3BC00DFE277FC09EBB5357AC40FBED6F0B857BDDBDB3469CC8A34E8A139B`;
+  its outer, observer, and contract file SHA-256 values were
+  `64FFABD506D973EB1E4E9A086A52916D221F7EE5EAC80316444515E082D9BDA4`,
+  `E043B5973CE99CA822F95EBCBA4ACCC40077F7A253F52F16A78B787B02139C90`,
+  and `DBCA7E9934C6B6A7EC6FE8980D0AED9209CF7A959836A8F7A833E9A8F46A25E4`.
+- Independent root verification executed the actual generated pre-latch
+  definitions through all prior repaired paths without invoking the observer
+  top level or outer launcher. It reached the repository gate and failed
+  closed with exit 71 / `Current Git authority drifted.` The Attempt007 outer
+  was never invoked, and `launch-attempt.jsonl` was never created.
+- The failure was deterministic. The old main and emitted observer verifiers
+  byte-compared the index `TREE` extension with a cache tree reconstructed
+  using ordinal sibling order. Git's cache `TREE` sibling records are semantic
+  bindings and may occur in a different valid order. The real index, worktree,
+  HEAD tree, entry counts, paths, and object IDs were otherwise consistent.
+- RED reproduced rejection of a valid cache `TREE` with reordered siblings.
+  The repair parses cache nodes and matches each sibling by exact path while
+  preserving duplicate rejection, subtree count, entry count, object-ID,
+  bounds, UTF-8, path, index, worktree, and HEAD-tree gates. GREEN passed
+  `STAGE4_FORMAL_LAUNCHER_BUNDLE_PASS Cases=243 Assertions=313`; the focused
+  C# bridge passed 1/1 with 0 failed and 0 skipped. Release build completed
+  with 0 warnings and 0 errors; format and diff checks passed; the real private
+  repository verifier returned `trackedClean=true`.
+- Reviewer returned `PASS`, `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`. The repair
+  was committed as `01c2a8bfd1e9e4835511f68f8b9cedd85e48ae16`, tree
+  `3e528578184c92c0a689cad137b68c98a9097531`.
+- Fixed RunId `20260727T144929Z-e5b6c040`, frozen execution
+  `3170d89cfd6066ba494170826cd43626d83c6789` / tree
+  `6bee7c4db4c9adde0612aa7c67467a331d20263e`, state sequence 6 /
+  `InstallStarted`, WAL 4, and authenticated current anchor generations 11/10
+  remained unchanged. No UAC, RunAs, WAL, state, journal, anchor, Program
+  Files, ProgramData, service, process, pipe, restart, or other system mutation
+  occurred.
+- RAB-6, FLB-7, and Attempt007 are retained only as failure evidence and are
+  permanently non-reusable after the toolchain commit changed. After a new
+  documentation commit-freeze, the next formal action must generate and
+  independently validate RAB-7 `install-wal-rollback-7` with contract
+  `FSL-CP10-INSTALL-WAL-ROLLBACK-RECOVERY-7`, then FLB-8
+  `install-wal-rollback-launch-observer-8` with contract
+  `FSL-CP10-INSTALL-WAL-ROLLBACK-LAUNCH-OBSERVER-8`. The only next attempt is
+  `CP10-IWRR-LAUNCH-ATTEMPT-008`. WAL rollback, anchors 14/13, installation,
+  restart, D-026, Release, and final Stage 4 remain incomplete.
