@@ -1388,3 +1388,54 @@
   and FLB-5/Attempt005, including the complete generated pre-latch runtime
   diagnostic, before any UAC activity. WAL rollback, anchors 14/13,
   installation, restart, D-026, Release, and final Stage 4 remain incomplete.
+
+## 2026-07-31 — CP10 Attempt005 opaque recovery gate-binding repair
+
+- From clean commit `b2bd99c2ca94e512af5ac57d733eddc4075a0202`, tree
+  `b10c1190c624155073c5a670d7e646ef23c9187d`, formal preparation created
+  immutable RAB-4 `install-wal-rollback-4` and FLB-5
+  `install-wal-rollback-launch-observer-5` exactly once. Both public validators
+  returned `Valid=True`, `Errors=0`. Their canonical SHA-256 values were
+  `10A4E34FF4791330AE978F4A07E838AB07210CE76F8334CD97EC6EB424266483`
+  and `6C67F8EE8FDC34EB9238F8E3BCCB280FE3884D2D12FB45CF75A39226977552A2`.
+- Root verification isolated and executed the complete actual generated
+  `Assert-FormalPreLatch` runtime path without executing the observer top
+  level, outer launcher, latch creation, or RunAs. It failed closed at exit 70
+  with `Opaque recovery bindings drifted.` Attempt005 outer was never invoked
+  and `launch-attempt.jsonl` was never created.
+- The four-field comparison was minimized deterministically. Execution-state,
+  recovery-toolchain, and repository authority hashes matched. Only the gate
+  binding differed: RAB validator opaque authority returned
+  `54814C482F0EE54AC4112826895ADBBE830D58963AE916FD0435359BEE512D5B`,
+  while the FLB manifest contained
+  `AA64692C7AA921784EA074E5859ADC903CDB1B781CEC0C0AD63820B5C91BC1E9`.
+  The former is the RAB contract binding-manifest authority hash; the latter is
+  the separately valid hash of the ordered actual gate-map content.
+- The FLB contract builder had used
+  `Authority.source.recoveryGateMapSha256` for both meanings. The generated
+  observer first compares the manifest field with the RAB opaque authority and
+  later independently recomputes the actual map hash against the authority
+  source. The builder therefore made its own two runtime predicates mutually
+  inconsistent.
+- The repair reads the already length/SHA-bound RAB contract with strict UTF-8,
+  validates the opaque gate hash shape, writes that authority value to the FLB
+  binding manifest, and leaves the actual gate-map content hash unchanged in
+  `authority.source`. A new cross-module regression case requires the generated
+  FLB manifest value to equal the RAB public validator's opaque authority.
+  RED reproduced the exact mismatch; GREEN passed
+  `STAGE4_FORMAL_LAUNCHER_BUNDLE_PASS Cases=243 Assertions=313`. The focused C#
+  bridge passed 1/1 with 0 failed and 0 skipped; both PowerShell parsers,
+  `dotnet format --verify-no-changes`, `git diff --check`, and debug, TEMP,
+  process, service, and latch residue checks passed.
+- Reviewer returned `PASS`, `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`. The focused
+  two-file repair was committed as
+  `f9df12b51274fac5e41dae82f4f2bef4fa7c3393`, tree
+  `c152bee60ee7e61eb300f83e0e3dbdb4a19f0be9`. No UAC, RunAs, reconciler,
+  WAL, state, journal, anchor, Program Files, ProgramData, service, process, or
+  pipe mutation occurred.
+- RAB-4, FLB-5, and Attempt005 are retained only as failure evidence and must
+  not authorize a later launch after the toolchain commit changed. The next
+  formal checkpoint must generate and independently validate immutable RAB-5
+  and FLB-6/Attempt006, including the complete generated pre-latch runtime
+  diagnostic, before any UAC activity. WAL rollback, anchors 14/13,
+  installation, restart, D-026, Release, and final Stage 4 remain incomplete.
