@@ -2581,14 +2581,34 @@ try {
                 $record3Readback -gt $record3Write -and
                 $record3Readback -lt $successExit) (
                 'RunAs argv or r1/r2/pre-r3/r3 exact latch readback order drifted.')
+            $preambleEnd = $observerText.IndexOf(
+                'function Initialize-NativeIdentity {',
+                [StringComparison]::Ordinal)
+            $preambleState = $null
+            if ($preambleEnd -gt 0) {
+                try {
+                    $preamble = [ScriptBlock]::Create(
+                        $observerText.Substring(0, $preambleEnd) +
+                        "`n[pscustomobject]@{" +
+                        " trackedClean = `$fixedTrackedClean }")
+                    $preambleState = & $preamble
+                }
+                catch {
+                    $preambleState = $null
+                }
+            }
             Assert-True (
+                $null -ne $preambleState -and
+                $preambleState.trackedClean -is [bool] -and
+                [bool]$preambleState.trackedClean -and
                 $observerText.IndexOf(
                     'Test fixtures are never formal-execution eligible.',
                     [StringComparison]::Ordinal) -lt
                 $observerText.IndexOf(
                     "    Initialize-NativeIdentity`n",
                     [StringComparison]::Ordinal)) (
-                'TestFixture rejection did not precede native proof activity.')
+                'The observer preamble was not executable with a bound ' +
+                'Boolean, or TestFixture rejection did not precede native proof.')
         }
     }
     $moduleAst = [Management.Automation.Language.Parser]::ParseFile(

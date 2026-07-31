@@ -5436,6 +5436,12 @@ catch {Stop-Observer 80 'Observer failed closed.'}
     else {
         ConvertTo-FslFlbLiteral ([string]$Model.rootBinding.fixtureId)
     }
+    $trackedCleanLiteral = if ([bool]$Authority.repository.trackedClean) {
+        '$true'
+    }
+    else {
+        '$false'
+    }
     $text = $template.
         Replace('@@CONTRACT@@', (ConvertTo-FslFlbLiteral $Policy.files.contractPath)).
         Replace('@@OBSERVER@@', (ConvertTo-FslFlbLiteral $Policy.files.observerPath)).
@@ -5459,7 +5465,7 @@ catch {Stop-Observer 80 'Observer failed closed.'}
         Replace('@@GITBRANCH@@', (ConvertTo-FslFlbLiteral $Authority.repository.branch)).
         Replace('@@GITHEAD@@', (ConvertTo-FslFlbLiteral $Authority.repository.head)).
         Replace('@@GITTREE@@', (ConvertTo-FslFlbLiteral $Authority.repository.tree)).
-        Replace('@@TRACKEDCLEAN@@', ([string][bool]$Authority.repository.trackedClean)).
+        Replace('@@TRACKEDCLEAN@@', $trackedCleanLiteral).
         Replace('@@POWERSHELL@@', (ConvertTo-FslFlbLiteral $Authority.executable.powerShellPath)).
         Replace('@@WORKING@@', (ConvertTo-FslFlbLiteral $Authority.executable.workingDirectory)).
         Replace('@@COMMAND@@', (ConvertTo-FslFlbLiteral $Policy.nativeOuterLaunch.commandLine)).
