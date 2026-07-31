@@ -5483,6 +5483,41 @@ catch {Stop-Observer 80 'Observer failed closed.'}
 }
 
 # Responsibility 6: canonical manifest with non-circular self hash.
+function Get-FslFlbRecoveryAuthorityGateMapSha256 {
+    param([psobject]$Authority)
+    $record = @($Authority.source.files)[1]
+    try {
+        $bytes = [IO.File]::ReadAllBytes([string]$record.path)
+        if ([int64]$record.length -ne [int64]$bytes.Length -or
+            [string]$record.sha256 -cne
+                (Get-FslFlbSha256Bytes $bytes)) {
+            Stop-FslFlb `
+                'FSL-FLB-V010-SOURCE-RECOVERY' `
+                'The recovery contract binding drifted.' `
+                $null
+        }
+        $raw = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        $contract = $raw | ConvertFrom-Json
+    }
+    catch {
+        if ($_.Exception.Data.Contains('FslFormalLauncherBundleCode')) {
+            throw
+        }
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The recovery contract binding could not be read.' `
+            $_.Exception
+    }
+    $hash = [string]$contract.bindingManifest.recoveryGateMapSha256
+    if ($hash -cnotmatch $script:FlbShaPattern) {
+        Stop-FslFlb `
+            'FSL-FLB-V010-SOURCE-RECOVERY' `
+            'The recovery authority gate-map binding is invalid.' `
+            $null
+    }
+    return $hash
+}
+
 function New-FslFlbContractBase {
     param(
         [psobject]$Model,
@@ -5490,6 +5525,8 @@ function New-FslFlbContractBase {
         [psobject]$Policy,
         [byte[]]$OuterBytes,
         [byte[]]$ObserverBytes)
+    $recoveryAuthorityGateMapSha256 =
+        Get-FslFlbRecoveryAuthorityGateMapSha256 $Authority
     return [ordered]@{
         schemaVersion = 1
         authorityProfile = [string]$Model.authorityProfile
@@ -5529,7 +5566,7 @@ function New-FslFlbContractBase {
                     [string]$Authority.source.recoveryContractSha256
             }
             recoveryGateMapSha256 =
-                [string]$Authority.source.recoveryGateMapSha256
+                $recoveryAuthorityGateMapSha256
             executionStateAuthoritySha256 =
                 $Authority.source.executionStateAuthoritySha256
             recoveryToolchainAuthoritySha256 =

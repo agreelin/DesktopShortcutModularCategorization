@@ -1306,6 +1306,18 @@ try {
     $contractRaw = [Text.UTF8Encoding]::new($false, $true).GetString(
         $contractBytes)
     $contract = $contractRaw | ConvertFrom-Json
+    $recoveryValidation = & $recoveryModule {
+        param($RecoveryModel)
+        Test-FslStage4RecoveryAuthorityBundle -Model $RecoveryModel
+    } $recoveryModel
+    $script:Cases++
+    Assert-True (
+        [bool]$recoveryValidation.isValid -and
+        $null -ne $recoveryValidation.opaqueAuthority -and
+        [string]$contract.bindingManifest.recoveryGateMapSha256 -ceq
+            [string]$recoveryValidation.
+                opaqueAuthority.recoveryGateMapSha256) (
+        'The FLB manifest did not preserve the opaque RAB gate-map binding.')
     [uint32]$expectedCreateBreakawayFromJob = 0x01000000
     [uint32]$expectedCreateNoWindow = 0x08000000
     [uint32]$expectedCreationFlags =
