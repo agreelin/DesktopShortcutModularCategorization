@@ -2610,6 +2610,7 @@ try {
                 }
             }
             $currentRootProbePassed = $false
+            $gateLoopProbePassed = $false
             $topLevelMarker = "`ntry {`n  if(`$PSBoundParameters.Count-ne0"
             $topLevelOffset = $observerText.LastIndexOf(
                 $topLevelMarker,
@@ -2646,6 +2647,33 @@ function Stop-Observer([int]$Code,[string]$Message) {
                     catch {
                         $currentRootProbePassed = $false
                     }
+                    $gateLoopStart = $observerText.IndexOf(
+                        '$gates=@($opaque.gates);$gatePrefix=',
+                        [StringComparison]::Ordinal)
+                    $gateLoopEnd = $observerText.IndexOf(
+                        '    if([string]$opaque.recoveryRepository',
+                        $gateLoopStart,
+                        [StringComparison]::Ordinal)
+                    if ($gateLoopStart -ge 0 -and
+                        $gateLoopEnd -gt $gateLoopStart) {
+                        $probeOpaque = $recoveryValidation.opaqueAuthority
+                        $probeContract = $contract
+                        try {
+                            $gateProbe = [ScriptBlock]::Create(
+                                $probePrefix +
+                                "`n`$opaque=`$probeOpaque" +
+                                "`n`$Contract=`$probeContract" +
+                                "`n" +
+                                $observerText.Substring(
+                                    $gateLoopStart,
+                                    $gateLoopEnd - $gateLoopStart) +
+                                "`n(`$exitMap.Count -eq 56)")
+                            $gateLoopProbePassed = [bool](& $gateProbe)
+                        }
+                        catch {
+                            $gateLoopProbePassed = $false
+                        }
+                    }
                 }
             }
             Assert-True (
@@ -2653,6 +2681,7 @@ function Stop-Observer([int]$Code,[string]$Message) {
                 $preambleState.trackedClean -is [bool] -and
                 [bool]$preambleState.trackedClean -and
                 $currentRootProbePassed -and
+                $gateLoopProbePassed -and
                 $observerText.IndexOf(
                     'Test fixtures are never formal-execution eligible.',
                     [StringComparison]::Ordinal) -lt
@@ -2660,8 +2689,8 @@ function Stop-Observer([int]$Code,[string]$Message) {
                     "    Initialize-NativeIdentity`n",
                     [StringComparison]::Ordinal)) (
                 'The observer preamble was not executable with a bound ' +
-                'Boolean, current-root null ACL probing failed, or TestFixture ' +
-                'rejection did not precede native proof.')
+                'Boolean, current-root null ACL or generated gate-loop probing ' +
+                'failed, or TestFixture rejection did not precede native proof.')
         }
     }
     $moduleAst = [Management.Automation.Language.Parser]::ParseFile(

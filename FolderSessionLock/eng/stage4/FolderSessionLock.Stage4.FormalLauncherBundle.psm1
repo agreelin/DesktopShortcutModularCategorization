@@ -5224,9 +5224,10 @@ function Assert-FormalPreLatch([psobject]$Contract,[string]$Raw) {
     if($gates.Count-ne$gateCount){Stop-Observer 70 'Recovery gate count drifted.'}
     $map=@();$exitMap=[Collections.Generic.Dictionary[int,string]]::new()
     for($i=0;$i-lt$gateCount;$i++){
-      if(@($gates[$i].PSObject.Properties).Count-ne2 -or
-         $gates[$i].PSObject.Properties[0].Name-cne'gateId' -or
-         $gates[$i].PSObject.Properties[1].Name-cne'exitCode' -or
+      $gateProperties=@($gates[$i].PSObject.Properties)
+      if($gateProperties.Count-ne2 -or
+         $gateProperties[0].Name-cne'gateId' -or
+         $gateProperties[1].Name-cne'exitCode' -or
          $gates[$i].exitCode-isnot[int] -or
          -not([string]$gates[$i].gateId).StartsWith(
            ($gatePrefix+('{0:D3}-'-f($i+1))),[StringComparison]::Ordinal) -or
