@@ -5048,7 +5048,7 @@ function Get-Sddl([string]$Path,[bool]$Directory) {
 }
 function Assert-Identity(
   [string]$Path,[bool]$Directory,[AllowNull()][psobject]$Record,
-  [AllowNull()][string]$ExpectedSddl,[int]$Code) {
+  [AllowNull()][object]$ExpectedSddl,[int]$Code) {
     $exists=if($Directory){
       Test-Path -LiteralPath $Path -PathType Container
     }else{Test-Path -LiteralPath $Path -PathType Leaf}
@@ -5066,7 +5066,7 @@ function Assert-Identity(
     $sddl=Get-Sddl $Path $Directory
     if($null-ne$Record -and $sddl-cne[string]$Record.aclSddl){
       Stop-Observer $Code 'Bound object ACL authority drifted.'}
-    if($null-ne$ExpectedSddl -and $sddl-cne$ExpectedSddl){
+    if($null-ne$ExpectedSddl -and $sddl-cne[string]$ExpectedSddl){
       Stop-Observer $Code 'Bound object ACL drifted.'}
 }
 function Assert-FormalTokenProof([psobject]$Contract) {

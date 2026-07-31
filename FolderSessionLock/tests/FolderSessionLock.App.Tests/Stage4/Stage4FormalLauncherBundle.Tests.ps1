@@ -2597,10 +2597,50 @@ try {
                     $preambleState = $null
                 }
             }
+            $currentRootProbePassed = $false
+            $topLevelMarker = "`ntry {`n  if(`$PSBoundParameters.Count-ne0"
+            $topLevelOffset = $observerText.LastIndexOf(
+                $topLevelMarker,
+                [StringComparison]::Ordinal)
+            if ($topLevelOffset -gt 0) {
+                $probePrefix = $observerText.Substring(0, $topLevelOffset)
+                $stopStart = $probePrefix.IndexOf(
+                    'function Stop-Observer(',
+                    [StringComparison]::Ordinal)
+                $stopEnd = $probePrefix.IndexOf(
+                    'function Get-Hash(',
+                    $stopStart,
+                    [StringComparison]::Ordinal)
+                if ($stopStart -ge 0 -and $stopEnd -gt $stopStart) {
+                    $probeStop = @'
+function Stop-Observer([int]$Code,[string]$Message) {
+    throw ([string]$Code + '|' + $Message)
+}
+'@
+                    $probePrefix =
+                        $probePrefix.Substring(0, $stopStart) +
+                        $probeStop +
+                        $probePrefix.Substring($stopEnd)
+                    $probeSourceRoot =
+                        $contract.authority.currentBindings.sourceRoot
+                    try {
+                        $probe = [ScriptBlock]::Create(
+                            $probePrefix +
+                            "`nInitialize-NativeIdentity" +
+                            "`nAssert-CurrentRoot `$probeSourceRoot 70" +
+                            "`n`$true")
+                        $currentRootProbePassed = [bool](& $probe)
+                    }
+                    catch {
+                        $currentRootProbePassed = $false
+                    }
+                }
+            }
             Assert-True (
                 $null -ne $preambleState -and
                 $preambleState.trackedClean -is [bool] -and
                 [bool]$preambleState.trackedClean -and
+                $currentRootProbePassed -and
                 $observerText.IndexOf(
                     'Test fixtures are never formal-execution eligible.',
                     [StringComparison]::Ordinal) -lt
@@ -2608,7 +2648,8 @@ try {
                     "    Initialize-NativeIdentity`n",
                     [StringComparison]::Ordinal)) (
                 'The observer preamble was not executable with a bound ' +
-                'Boolean, or TestFixture rejection did not precede native proof.')
+                'Boolean, current-root null ACL probing failed, or TestFixture ' +
+                'rejection did not precede native proof.')
         }
     }
     $moduleAst = [Management.Automation.Language.Parser]::ParseFile(
