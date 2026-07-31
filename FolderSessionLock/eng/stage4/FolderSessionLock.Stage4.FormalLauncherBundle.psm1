@@ -1944,7 +1944,7 @@ namespace FolderSessionLock.Stage4
                     if (!InsertEntry(root, entry)) return false;
                 byte[] actualTreeBytes = BuildTree(root);
                 if (cacheTree != null &&
-                    !EqualBytes(cacheTree, BuildCacheTree(root)))
+                    !CacheTreeMatches(cacheTree, root))
                     return false;
                 string actualTree = ToHex(actualTreeBytes);
                 ConversionProfile recapturedProfile;
@@ -2052,42 +2052,6 @@ namespace FolderSessionLock.Stage4
             }
         }
 
-        private static byte[] BuildCacheTree(GitNode root)
-        {
-            using (var output = new System.IO.MemoryStream())
-            {
-                WriteCacheTreeNode(output, root, "", true);
-                return output.ToArray();
-            }
-        }
-
-        private static int WriteCacheTreeNode(
-            System.IO.Stream output, GitNode node, string name, bool root)
-        {
-            int entryCount = node.Files.Count;
-            foreach (GitNode child in node.Directories.Values)
-                entryCount += CountEntries(child);
-            byte[] path = new UTF8Encoding(false, true).GetBytes(
-                root ? "" : name);
-            output.Write(path, 0, path.Length);
-            output.WriteByte(0);
-            byte[] counts = Encoding.ASCII.GetBytes(
-                entryCount.ToString(
-                    System.Globalization.CultureInfo.InvariantCulture) + " " +
-                node.Directories.Count.ToString(
-                    System.Globalization.CultureInfo.InvariantCulture) + "\n");
-            output.Write(counts, 0, counts.Length);
-            byte[] oid = BuildTree(node);
-            output.Write(oid, 0, oid.Length);
-            var names = new System.Collections.Generic.List<string>(
-                node.Directories.Keys);
-            names.Sort(StringComparer.Ordinal);
-            foreach (string childName in names)
-                WriteCacheTreeNode(
-                    output, node.Directories[childName], childName, false);
-            return entryCount;
-        }
-
         private static int CountEntries(GitNode node)
         {
             int count = node.Files.Count;
@@ -2104,22 +2068,77 @@ namespace FolderSessionLock.Stage4
             internal byte[] ObjectId;
         }
 
+        private sealed class CacheTreeNode
+        {
+            internal string Path;
+            internal int EntryCount;
+            internal byte[] ObjectId;
+            internal readonly System.Collections.Generic.List<CacheTreeNode>
+                Children =
+                    new System.Collections.Generic.List<CacheTreeNode>();
+        }
+
         private static bool ValidateCacheTree(byte[] bytes, int start, int size)
         {
             try
             {
                 int offset = start;
                 int end = start + size;
-                if (!ParseCacheTreeNode(bytes, ref offset, end, true))
+                CacheTreeNode node;
+                if (!TryParseCacheTreeNode(
+                        bytes, ref offset, end, true, out node))
                     return false;
                 return offset == end;
             }
             catch { return false; }
         }
 
-        private static bool ParseCacheTreeNode(
-            byte[] bytes, ref int offset, int end, bool root)
+        private static bool CacheTreeMatches(byte[] bytes, GitNode root)
         {
+            try
+            {
+                int offset = 0;
+                CacheTreeNode cacheRoot;
+                return TryParseCacheTreeNode(
+                        bytes, ref offset, bytes.Length, true, out cacheRoot) &&
+                    offset == bytes.Length &&
+                    CacheTreeNodeMatches(cacheRoot, root, "", true);
+            }
+            catch { return false; }
+        }
+
+        private static bool CacheTreeNodeMatches(
+            CacheTreeNode actual, GitNode expected, string expectedPath,
+            bool root)
+        {
+            if (!String.Equals(
+                    actual.Path, expectedPath, StringComparison.Ordinal) ||
+                actual.Children.Count != expected.Directories.Count)
+                return false;
+            if (actual.EntryCount >= 0 &&
+                (actual.EntryCount != CountEntries(expected) ||
+                    !EqualBytes(actual.ObjectId, BuildTree(expected))))
+                return false;
+            var seen = new System.Collections.Generic.HashSet<string>(
+                StringComparer.Ordinal);
+            foreach (CacheTreeNode child in actual.Children)
+            {
+                GitNode expectedChild;
+                if (!seen.Add(child.Path) ||
+                    !expected.Directories.TryGetValue(
+                        child.Path, out expectedChild) ||
+                    !CacheTreeNodeMatches(
+                        child, expectedChild, child.Path, false))
+                    return false;
+            }
+            return seen.Count == expected.Directories.Count;
+        }
+
+        private static bool TryParseCacheTreeNode(
+            byte[] bytes, ref int offset, int end, bool root,
+            out CacheTreeNode node)
+        {
+            node = null;
             int pathStart = offset;
             while (offset < end && bytes[offset] != 0) offset++;
             if (offset >= end) return false;
@@ -2145,14 +2164,29 @@ namespace FolderSessionLock.Stage4
             if (subtreeCount < 0 || offset >= end ||
                 bytes[offset++] != (byte)'\n')
                 return false;
+            byte[] objectId = null;
             if (count >= 0)
             {
                 if (offset + 20 > end) return false;
+                objectId = new byte[20];
+                Buffer.BlockCopy(bytes, offset, objectId, 0, 20);
                 offset += 20;
             }
+            var parsed = new CacheTreeNode
+            {
+                Path = path,
+                EntryCount = count,
+                ObjectId = objectId
+            };
             for (int index = 0; index < subtreeCount; index++)
-                if (!ParseCacheTreeNode(bytes, ref offset, end, false))
+            {
+                CacheTreeNode child;
+                if (!TryParseCacheTreeNode(
+                        bytes, ref offset, end, false, out child))
                     return false;
+                parsed.Children.Add(child);
+            }
+            node = parsed;
             return true;
         }
 
@@ -4741,7 +4775,7 @@ public sealed class FslFormalObserverIdentity {
       foreach(ObserverGitEntry entry in entries)
         if(!Insert(rootNode,entry))return false;
       byte[] actualTree=BuildTree(rootNode);
-      if(cacheTree!=null&&!Equal(cacheTree,BuildCacheTree(rootNode)))
+      if(cacheTree!=null&&!CacheTreeMatches(cacheTree,rootNode))
         return false;
       ObserverConversionProfile recapturedProfile;
       return String.Equals(Hex(actualTree),expectedTree,
@@ -4804,40 +4838,47 @@ public sealed class FslFormalObserverIdentity {
       return GitOid("tree",body.ToArray());
     }
   }
-  static byte[] BuildCacheTree(ObserverGitNode root) {
-    using(var output=new System.IO.MemoryStream()) {
-      WriteCacheNode(output,root,"",true);return output.ToArray();}
-  }
-  static int WriteCacheNode(
-    System.IO.Stream output,ObserverGitNode node,string name,bool root) {
-    int count=node.Files.Count;
-    foreach(ObserverGitNode child in node.Directories.Values)
-      count+=CountEntries(child);
-    byte[] path=new UTF8Encoding(false,true).GetBytes(root?"":name);
-    output.Write(path,0,path.Length);output.WriteByte(0);
-    byte[] counts=Encoding.ASCII.GetBytes(count.ToString(
-      System.Globalization.CultureInfo.InvariantCulture)+" "+
-      node.Directories.Count.ToString(
-        System.Globalization.CultureInfo.InvariantCulture)+"\n");
-    output.Write(counts,0,counts.Length);
-    byte[] oid=BuildTree(node);output.Write(oid,0,oid.Length);
-    var names=new System.Collections.Generic.List<string>(
-      node.Directories.Keys);names.Sort(StringComparer.Ordinal);
-    foreach(string childName in names)
-      WriteCacheNode(output,node.Directories[childName],childName,false);
-    return count;
-  }
   static int CountEntries(ObserverGitNode node) {
     int count=node.Files.Count;
     foreach(ObserverGitNode child in node.Directories.Values)
       count+=CountEntries(child);
     return count;
   }
-  static bool ValidCacheTree(byte[] b,int start,int size) {
-    try{int o=start,end=start+size;
-      return ParseCacheNode(b,ref o,end,true)&&o==end;}catch{return false;}
+  sealed class ObserverCacheTreeNode {
+    internal string Path;internal int EntryCount;internal byte[] ObjectId;
+    internal readonly System.Collections.Generic.List<ObserverCacheTreeNode>
+      Children=new System.Collections.Generic.List<ObserverCacheTreeNode>();
   }
-  static bool ParseCacheNode(byte[] b,ref int o,int end,bool root) {
+  static bool ValidCacheTree(byte[] b,int start,int size) {
+    try{int o=start,end=start+size;ObserverCacheTreeNode node;
+      return TryParseCacheNode(b,ref o,end,true,out node)&&o==end;}
+    catch{return false;}
+  }
+  static bool CacheTreeMatches(byte[] b,ObserverGitNode root) {
+    try{int o=0;ObserverCacheTreeNode cacheRoot;
+      return TryParseCacheNode(b,ref o,b.Length,true,out cacheRoot)&&
+        o==b.Length&&CacheTreeNodeMatches(cacheRoot,root,"",true);}
+    catch{return false;}
+  }
+  static bool CacheTreeNodeMatches(ObserverCacheTreeNode actual,
+    ObserverGitNode expected,string expectedPath,bool root) {
+    if(!String.Equals(actual.Path,expectedPath,StringComparison.Ordinal)||
+       actual.Children.Count!=expected.Directories.Count)return false;
+    if(actual.EntryCount>=0&&(actual.EntryCount!=CountEntries(expected)||
+       !Equal(actual.ObjectId,BuildTree(expected))))return false;
+    var seen=new System.Collections.Generic.HashSet<string>(
+      StringComparer.Ordinal);
+    foreach(ObserverCacheTreeNode child in actual.Children) {
+      ObserverGitNode expectedChild;
+      if(!seen.Add(child.Path)||!expected.Directories.TryGetValue(
+          child.Path,out expectedChild)||!CacheTreeNodeMatches(
+          child,expectedChild,child.Path,false))return false;
+    }
+    return seen.Count==expected.Directories.Count;
+  }
+  static bool TryParseCacheNode(byte[] b,ref int o,int end,bool root,
+    out ObserverCacheTreeNode node) {
+    node=null;
     int start=o;while(o<end&&b[o]!=0)o++;if(o>=end)return false;
     string path;try{path=new UTF8Encoding(false,true).GetString(
       b,start,o-start);}catch{return false;}
@@ -4848,9 +4889,14 @@ public sealed class FslFormalObserverIdentity {
     if(count<-1||o>=end||b[o++]!=(byte)' ')return false;
     int children=AsciiInt(b,ref o,end,false);
     if(children<0||o>=end||b[o++]!=(byte)'\n')return false;
-    if(count>=0){if(o+20>end)return false;o+=20;}
-    for(int i=0;i<children;i++)
-      if(!ParseCacheNode(b,ref o,end,false))return false;
+    byte[] objectId=null;if(count>=0){if(o+20>end)return false;
+      objectId=new byte[20];Buffer.BlockCopy(b,o,objectId,0,20);o+=20;}
+    var parsed=new ObserverCacheTreeNode {
+      Path=path,EntryCount=count,ObjectId=objectId};
+    for(int i=0;i<children;i++) {ObserverCacheTreeNode child;
+      if(!TryParseCacheNode(b,ref o,end,false,out child))return false;
+      parsed.Children.Add(child);}
+    node=parsed;
     return true;
   }
   static int AsciiInt(byte[] b,ref int o,int end,bool negativeOne) {

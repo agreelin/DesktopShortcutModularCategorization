@@ -439,21 +439,33 @@ try {
     $nestedRoot = Join-Path $syntheticRoot 'dir'
     [IO.Directory]::CreateDirectory($nestedRoot) | Out-Null
     $betaPath = Join-Path $nestedRoot 'beta.txt'
+    $otherRoot = Join-Path $syntheticRoot 'other'
+    [IO.Directory]::CreateDirectory($otherRoot) | Out-Null
+    $otherPath = Join-Path $otherRoot 'gamma.txt'
     Write-Utf8 $alphaPath "alpha`n"
     Write-Utf8 $betaPath "beta`n"
+    Write-Utf8 $otherPath "gamma`n"
     $alphaContent = [IO.File]::ReadAllBytes($alphaPath)
     $betaContent = [IO.File]::ReadAllBytes($betaPath)
+    $otherContent = [IO.File]::ReadAllBytes($otherPath)
     $alphaOid = Get-GitObjectIdBytes 'blob' $alphaContent
     $betaOid = Get-GitObjectIdBytes 'blob' $betaContent
+    $otherOid = Get-GitObjectIdBytes 'blob' $otherContent
     $subtreeBody = Join-Bytes @(
         [Text.Encoding]::ASCII.GetBytes("100644 beta.txt`0"),
         $betaOid)
     $subtreeOid = Get-GitObjectIdBytes 'tree' $subtreeBody
+    $otherSubtreeBody = Join-Bytes @(
+        [Text.Encoding]::ASCII.GetBytes("100644 gamma.txt`0"),
+        $otherOid)
+    $otherSubtreeOid = Get-GitObjectIdBytes 'tree' $otherSubtreeBody
     $rootTreeBody = Join-Bytes @(
         [Text.Encoding]::ASCII.GetBytes("100644 alpha.txt`0"),
         $alphaOid,
         [Text.Encoding]::ASCII.GetBytes("40000 dir`0"),
-        $subtreeOid)
+        $subtreeOid,
+        [Text.Encoding]::ASCII.GetBytes("40000 other`0"),
+        $otherSubtreeOid)
     $rootTreeOid = Get-GitObjectIdBytes 'tree' $rootTreeBody
     $rootTreeHex = Convert-BytesHex $rootTreeOid
     $gitEntries = @(
@@ -468,11 +480,22 @@ try {
             mode = [uint32]0x000081A4
             oid = $betaOid
             flags = [uint16]0
+        },
+        [pscustomobject]@{
+            path = 'other/gamma.txt'
+            mode = [uint32]0x000081A4
+            oid = $otherOid
+            flags = [uint16]0
         })
+    # Git's TREE extension is semantic: sibling cache nodes may be emitted in
+    # an order that differs from the verifier's dictionary/ordinal traversal.
     $cacheTreePayload = Join-Bytes @(
         [byte]0,
-        [Text.Encoding]::ASCII.GetBytes("2 1`n"),
+        [Text.Encoding]::ASCII.GetBytes("3 2`n"),
         $rootTreeOid,
+        [Text.Encoding]::UTF8.GetBytes("other`0"),
+        [Text.Encoding]::ASCII.GetBytes("1 0`n"),
+        $otherSubtreeOid,
         [Text.Encoding]::UTF8.GetBytes("dir`0"),
         [Text.Encoding]::ASCII.GetBytes("1 0`n"),
         $subtreeOid)
@@ -495,7 +518,7 @@ try {
         Get-FslFlbRepositoryAtRoot $Root $Root
     } $syntheticRoot
     Assert-True $syntheticState.trackedClean (
-        'The valid synthetic Git index/tree/HEAD authority failed.')
+        'A valid cache TREE with reordered sibling nodes was rejected.')
     Assert-Equal $syntheticState.tree $rootTreeHex (
         'The synthetic HEAD tree binding drifted.')
     $syntheticConfigPath = Join-Path $syntheticGit 'config'
