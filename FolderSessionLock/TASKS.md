@@ -307,12 +307,15 @@
     - [x] `CP10-TRACKED-FORMAL-LAUNCHER-BUNDLE-GENERATOR-VALIDATOR` 历史 checkpoint 已实现并通过 reviewer；其 2026-07-29 的 205/267 与 806/806 是当时事实，不改写。
     - [x] `CP10-DUAL-AUTHORITY-RECOVERY-CONTEXT-CONSTRUCTION-COMMIT-FREEZE` 已完成：capability commit `aa60c1c6cea2ea05648824acb10f5f3ec2342549`、tree `9b97428f3988c962e7d4b6899d3521f9cd3b7fc1`；reviewer `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。RAB 218/305、Formal 229/299、tooling 7/7、非环境依赖 807/807；未过滤 Core 174/174、App 494/501、Windows 140/141，共 808 passed、8 environment failures、0 skipped；build 0/0，format/parser/diff/exports 通过。
     - [x] dual-authority private seam 已冻结：公共 current-HEAD gate 不变、旧 `ReleaseRoot` exit 2；private adapter 绑定 run/machine/branch、execution/recovery commit/tree、state 与内部派生路径并执行 repository/mutation gates；wrapper exact-once resolver/context/reconciler，禁止 controller/install/retry/fallback。
-    - [x] 当前 frozen prestate 已复核：execution `3170d89cfd6066ba494170826cd43626d83c6789` / tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`，state sequence 6 / `InstallStarted`，WAL 4；认证后的 current pre-recovery anchors 为 latest/previous generation 11/10，future successful recovery postcondition 才是 generation 14/13。recovery 为 3 directories/8 files，Release 为 22 files，Program Files 目录为空，ProgramData root 不存在；无 Formal source、Attempt003、新 latch、UAC 或系统执行。
+    - [x] 首次 formal generation 前的 frozen prestate 已复核：execution `3170d89cfd6066ba494170826cd43626d83c6789` / tree `6bee7c4db4c9adde0612aa7c67467a331d20263e`，state sequence 6 / `InstallStarted`，WAL 4；认证后的 pre-recovery anchors 为 latest/previous generation 11/10，future successful recovery postcondition 才是 generation 14/13。当时 recovery 为 3 directories/8 files、Release 为 22 files、Program Files 目录为空、ProgramData root 不存在，且尚无 Formal source、Attempt003、新 latch、UAC 或系统执行；后续状态由下列条目记录。
     - [x] commit `a287d8b198398c7b9d1c3841a1653dab6f34d174` 的七文档 freeze reviewer 结论为 `FAIL`；无 `BLOCKER`，唯一 `HIGH` 是把 authenticated current pre-recovery latest/previous generations 11/10 错记为 latest 12、previous 11。
     - [x] 已仅在七份文档中修正该 `HIGH`，明确区分 current pre-recovery 11/10 与 future successful recovery postcondition 14/13；本项不代表独立复审或新的 commit-freeze 已完成。
-    - [ ] 完成当前七文档 synchronization 的独立审查与 commit-freeze；不得修改 capability source/tests/evidence。
-    - [ ] 在文档 commit-freeze 后生成并验证最终 RAB exact-two 与 FLB exact-three；preparation 阶段不得执行 outer、observer、RunAs、UAC 或 reconciler，generation 后不得再修改仓库。
-    - [ ] 使用最终对象执行唯一 one-shot observer/UAC；不得 retry、fallback、第二次 Install 或复用旧 latch/attempt。
+    - [x] 七文档 synchronization、Round 5 Git profile/fingerprint 修复、EOL binder 修复与 commit-freeze 已完成；正式 preparation 使用 commit `91fdc5c613134d29cb3e6b8b020032dab999e543`、tree `0e294ae92e7fcc0bb367b21a433a328778f976c3`。
+    - [x] 已生成并由独立 root/reviewer 验证 RAB exact-two `install-wal-rollback-2` 与 FLB exact-three `install-wal-rollback-launch-observer-3`；两者 public validator 均 `Valid=True`、`Errors=0`，Attempt003 latch 在 preparation 后不存在。
+    - [x] Attempt003 outer 已执行一次且永久 retired、不得复用：Windows PowerShell PID 7968 于 2026-07-31 01:00:48 -07:00 启动 observer，约 0.48 秒后在 pre-latch 阶段 fail-closed；无 latch、无 UAC、无 RunAs，WAL/state/journal/anchors、空 Program Files 目录及零服务/进程/pipe 状态均未变化。
+    - [x] Attempt003 确定根因已修复并通过 reviewer：FLB renderer 将 `[string][bool]` 输出的 bare `True` 嵌入 PowerShell，导致在 observer 自身 `try/catch` 前作为命令失败。commit `99d75e09a7ab6ddf6bfc122fe671f74418efa3ae` 显式生成 `$true`/`$false` 并增加实际执行 generated preamble 的回归测试；FLB 242/312、focused bridge 1/1、parser、format、diff 与残留检查通过，reviewer `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。
+    - [ ] 在新的文档 commit-freeze 后生成并验证全新 RAB-3 与 FLB-4/Attempt004；不得覆盖或复用 RAB-2、FLB-3、Attempt003。
+    - [ ] 使用全新 Attempt004 执行唯一 one-shot observer/UAC；不得 retry、fallback、第二次 Install 或复用旧 latch/attempt。
     - [ ] 仅在 recovery 成功后另行申请 fresh restart 授权；该项当前未授权且保持未完成。
     - [ ] 完成其余 D-026 schema v2、unsigned Release、ACL/SCM/LocalSystem/restart 或 logoff 证据与最终清理；VM、D-026、Release 和 Stage 4 完成门保持未完成。
 - [ ] 阶段 5：WPF 前端。

@@ -1291,3 +1291,54 @@
   verification, reviewer disposition, and a new commit-freeze remain pending;
   all later execution, restart, D-026, Release, and Stage 4 gates remain
   incomplete.
+
+## 2026-07-31 — CP10 Attempt003 pre-latch fail-closed and renderer repair
+
+- The Round 5 Git profile/fingerprint closure, worktree EOL binder repair, and
+  formal preparation completed at commit
+  `91fdc5c613134d29cb3e6b8b020032dab999e543`, tree
+  `0e294ae92e7fcc0bb367b21a433a328778f976c3`. The generated recovery authority
+  `install-wal-rollback-2` remained exact-two and the formal launcher bundle
+  `install-wal-rollback-launch-observer-3` remained exact-three. Their public
+  validators independently returned `Valid=True`, `Errors=0`.
+- After all UAC prestate gates passed, the fixed outer launcher SHA-256
+  `EE8C17BBD0D524C8FB67BAB61342EE0ABA7AB8FCAC77C370DB3C81280DF41F6C`
+  was invoked exactly once. It returned 0 and created the intended hidden
+  observer process. Windows PowerShell event records bind observer PID 7968 to
+  the exact `launch-observer.ps1` command line at
+  `2026-07-31T01:00:48.5142847-07:00`; the engine stopped at
+  `2026-07-31T01:00:48.9973203-07:00`.
+- The observer exited before creating `launch-attempt.jsonl`. No UAC prompt,
+  RunAs, reconciler, or product process occurred. The state, journal, four-line
+  WAL and external anchor hashes remained exact; the bound Program Files
+  directory remained empty, ProgramData remained absent, and product
+  process/service/registry/pipe residue remained zero. Attempt003 is retired
+  after its single outer invocation and must not be relaunched even though no
+  durable latch was created.
+- Root verification found the deterministic pre-latch defect at generated
+  observer line 20: `$fixedTrackedClean = True`. The renderer used
+  `[string][bool]`, producing a .NET Boolean word without the PowerShell `$`
+  prefix. Under `Set-StrictMode`, `True` was treated as a command before the
+  observer entered its top-level `try/catch`, explaining the immediate stop and
+  absent latch. The embedded C# compiler, token proof, contract self-hash,
+  bundle/source identities, and ACLs independently passed.
+- The first reviewer result was `FAIL`,
+  `BLOCKER/HIGH/MEDIUM/LOW = 0/1/0/0`. The focused repair now renders explicit
+  PowerShell `$true` or `$false` literals and executes the generated preamble in
+  the existing FLB regression suite. RED reproduced the preamble failure;
+  GREEN passed `STAGE4_FORMAL_LAUNCHER_BUNDLE_PASS Cases=242 Assertions=312`.
+  The focused C# bridge passed 1/1 with 0 failed and 0 skipped; both PowerShell
+  parsers, `dotnet format --verify-no-changes`, `git diff --check`, and TEMP,
+  testhost, service and product residue checks passed.
+- Independent root rendering proved both Boolean branches execute as
+  `System.Boolean` and contain no bare `True`/`False` line. The final reviewer
+  returned `PASS`, `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`. The two-file repair was
+  committed as `99d75e09a7ab6ddf6bfc122fe671f74418efa3ae`, tree
+  `c983b894e238f9bd61b9cb751b13a8a236552b3a`; no push was performed for this
+  commit.
+- Because recovery-toolchain commit/tree binding changed, RAB-2, FLB-3 and
+  Attempt003 are evidence only and cannot authorize another launch. The next
+  formal checkpoint must create and validate new immutable RAB-3 and
+  FLB-4/Attempt004 objects before any further UAC activity. WAL rollback,
+  anchors 14/13, installation, restart, D-026, Release and final Stage 4 remain
+  incomplete.
