@@ -1342,3 +1342,49 @@
   FLB-4/Attempt004 objects before any further UAC activity. WAL rollback,
   anchors 14/13, installation, restart, D-026, Release and final Stage 4 remain
   incomplete.
+
+## 2026-07-31 — CP10 Attempt004 pre-latch ACL-null repair
+
+- From clean commit `4d17ff48807e079dbc94b7dd22efc0bd9a936329`, tree
+  `18a4b3f5405d009cf975bc0d1c9b6d2a0bcb1afb`, the formal preparation created
+  immutable RAB-3 `install-wal-rollback-3` and FLB-4
+  `install-wal-rollback-launch-observer-4`. Their public validators returned
+  `Valid=True`, `Errors=0`. The RAB canonical SHA-256 was
+  `AD2FBEB12E9BE891E37D54BAD4FE57981C2BFC1E31C02043F40FCF963F09C364`;
+  the FLB canonical SHA-256 was
+  `A1247F792ED99CA99EFA7434C5785F309E6445E5B24D6F512BA7888954949DB8`.
+- Independent root verification intentionally executed only the generated
+  observer definitions and the complete `Assert-FormalPreLatch` path; it did
+  not execute the observer top level, latch creation, outer launcher, or
+  RunAs. The actual generated helper failed closed with exit 70 and
+  `Bound object ACL drifted.` before any system mutation. Attempt004 outer was
+  never invoked and its `launch-attempt.jsonl` latch was never created.
+- The failure was deterministic. `Assert-CurrentRoot` passes `$null` for the
+  optional expected SDDL, but the generated `Assert-Identity` declared that
+  parameter as `[AllowNull()][string]`. Windows PowerShell 5.1 converted the
+  null argument to an empty string, so the intended null guard became true and
+  compared the actual SDDL with `''`. The public validator rendered and
+  canonicalized the script but did not execute this generated helper path.
+- The focused repair changes only the generated observer parameter to
+  `[AllowNull()][object]`, preserves the explicit string comparison for a
+  non-null SDDL, and extends the existing FLB regression assertion to execute
+  the actual generated `Assert-CurrentRoot`. RED reproduced the null-ACL
+  failure. GREEN passed
+  `STAGE4_FORMAL_LAUNCHER_BUNDLE_PASS Cases=242 Assertions=312`; the focused
+  C# bridge passed 1/1 with 0 failed and 0 skipped. Both PowerShell parsers,
+  `dotnet format --verify-no-changes`, `git diff --check`, and test/product
+  process and service residue checks passed.
+- Independent root verification confirmed the generated parameter is
+  `System.Object`, the real generated current-root helper accepts the bound
+  null expected SDDL, Attempt004 latch remains absent, and no UAC, RunAs,
+  reconciler, WAL, state, journal, anchor, Program Files, service, process, or
+  pipe mutation occurred. Reviewer returned `PASS`,
+  `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`. The two-file repair was committed as
+  `a5b1517c7977e70c0aade82c451d25a50e598c92`, tree
+  `c0d19099abc0bccb767c2d4375ef2f99e20bd572`.
+- RAB-3, FLB-4, and Attempt004 are retained only as failure evidence and must
+  not authorize a later launch after the toolchain commit changed. The next
+  formal checkpoint must generate and independently validate immutable RAB-4
+  and FLB-5/Attempt005, including the complete generated pre-latch runtime
+  diagnostic, before any UAC activity. WAL rollback, anchors 14/13,
+  installation, restart, D-026, Release, and final Stage 4 remain incomplete.

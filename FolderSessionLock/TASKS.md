@@ -314,8 +314,11 @@
     - [x] 已生成并由独立 root/reviewer 验证 RAB exact-two `install-wal-rollback-2` 与 FLB exact-three `install-wal-rollback-launch-observer-3`；两者 public validator 均 `Valid=True`、`Errors=0`，Attempt003 latch 在 preparation 后不存在。
     - [x] Attempt003 outer 已执行一次且永久 retired、不得复用：Windows PowerShell PID 7968 于 2026-07-31 01:00:48 -07:00 启动 observer，约 0.48 秒后在 pre-latch 阶段 fail-closed；无 latch、无 UAC、无 RunAs，WAL/state/journal/anchors、空 Program Files 目录及零服务/进程/pipe 状态均未变化。
     - [x] Attempt003 确定根因已修复并通过 reviewer：FLB renderer 将 `[string][bool]` 输出的 bare `True` 嵌入 PowerShell，导致在 observer 自身 `try/catch` 前作为命令失败。commit `99d75e09a7ab6ddf6bfc122fe671f74418efa3ae` 显式生成 `$true`/`$false` 并增加实际执行 generated preamble 的回归测试；FLB 242/312、focused bridge 1/1、parser、format、diff 与残留检查通过，reviewer `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。
-    - [ ] 在新的文档 commit-freeze 后生成并验证全新 RAB-3 与 FLB-4/Attempt004；不得覆盖或复用 RAB-2、FLB-3、Attempt003。
-    - [ ] 使用全新 Attempt004 执行唯一 one-shot observer/UAC；不得 retry、fallback、第二次 Install 或复用旧 latch/attempt。
+    - [x] 已从 commit `4d17ff48807e079dbc94b7dd22efc0bd9a936329` 生成并通过 public validator 验证 RAB-3 `install-wal-rollback-3` 与 FLB-4/Attempt004 `install-wal-rollback-launch-observer-4`。RAB canonical SHA-256 为 `AD2FBEB12E9BE891E37D54BAD4FE57981C2BFC1E31C02043F40FCF963F09C364`；FLB canonical SHA-256 为 `A1247F792ED99CA99EFA7434C5785F309E6445E5B24D6F512BA7888954949DB8`。
+    - [x] Attempt004 outer 从未执行且 latch 从未创建：root 在执行任何 top-level latch/RunAs 路径前，使用实际 generated observer definitions 调用完整 `Assert-FormalPreLatch`，以 exit 70 / `Bound object ACL drifted.` fail-closed。WAL/state/journal/anchors、空 Program Files 目录及零服务/进程状态均未变化。
+    - [x] Attempt004 pre-latch 根因已修复并通过 reviewer：generated `Assert-Identity` 的 `[AllowNull()][string]$ExpectedSddl` 将来自 `Assert-CurrentRoot` 的 `$null` 强制转换为空字符串，错误触发 ACL 比较。commit `a5b1517c7977e70c0aade82c451d25a50e598c92` 改用保留 null 的 `[AllowNull()][object]`，非空值仍按字符串比较，并让回归测试执行实际 generated `Assert-CurrentRoot`。FLB 242/312、focused bridge 1/1、parser、format、diff 与残留检查通过；reviewer `PASS`，`BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`。
+    - [ ] 在新的文档 commit-freeze 后生成并验证全新 RAB-4 与 FLB-5/Attempt005；RAB-3、FLB-4 与未启动的 Attempt004 仅保留为失败证据，不得授权后续 launch。
+    - [ ] 使用全新 Attempt005 执行唯一 one-shot observer/UAC；不得 retry、fallback、第二次 Install 或复用旧 latch/attempt。
     - [ ] 仅在 recovery 成功后另行申请 fresh restart 授权；该项当前未授权且保持未完成。
     - [ ] 完成其余 D-026 schema v2、unsigned Release、ACL/SCM/LocalSystem/restart 或 logoff 证据与最终清理；VM、D-026、Release 和 Stage 4 完成门保持未完成。
 - [ ] 阶段 5：WPF 前端。
