@@ -1439,3 +1439,49 @@
   and FLB-6/Attempt006, including the complete generated pre-latch runtime
   diagnostic, before any UAC activity. WAL rollback, anchors 14/13,
   installation, restart, D-026, Release, and final Stage 4 remain incomplete.
+
+## 2026-07-31 — CP10 Attempt006 generated gate property-index repair
+
+- From clean commit `60b3cb4dc5f6477eb756d7c433340a949204fd3b`, tree
+  `0b47fe2f18164e5050da522889dc738611336f33`, formal preparation created
+  immutable RAB-5 `install-wal-rollback-5` and FLB-6
+  `install-wal-rollback-launch-observer-6` exactly once. Both public validators
+  returned `Valid=True`, `Errors=0`. Their canonical SHA-256 values were
+  `6F30FF6A2602C3547C664C9352E94A4C1AD66C62A3F9AD7D962FBB1CB1DE2482`
+  and `BC23307ADB80784C263175E5F8E7077D42A74F9923722F1BF162EAB222A84928`.
+- Root verification isolated the actual generated definitions and executed the
+  complete `Assert-FormalPreLatch` path without executing the top level, outer
+  launcher, latch creation, or RunAs. The observer passed the repaired opaque
+  recovery binding and then stopped before recovery gate 1 with StrictMode
+  `PropertyNotFoundStrict`: property `Name` could not be found.
+- The generated loop used
+  `$gates[$i].PSObject.Properties[0].Name`. In Windows PowerShell 5.1, the
+  `PSMemberInfoIntegratingCollection` index expression selected a property
+  named `0` instead of first materializing the collection as an array. It
+  returned null, and StrictMode rejected the following `.Name` access.
+  Attempt006 outer was never invoked and `launch-attempt.jsonl` was never
+  created.
+- The focused regression extracts the actual generated gate-loop text and
+  executes it with the same RAB validator opaque gates and generated FLB
+  contract. RED reproduced the generated runtime failure. The repair now
+  materializes `$gateProperties=@($gates[$i].PSObject.Properties)` before
+  reading elements 0 and 1. Gate count, exact property order, integer type,
+  sequential gate ID/exit code, duplicate exit-code detection, and the final
+  ordered map hash are unchanged.
+- GREEN passed
+  `STAGE4_FORMAL_LAUNCHER_BUNDLE_PASS Cases=243 Assertions=313`; the focused C#
+  bridge passed 1/1 with 0 failed and 0 skipped. Both PowerShell parsers,
+  `dotnet format --verify-no-changes`, `git diff --check`, the two-file boundary,
+  and test/product process, service, and latch residue checks passed. Reviewer
+  returned `PASS`, `BLOCKER/HIGH/MEDIUM/LOW = 0/0/0/0`.
+- The two-file repair was committed as
+  `90705bc4587229b100a3dfdc689d3600d94469fe`, tree
+  `31cfbb5e2ec83f7e2b951b06241ba76ea309b399`. No UAC, RunAs, reconciler, WAL,
+  state, journal, anchor, Program Files, ProgramData, service, process, or pipe
+  mutation occurred.
+- RAB-5, FLB-6, and Attempt006 are retained only as failure evidence and must
+  not authorize a later launch after the toolchain commit changed. The next
+  formal checkpoint must generate and independently validate immutable RAB-6
+  and FLB-7/Attempt007, including the complete generated pre-latch runtime
+  diagnostic, before any UAC activity. WAL rollback, anchors 14/13,
+  installation, restart, D-026, Release, and final Stage 4 remain incomplete.
