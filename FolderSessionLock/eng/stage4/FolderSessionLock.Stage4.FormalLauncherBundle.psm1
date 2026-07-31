@@ -5083,6 +5083,41 @@ function Assert-File([psobject]$Record,[int]$Code) {
        (Get-Hash $Record.path)-cne[string]$Record.sha256){
         Stop-Observer $Code 'Bound file drifted.'}
 }
+function Assert-ReleaseFingerprint([psobject]$Release) {
+    $frozen=@($Release.files)
+    $actual=@(Get-ChildItem -LiteralPath $Release.root -Force)
+    $names=@($frozen|ForEach-Object{[IO.Path]::GetFileName([string]$_.path)})
+    if($actual.Count-ne[int]$Release.fileCount -or
+       $frozen.Count-ne[int]$Release.fileCount -or
+       @($actual|Where-Object{$_.PSIsContainer}).Count-ne0){
+      Stop-Observer 74 'Release exact set drifted.'}
+    foreach($name in $names){
+      if(@($actual|Where-Object{$_.Name-ceq$name}).Count-ne1){
+        Stop-Observer 74 'Release exact set drifted.'}}
+    Assert-ExactNames $Release.root $names 74
+    $records=@(foreach($record in $frozen){
+      $path=[IO.Path]::GetFullPath([string]$record.path)
+      $name=[IO.Path]::GetFileName($path)
+      $item=@($actual|Where-Object{$_.Name-ceq$name})[0]
+      $actualPath=[IO.Path]::GetFullPath($item.FullName)
+      if($actualPath-cne$path){Stop-Observer 74 'Release path drifted.'}
+      $length=[int64]$item.Length
+      if($length-ne[int64]$record.length){
+        Stop-Observer 74 'Release length drifted.'}
+      $sha256=Get-Hash $actualPath
+      if($sha256-cne[string]$record.sha256){
+        Stop-Observer 74 'Release hash drifted.'}
+      [pscustomobject][ordered]@{
+        path=$path
+        length=$length
+        sha256=$sha256
+      }
+    })
+    $canonical=($records|ConvertTo-Json -Depth 64).
+      Replace("`r`n","`n").TrimEnd("`r","`n")+"`n"
+    if((Get-TextHash $canonical)-cne[string]$Release.fingerprintSha256){
+      Stop-Observer 74 'Release fingerprint drifted.'}
+}
 function Get-Sddl([string]$Path,[bool]$Directory) {
     $sections=[Security.AccessControl.AccessControlSections]::Owner -bor
       [Security.AccessControl.AccessControlSections]::Group -bor
@@ -5304,14 +5339,7 @@ function Assert-FormalPreLatch([psobject]$Contract,[string]$Raw) {
     Assert-ExactNames $Contract.authority.canonical.externalAnchorRoot @(
       $Contract.authority.canonical.externalAnchorFiles|ForEach-Object{
         [IO.Path]::GetFileName($_.path)}) 73
-    $release=@(Get-ChildItem -LiteralPath $Contract.authority.release.root -File)
-    if($release.Count-ne[int]$Contract.authority.release.fileCount){
-      Stop-Observer 74 'Release exact set drifted.'}
-    $releaseLines=@($release|Sort-Object Name|ForEach-Object{
-      $_.Name+'|'+$_.Length+'|'+(Get-Hash $_.FullName)})
-    if((Get-TextHash($releaseLines-join"`n"))-cne
-       [string]$Contract.authority.release.fingerprintSha256){
-      Stop-Observer 74 'Release fingerprint drifted.'}
+    Assert-ReleaseFingerprint $Contract.authority.release
     Assert-CurrentRoot $Contract.authority.currentBindings.releaseRoot 74
     foreach($file in @($Contract.authority.currentBindings.releaseFiles)){
       Assert-CurrentFile $file 74}

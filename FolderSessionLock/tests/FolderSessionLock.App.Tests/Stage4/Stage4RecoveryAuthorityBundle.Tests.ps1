@@ -307,6 +307,43 @@ try {
             sourceLeafName = $formalSourceLeaf
         }
     }
+    $getFormalBaseSnapshot = {
+        param([string]$Path)
+
+        $requestedPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+        $base = Get-Item -LiteralPath $requestedPath -Force
+        $childNames = [string[]]@(
+            Get-ChildItem -LiteralPath $requestedPath -Directory -Force |
+                ForEach-Object { [string]$_.Name })
+        [Array]::Sort($childNames, [StringComparer]::Ordinal)
+        $children = @(
+            foreach ($name in $childNames) {
+                $child = Get-Item -LiteralPath (
+                    Join-Path $requestedPath $name) -Force
+                [pscustomobject][ordered]@{
+                    name = [string]$child.Name
+                    fullPath = [IO.Path]::GetFullPath(
+                        [string]$child.FullName).TrimEnd('\')
+                    creationTicks = [int64]$child.CreationTimeUtc.Ticks
+                    attributes = [int]$child.Attributes
+                }
+            })
+        return [pscustomobject][ordered]@{
+            requestedPath = $requestedPath
+            fullPath = [IO.Path]::GetFullPath(
+                [string]$base.FullName).TrimEnd('\')
+            name = [string]$base.Name
+            parentFullPath = [IO.Path]::GetFullPath(
+                [string]$base.Parent.FullName).TrimEnd('\')
+            creationTicks = [int64]$base.CreationTimeUtc.Ticks
+            attributes = [int]$base.Attributes
+            ordinary = (
+                $base -is [IO.DirectoryInfo] -and
+                ($base.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -eq 0)
+            children = $children
+        }
+    }
     $formalLayout = & $module {
         param($FormalModel)
         $roots = Get-FslRabRoots $FormalModel
@@ -319,6 +356,7 @@ try {
             $script:RabPredecessorNames `
             'FSL-RAB-V011-EVIDENCE')
         return [pscustomobject]@{
+            baseRoot = $roots.baseRoot
             sourceRoot = $roots.sourceRoot
             predecessorRoot = $roots.predecessorRoot
             evidenceNames = @($evidence | ForEach-Object {
@@ -332,12 +370,14 @@ try {
                 @(Get-ChildItem -LiteralPath $roots.installDirectory -Force).Count -eq 0
             anchorCount =
                 @(Get-ChildItem -LiteralPath $roots.anchorRoot -Force).Count
-            recoveryDirectoryCount =
-                @(Get-ChildItem -LiteralPath $roots.baseRoot -Directory -Force).Count
         }
     } $formalModel
+    $formalBaseBefore =
+        & $getFormalBaseSnapshot $formalLayout.baseRoot
     $formalSourceAbsentBefore =
-        -not (Test-Path -LiteralPath $formalLayout.sourceRoot)
+        -not (Test-Path -LiteralPath $formalLayout.sourceRoot) -and
+        @($formalBaseBefore.children | Where-Object {
+            $_.name -ceq $formalSourceLeaf }).Count -eq 0
     $formalAuthorityProbe = & $module {
         param($FormalModel)
         try {
@@ -355,8 +395,44 @@ try {
             }
         }
     } $formalModel
+    $formalBaseAfter =
+        & $getFormalBaseSnapshot $formalLayout.baseRoot
     $formalSourceAbsentAfter =
-        -not (Test-Path -LiteralPath $formalLayout.sourceRoot)
+        -not (Test-Path -LiteralPath $formalLayout.sourceRoot) -and
+        @($formalBaseAfter.children | Where-Object {
+            $_.name -ceq $formalSourceLeaf }).Count -eq 0
+    $formalBaseUnchanged =
+        $formalBaseBefore.ordinary -and
+        $formalBaseAfter.ordinary -and
+        $formalBaseBefore.requestedPath -ceq $formalBaseBefore.fullPath -and
+        $formalBaseAfter.requestedPath -ceq $formalBaseAfter.fullPath -and
+        $formalBaseBefore.fullPath -ceq $formalBaseAfter.fullPath -and
+        $formalBaseBefore.name -ceq $formalBaseAfter.name -and
+        $formalBaseBefore.parentFullPath -ceq
+            $formalBaseAfter.parentFullPath -and
+        $formalBaseBefore.creationTicks -eq
+            $formalBaseAfter.creationTicks -and
+        $formalBaseBefore.attributes -eq $formalBaseAfter.attributes -and
+        @($formalBaseBefore.children).Count -eq
+            @($formalBaseAfter.children).Count
+    if ($formalBaseUnchanged) {
+        for ($index = 0;
+            $index -lt @($formalBaseBefore.children).Count;
+            $index++) {
+            $before = $formalBaseBefore.children[$index]
+            $after = $formalBaseAfter.children[$index]
+            $expectedPath = [IO.Path]::GetFullPath((
+                Join-Path $formalBaseBefore.fullPath $before.name)).TrimEnd('\')
+            if ($before.name -cne $after.name -or
+                $before.fullPath -cne $after.fullPath -or
+                $before.fullPath -cne $expectedPath -or
+                $before.creationTicks -ne $after.creationTicks -or
+                $before.attributes -ne $after.attributes) {
+                $formalBaseUnchanged = $false
+                break
+            }
+        }
+    }
     $formalAuthorityStateAccepted =
         ($formalAuthorityProbe.validated -and
             [string]::IsNullOrEmpty($formalAuthorityProbe.failureCode)) -or
@@ -444,8 +520,8 @@ try {
             'elevated-reconcile.ps1|recovery-contract.json' },
         { $formalAuthorityStateAccepted -and
             $formalSourceAbsentBefore -and $formalSourceAbsentAfter -and
+            $formalBaseUnchanged -and
             $formalLayout.installEmpty -and $formalLayout.anchorCount -eq 3 -and
-            $formalLayout.recoveryDirectoryCount -eq 3 -and
             $testParseErrors.Count -eq 0 -and
             $formalPublicNewCalls.Count -eq 0 })
     for ($index = 0; $index -lt 18; $index++) {

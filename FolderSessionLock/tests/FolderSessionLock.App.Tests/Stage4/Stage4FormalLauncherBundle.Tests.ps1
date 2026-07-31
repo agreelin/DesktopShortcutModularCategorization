@@ -2511,7 +2511,8 @@ try {
             'The independent observer zlib scanner accepted a mutation.')
     }
     $latchHelperTemplate = & $module {
-        $script:FlbLatchHelperTemplate.TrimEnd("`r", "`n")
+        $script:FlbLatchHelperTemplate.Replace("`r`n", "`n").
+            TrimEnd("`r", "`n")
     }
     Assert-True (
         $observerSource.IndexOf(
@@ -2657,6 +2658,157 @@ function Stop-Observer([int]$Code,[string]$Message) {
                         $probePrefix.Substring(0, $stopStart) +
                         $probeStop +
                         $probePrefix.Substring($stopEnd)
+                    $invokeReleaseProbe = {
+                        param($Prefix, $ProbeContract)
+                        try {
+                            $probe = [ScriptBlock]::Create(
+                                $Prefix +
+                                "`nAssert-ReleaseFingerprint " +
+                                "`$ProbeContract.authority.release" +
+                                "`n`$true")
+                            return [pscustomobject]@{
+                                passed = [bool](& $probe)
+                                message = $null
+                            }
+                        }
+                        catch {
+                            return [pscustomobject]@{
+                                passed = $false
+                                message = [string]$_.Exception.Message
+                            }
+                        }
+                    }
+                    $releaseOracle = & $recoveryModule {
+                        param($Records)
+                        Get-FslRabObjectHash $Records
+                    } @($contract.authority.release.files)
+                    $releaseBaseline = & $invokeReleaseProbe `
+                        $probePrefix `
+                        $contract
+                    $script:Cases++
+                    Assert-True (
+                        $releaseBaseline.passed -and
+                        [string]$contract.authority.release.
+                            fingerprintSha256 -ceq $releaseOracle) (
+                        'The generated release helper rejected the canonical ' +
+                        'RAB release fingerprint: ' + $releaseBaseline.message)
+
+                    $releaseHold = Join-Path $fixtureRoot 'release-held.bin'
+                    $missingRelease = $null
+                    $extraRelease = $null
+                    try {
+                        [IO.File]::Move($releasePaths[0], $releaseHold)
+                        $missingRelease = & $invokeReleaseProbe `
+                            $probePrefix `
+                            $contract
+                    }
+                    finally {
+                        if (Test-Path -LiteralPath $releaseHold) {
+                            [IO.File]::Move($releaseHold, $releasePaths[0])
+                        }
+                    }
+                    $unexpectedRelease = Join-Path $releaseRoot 'unexpected.tmp'
+                    try {
+                        Write-Utf8 $unexpectedRelease "unexpected`n"
+                        $extraRelease = & $invokeReleaseProbe `
+                            $probePrefix `
+                            $contract
+                    }
+                    finally {
+                        if (Test-Path -LiteralPath $unexpectedRelease) {
+                            [IO.File]::Delete($unexpectedRelease)
+                        }
+                    }
+                    $script:Cases++
+                    Assert-True (
+                        $missingRelease.message -ceq
+                            '74|Release exact set drifted.' -and
+                        $extraRelease.message -ceq
+                            '74|Release exact set drifted.') (
+                        'The generated release helper accepted an exact-set ' +
+                        'drift or returned the wrong exit-74 reason.')
+
+                    $swappedContract = $contractRaw | ConvertFrom-Json
+                    $firstRecord =
+                        $swappedContract.authority.release.files[0]
+                    $swappedContract.authority.release.files[0] =
+                        $swappedContract.authority.release.files[1]
+                    $swappedContract.authority.release.files[1] = $firstRecord
+                    $swappedRelease = & $invokeReleaseProbe `
+                        $probePrefix `
+                        $swappedContract
+                    $caseContract = $contractRaw | ConvertFrom-Json
+                    $casePath =
+                        [string]$caseContract.authority.release.files[0].path
+                    $caseContract.authority.release.files[0].path =
+                        Join-Path `
+                            ([IO.Path]::GetDirectoryName(
+                                $casePath).ToUpperInvariant()) `
+                            ([IO.Path]::GetFileName($casePath))
+                    $caseRelease = & $invokeReleaseProbe `
+                        $probePrefix `
+                        $caseContract
+                    $script:Cases++
+                    Assert-True (
+                        $swappedRelease.message -ceq
+                            '74|Release fingerprint drifted.' -and
+                        $caseRelease.message -ceq
+                            '74|Release path drifted.') (
+                        'The generated release helper accepted frozen path ' +
+                        'order/casing drift or returned the wrong exit-74 reason.')
+
+                    $releaseOriginal =
+                        [IO.File]::ReadAllBytes($releasePaths[0])
+                    $lengthRelease = $null
+                    try {
+                        $longer = New-Object byte[] (
+                            $releaseOriginal.Length + 1)
+                        [Array]::Copy(
+                            $releaseOriginal,
+                            $longer,
+                            $releaseOriginal.Length)
+                        $longer[$longer.Length - 1] = 0x5A
+                        [IO.File]::WriteAllBytes($releasePaths[0], $longer)
+                        $lengthRelease = & $invokeReleaseProbe `
+                            $probePrefix `
+                            $contract
+                    }
+                    finally {
+                        Restore-Bytes $releasePaths[0] $releaseOriginal
+                    }
+                    $script:Cases++
+                    Assert-True (
+                        $lengthRelease.message -ceq
+                            '74|Release length drifted.') (
+                        'The generated release helper accepted a length drift ' +
+                        'or returned the wrong exit-74 reason.')
+
+                    $hashRelease = $null
+                    try {
+                        $changed = [byte[]]$releaseOriginal.Clone()
+                        $changed[0] = $changed[0] -bxor 1
+                        [IO.File]::WriteAllBytes($releasePaths[0], $changed)
+                        $hashRelease = & $invokeReleaseProbe `
+                            $probePrefix `
+                            $contract
+                    }
+                    finally {
+                        Restore-Bytes $releasePaths[0] $releaseOriginal
+                    }
+                    $fingerprintContract = $contractRaw | ConvertFrom-Json
+                    $fingerprintContract.authority.release.
+                        fingerprintSha256 = '0' * 64
+                    $fingerprintRelease = & $invokeReleaseProbe `
+                        $probePrefix `
+                        $fingerprintContract
+                    $script:Cases++
+                    Assert-True (
+                        $hashRelease.message -ceq
+                            '74|Release hash drifted.' -and
+                        $fingerprintRelease.message -ceq
+                            '74|Release fingerprint drifted.') (
+                        'The generated release helper accepted content or ' +
+                        'canonical fingerprint drift, or returned the wrong reason.')
                     $probeSourceRoot =
                         $contract.authority.currentBindings.sourceRoot
                     try {
