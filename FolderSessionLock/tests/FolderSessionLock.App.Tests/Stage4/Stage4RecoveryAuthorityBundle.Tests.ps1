@@ -479,6 +479,986 @@ try {
             $executionCommit -cne $toolchainCommit)
     }
 
+    $crlfTrackedPath = Join-Path $repositoryRoot (
+        $fixedFiles[2].Replace('/', '\'))
+    $crlfOriginalBytes = [IO.File]::ReadAllBytes($crlfTrackedPath)
+    $crlfCleanAccepted = $false
+    $crlfFailureCode = $null
+    $crlfStatus = $null
+    $crlfGeneratedCount = -1
+    $crlfValidationValid = $false
+    $crlfValidationErrors = -1
+    $rootAttributesOracleDirty = $false
+    $rootAttributesRejected = $false
+    $rawConversionSourceRejected = $false
+    $unsafeEnvironmentRejected = $false
+    $worktreeConfigRejected = $false
+    $nestedAttributesRejected = $false
+    $customGlobalAttributesRejected = $false
+    $dangerousRoundtripRejected = $false
+    $dangerousBigFileRejected = $false
+    $harmlessProfileAccepted = $false
+    $homeOverridesXdgAccepted = $false
+    $localOverridesHomeAccepted = $false
+    $xdgOverridesSystemExact = $false
+    $lfsQuartetAccepted = $false
+    $partialLfsRejected = $false
+    $commandAutocrlfRejected = $false
+    $commandRoutingRejected = $false
+    $commandIncompleteRejected = $false
+    $commandBoundRejected = $false
+    $namedRoutingOverridesRejected = $false
+    $noncanonicalEnvironmentRejected = $false
+    $profileLocalPath = $null
+    $profileLocalBytes = $null
+    $unsafeEnvironmentOriginal =
+        [Environment]::GetEnvironmentVariable(
+            'GIT_CONFIG_NOSYSTEM',
+            [EnvironmentVariableTarget]::Process)
+    $rootAttributesPath = Join-Path $repositoryRoot '.gitattributes'
+    $nestedAttributesPath = Join-Path $repositoryRoot 'eng\.gitattributes'
+    $worktreeConfigPath = Join-Path $gitDirectory 'config.worktree'
+    try {
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'true'))
+        $crlfText = [Text.UTF8Encoding]::new(
+            $false,
+            $true).GetString($crlfOriginalBytes).Replace(
+                "`r`n",
+                "`n").Replace(
+                    "`n",
+                    "`r`n")
+        [IO.File]::WriteAllText(
+            $crlfTrackedPath,
+            $crlfText,
+            [Text.UTF8Encoding]::new($false, $true))
+        $crlfModel = New-Model $fixtureId 'crlf clean recovery source'
+        $crlfGenerated =
+            New-FslStage4RecoveryAuthorityBundle -Model $crlfModel
+        $crlfValidation =
+            Test-FslStage4RecoveryAuthorityBundle -Model $crlfModel
+        $crlfStatus = Invoke-Git $repositoryRoot @(
+            'status',
+            '--porcelain=v1',
+            '--untracked-files=all')
+        $crlfGeneratedCount = $crlfGenerated.observedFiles.Count
+        $crlfValidationValid = $crlfValidation.isValid
+        $crlfValidationErrors = $crlfValidation.errors.Count
+        $crlfCleanAccepted =
+            $crlfGeneratedCount -eq 2 -and
+            $crlfValidationValid -and
+            $crlfValidationErrors -eq 0
+
+        Write-Utf8 $rootAttributesPath "* -text`n"
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            [void](& git.exe -C $repositoryRoot diff --quiet -- (
+                $fixedFiles[2]) 2>&1)
+            $rootAttributesOracleDirty = $LASTEXITCODE -eq 1
+            if ($LASTEXITCODE -notin @(0, 1)) {
+                throw 'The external Git conversion oracle failed.'
+            }
+        }
+        finally {
+            $ErrorActionPreference = $savedPreference
+        }
+        $rootAttributesRejected = Assert-ThrowsCode {
+            New-FslStage4RecoveryAuthorityBundle -Model (
+                New-Model $fixtureId 'root attributes exploit') |
+                Out-Null
+        } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' 'root attributes exploit'
+
+        [IO.File]::WriteAllBytes($crlfTrackedPath, $crlfOriginalBytes)
+        Write-Utf8 $rootAttributesPath (
+            '*.ps1 filter=reviewer working-tree-encoding=UTF-8' + "`n")
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'false'))
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'filter.reviewer.clean', 'reviewer-filter'))
+        $rawConversionSourceRejected = Assert-ThrowsCode {
+            New-FslStage4RecoveryAuthorityBundle -Model (
+                New-Model $fixtureId 'raw oid conversion source exploit') |
+                Out-Null
+        } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' (
+            'raw oid conversion source exploit')
+
+        [IO.File]::Delete($rootAttributesPath)
+        [void](Invoke-Git $repositoryRoot @(
+            'config', '--unset-all', 'filter.reviewer.clean'))
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_NOSYSTEM',
+            '1',
+            [EnvironmentVariableTarget]::Process)
+        try {
+            $unsafeEnvironmentRejected = Assert-ThrowsCode {
+                New-FslStage4RecoveryAuthorityBundle -Model (
+                    New-Model $fixtureId 'unsafe environment exploit') |
+                    Out-Null
+            } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' (
+                'unsafe environment exploit')
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_NOSYSTEM',
+                $unsafeEnvironmentOriginal,
+                [EnvironmentVariableTarget]::Process)
+        }
+
+        Write-Utf8 $worktreeConfigPath (
+            "[core]`n" +
+            "    autocrlf = false`n")
+        $worktreeConfigRejected = Assert-ThrowsCode {
+            New-FslStage4RecoveryAuthorityBundle -Model (
+                New-Model $fixtureId 'worktree config exploit') |
+                Out-Null
+        } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' 'worktree config exploit'
+        [IO.File]::Delete($worktreeConfigPath)
+
+        Write-Utf8 $nestedAttributesPath "* -text`n"
+        $nestedAttributesRejected = Assert-ThrowsCode {
+            New-FslStage4RecoveryAuthorityBundle -Model (
+                New-Model $fixtureId 'nested attributes exploit') |
+                Out-Null
+        } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' (
+            'nested attributes exploit')
+        [IO.File]::Delete($nestedAttributesPath)
+
+        [void](Invoke-Git $repositoryRoot @(
+            'config',
+            'core.attributesfile',
+            'C:/synthetic-global-attributes'))
+        $customGlobalAttributesRejected = Assert-ThrowsCode {
+            New-FslStage4RecoveryAuthorityBundle -Model (
+                New-Model $fixtureId 'custom global attributes exploit') |
+                Out-Null
+        } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' (
+            'custom global attributes exploit')
+        [void](Invoke-Git $repositoryRoot @(
+            'config', '--unset-all', 'core.attributesfile'))
+
+        foreach ($dangerousKey in @(
+            'core.checkRoundtripEncoding',
+            'core.bigFileThreshold')) {
+            [void](Invoke-Git $repositoryRoot @(
+                'config', $dangerousKey, 'synthetic-danger'))
+            $dangerousLeaf = 'round4 dangerous ' + $dangerousKey
+            $dangerousRejected = Assert-ThrowsCode {
+                New-FslStage4RecoveryAuthorityBundle -Model (
+                    New-Model $fixtureId $dangerousLeaf) |
+                    Out-Null
+            } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' $dangerousKey
+            if ($dangerousKey -ceq 'core.checkRoundtripEncoding') {
+                $dangerousRoundtripRejected = $dangerousRejected
+            }
+            else {
+                $dangerousBigFileRejected = $dangerousRejected
+            }
+            $dangerousRoot = Join-Path $fixtureRoot $dangerousLeaf
+            if (Test-Path -LiteralPath $dangerousRoot) {
+                Remove-Item -LiteralPath $dangerousRoot -Recurse -Force
+            }
+            [void](Invoke-Git $repositoryRoot @(
+                'config', '--unset-all', $dangerousKey))
+        }
+
+        $profileHome = Join-Path $fixtureRoot 'round4-home'
+        $profileXdg = Join-Path $fixtureRoot 'round4-xdg'
+        [IO.Directory]::CreateDirectory(
+            (Join-Path $profileXdg 'git')) | Out-Null
+        [IO.Directory]::CreateDirectory($profileHome) | Out-Null
+        Write-Utf8 (Join-Path $profileXdg 'git\config') (
+            "[core]`n" +
+            "    autocrlf = false`n" +
+            "[user]`n" +
+            "    name = harmless xdg fixture`n")
+        Write-Utf8 (Join-Path $profileHome '.gitconfig') (
+            "[core]`n" +
+            "    autocrlf = true`n" +
+            "[diff `"harmless`"]`n" +
+            "    command = inert fixture`n")
+        $profileEnvironmentNames = @(
+            'HOME',
+            'XDG_CONFIG_HOME',
+            'GIT_FSL_HARMLESS',
+            'GIT_CONFIG_COUNT',
+            'GIT_CONFIG_KEY_0',
+            'GIT_CONFIG_VALUE_0',
+            'ProgramFiles',
+            'USERPROFILE')
+        $profileEnvironment = @{}
+        foreach ($name in $profileEnvironmentNames) {
+            $profileEnvironment[$name] =
+                [Environment]::GetEnvironmentVariable(
+                    $name,
+                    [EnvironmentVariableTarget]::Process)
+        }
+        try {
+            [Environment]::SetEnvironmentVariable(
+                'HOME',
+                $profileHome,
+                [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable(
+                'XDG_CONFIG_HOME',
+                $profileXdg,
+                [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable(
+                'GIT_FSL_HARMLESS',
+                'round4-fixture',
+                [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_COUNT',
+                '1',
+                [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_KEY_0',
+                'safe.directory',
+                [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_VALUE_0',
+                $repositoryRoot,
+                [EnvironmentVariableTarget]::Process)
+            [void](Invoke-Git $repositoryRoot @(
+                'config', 'core.autocrlf', 'true'))
+            [IO.File]::WriteAllText(
+                $crlfTrackedPath,
+                ([Text.UTF8Encoding]::new(
+                    $false,
+                    $true).GetString($crlfOriginalBytes).Replace(
+                        "`r`n",
+                        "`n").Replace(
+                            "`n",
+                            "`r`n")),
+                [Text.UTF8Encoding]::new($false, $true))
+            $harmlessLeaf = 'round4 harmless profile'
+            $harmlessModel = New-Model $fixtureId $harmlessLeaf
+            $harmlessGenerated =
+                New-FslStage4RecoveryAuthorityBundle -Model $harmlessModel
+            $harmlessValidation =
+                Test-FslStage4RecoveryAuthorityBundle -Model $harmlessModel
+            $harmlessProfileAccepted =
+                $harmlessGenerated.observedFiles.Count -eq 2 -and
+                $harmlessValidation.isValid -and
+                $harmlessValidation.errors.Count -eq 0
+
+            $profileLocalPath = Join-Path $gitDirectory 'config'
+            $profileLocalBytes =
+                [IO.File]::ReadAllBytes($profileLocalPath)
+            $profileProbe = {
+                param(
+                    [string]$Leaf,
+                    [AllowNull()][string]$XdgText,
+                    [AllowNull()][string]$HomeText,
+                    [string]$LocalText,
+                    [bool]$Crlf)
+                $xdgPath = Join-Path $profileXdg 'git\config'
+                $homePath = Join-Path $profileHome '.gitconfig'
+                if ($null -eq $XdgText) {
+                    if (Test-Path -LiteralPath $xdgPath) {
+                        [IO.File]::Delete($xdgPath)
+                    }
+                }
+                else { Write-Utf8 $xdgPath $XdgText }
+                if ($null -eq $HomeText) {
+                    if (Test-Path -LiteralPath $homePath) {
+                        [IO.File]::Delete($homePath)
+                    }
+                }
+                else { Write-Utf8 $homePath $HomeText }
+                Write-Utf8 $profileLocalPath $LocalText
+                if ($Crlf) {
+                    [IO.File]::WriteAllText(
+                        $crlfTrackedPath,
+                        ([Text.UTF8Encoding]::new(
+                            $false,
+                            $true).GetString($crlfOriginalBytes).Replace(
+                                "`r`n",
+                                "`n").Replace(
+                                    "`n",
+                                    "`r`n")),
+                        [Text.UTF8Encoding]::new($false, $true))
+                }
+                else {
+                    [IO.File]::WriteAllBytes(
+                        $crlfTrackedPath,
+                        $crlfOriginalBytes)
+                }
+                $accepted = $false
+                $code = $null
+                try {
+                    $probeModel = New-Model $fixtureId $Leaf
+                    $probeGenerated =
+                        New-FslStage4RecoveryAuthorityBundle `
+                            -Model $probeModel
+                    $probeValidation =
+                        Test-FslStage4RecoveryAuthorityBundle `
+                            -Model $probeModel
+                    $accepted =
+                        $probeGenerated.observedFiles.Count -eq 2 -and
+                        $probeValidation.isValid -and
+                        $probeValidation.errors.Count -eq 0
+                }
+                catch {
+                    $code = [string]$_.Exception.Data[
+                        'FslRecoveryAuthorityBundleCode']
+                }
+                finally {
+                    $probeRoot = Join-Path $fixtureRoot $Leaf
+                    if (Test-Path -LiteralPath $probeRoot) {
+                        Remove-Item -LiteralPath $probeRoot -Recurse -Force
+                    }
+                }
+                return [pscustomobject]@{
+                    accepted = $accepted
+                    code = $code
+                }
+            }
+
+            $homePrecedence = & $profileProbe `
+                'round4 home precedence' `
+                ("[core]`n    autocrlf = false`n") `
+                ("[core]`n    autocrlf = true`n" +
+                    "[credential]`n    helper = harmless`n") `
+                ("[user]`n    email = harmless@example.invalid`n") `
+                $true
+            $homeOverridesXdgAccepted = $homePrecedence.accepted
+
+            $localPrecedence = & $profileProbe `
+                'round4 local precedence' `
+                ("[core]`n    autocrlf = true`n") `
+                ("[core]`n    autocrlf = false`n") `
+                ("[core]`n    autocrlf = true`n" +
+                    "[diff `"harmless`"]`n    command = inert`n") `
+                $true
+            $localOverridesHomeAccepted = $localPrecedence.accepted
+
+            $xdgLf = & $profileProbe `
+                'round4 xdg false lf' `
+                ("[core]`n    autocrlf = false`n") `
+                ("[user]`n    name = harmless`n") `
+                ("[credential]`n    helper = harmless`n") `
+                $false
+            $xdgCrlf = & $profileProbe `
+                'round4 xdg false crlf' `
+                ("[core]`n    autocrlf = false`n") `
+                ("[user]`n    name = harmless`n") `
+                ("[credential]`n    helper = harmless`n") `
+                $true
+            $xdgOverridesSystemExact =
+                $xdgLf.accepted -and
+                -not $xdgCrlf.accepted -and
+                $xdgCrlf.code -ceq
+                    'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+
+            $lfsText =
+                "[filter `"lfs`"]`n" +
+                "    clean = git-lfs clean -- %f`n" +
+                "    smudge = git-lfs smudge -- %f`n" +
+                "    process = git-lfs filter-process`n" +
+                "    required = true`n" +
+                "[core]`n" +
+                "    autocrlf = true`n"
+            $lfsXdgProbe = & $profileProbe `
+                'round4 lfs quartet xdg' `
+                $lfsText `
+                ("[user]`n    name = harmless`n") `
+                ("[credential]`n    helper = harmless`n") `
+                $true
+            $lfsHomeProbe = & $profileProbe `
+                'round4 lfs quartet home' `
+                ("[user]`n    name = harmless`n") `
+                $lfsText `
+                ("[credential]`n    helper = harmless`n") `
+                $true
+            $lfsLocalProbe = & $profileProbe `
+                'round4 lfs quartet local' `
+                ("[user]`n    name = harmless`n") `
+                ("[credential]`n    helper = harmless`n") `
+                $lfsText `
+                $true
+            $lfsQuartetAccepted =
+                $lfsXdgProbe.accepted -and
+                $lfsHomeProbe.accepted -and
+                $lfsLocalProbe.accepted
+            $round6LfsExactDuplicateProbe = & $profileProbe `
+                'round6 lfs exact duplicate' `
+                $null `
+                $null `
+                ("[filter `"lfs`"]`n" +
+                    "    clean = git-lfs clean -- %f`n" +
+                    "    smudge = git-lfs smudge -- %f`n" +
+                    "    process = git-lfs filter-process`n" +
+                    "    required = true`n" +
+                    "    clean = git-lfs clean -- %f`n" +
+                    "[core]`n    autocrlf = true`n") `
+                $true
+            $round6LfsCaseDuplicateProbe = & $profileProbe `
+                'round6 lfs case duplicate' `
+                $null `
+                $null `
+                ("[filter `"lfs`"]`n" +
+                    "    clean = git-lfs clean -- %f`n" +
+                    "    smudge = git-lfs smudge -- %f`n" +
+                    "    process = git-lfs filter-process`n" +
+                    "    required = true`n" +
+                    "    ClEaN = git-lfs clean -- %f`n" +
+                    "[core]`n    autocrlf = true`n") `
+                $true
+            $round6LfsWrongDuplicateProbe = & $profileProbe `
+                'round6 lfs wrong duplicate' `
+                $null `
+                $null `
+                ("[filter `"lfs`"]`n" +
+                    "    clean = git-lfs clean -- %f`n" +
+                    "    smudge = git-lfs smudge -- %f`n" +
+                    "    process = git-lfs filter-process`n" +
+                    "    required = true`n" +
+                    "    clean = git-lfs clean -- %x`n" +
+                    "[core]`n    autocrlf = true`n") `
+                $true
+            $round6LfsDuplicateGrammarClosure =
+                $round6LfsExactDuplicateProbe.accepted -and
+                $round6LfsCaseDuplicateProbe.accepted -and
+                -not $round6LfsWrongDuplicateProbe.accepted -and
+                $round6LfsWrongDuplicateProbe.code -ceq
+                    'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+            $round5DuplicateImplicitProbe = & $profileProbe `
+                'round5 duplicate implicit autocrlf' `
+                ("[user]`n    name = harmless`n") `
+                ("[credential]`n    helper = harmless`n") `
+                ("[core]`n    autocrlf = false`n" +
+                    "    autocrlf`n") `
+                $true
+            $round5DuplicateOrders = $true
+            foreach ($duplicateVector in @(
+                [pscustomobject]@{
+                    text = "[core]`n    autocrlf = true`n" +
+                        "    autocrlf = false`n"
+                    crlf = $false
+                },
+                [pscustomobject]@{
+                    text = "[core]`n    autocrlf = true`n" +
+                        "    autocrlf = true`n"
+                    crlf = $true
+                },
+                [pscustomobject]@{
+                    text = "[core]`n    autocrlf = false`n" +
+                        "    autocrlf = false`n"
+                    crlf = $false
+                })) {
+                $duplicateProbe = & $profileProbe `
+                    ('round5 duplicate order ' +
+                        [Guid]::NewGuid().ToString('N')) `
+                    $null `
+                    $null `
+                    $duplicateVector.text `
+                    $duplicateVector.crlf
+                $round5DuplicateOrders =
+                    $round5DuplicateOrders -and $duplicateProbe.accepted
+            }
+            $round5QuotedGrammarProbe = & $profileProbe `
+                'round5 quoted grammar' `
+                ("[user `"quoted`"]`n" +
+                    "    name = `"line\nvalue`" # comment`n") `
+                ("[diff `"harmless`"]`n" +
+                    "    command = first\`n        second`n") `
+                ("[core]`n    autocrlf = `"true`" ; comment`n") `
+                $true
+            $round5InvalidOccurrenceProbe = & $profileProbe `
+                'round5 invalid duplicate autocrlf' `
+                $null `
+                $null `
+                ("[core]`n    autocrlf = maybe`n" +
+                    "    autocrlf = true`n") `
+                $true
+            $round5MalformedGrammarRejected = $true
+            foreach ($malformedText in @(
+                "[core`n    autocrlf = true`n",
+                "[core]`n    autocrlf = `"true`n",
+                "[diff]`n    command = true\q`n",
+                "[core]`n    autocrlf = true\\",
+                "autocrlf = true`n")) {
+                $malformedProbe = & $profileProbe `
+                    ('round5 malformed ' + [Guid]::NewGuid().ToString('N')) `
+                    $null `
+                    $null `
+                    $malformedText `
+                    $false
+                $round5MalformedGrammarRejected =
+                    $round5MalformedGrammarRejected -and
+                    -not $malformedProbe.accepted -and
+                    $malformedProbe.code -ceq
+                        'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+            }
+            $round5GrammarClosure =
+                $round5DuplicateImplicitProbe.accepted -and
+                $round5DuplicateOrders -and
+                $round5QuotedGrammarProbe.accepted -and
+                -not $round5InvalidOccurrenceProbe.accepted -and
+                $round5InvalidOccurrenceProbe.code -ceq
+                    'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' -and
+                $round5MalformedGrammarRejected
+            $partialLfsProbe = & $profileProbe `
+                'round4 partial lfs' `
+                ("[user]`n    name = harmless`n") `
+                ("[filter `"lfs`"]`n" +
+                    "    clean = git-lfs clean -- %f`n") `
+                ("[core]`n    autocrlf = false`n") `
+                $false
+            $partialLfsRejected =
+                -not $partialLfsProbe.accepted -and
+                $partialLfsProbe.code -ceq
+                    'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+
+            foreach ($commandKey in @(
+                'core.autocrlf',
+                'core.attributesfile')) {
+                [Environment]::SetEnvironmentVariable(
+                    'GIT_CONFIG_KEY_0',
+                    $commandKey,
+                    [EnvironmentVariableTarget]::Process)
+                $commandProbe = & $profileProbe `
+                    ('round4 command ' + $commandKey) `
+                    ("[user]`n    name = harmless`n") `
+                    ("[credential]`n    helper = harmless`n") `
+                    ("[core]`n    autocrlf = false`n") `
+                    $false
+                $commandRejected =
+                    -not $commandProbe.accepted -and
+                    $commandProbe.code -ceq
+                        'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+                if ($commandKey -ceq 'core.autocrlf') {
+                    $commandAutocrlfRejected = $commandRejected
+                }
+                else { $commandRoutingRejected = $commandRejected }
+            }
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_KEY_0',
+                'SaFe.DiReCtOrY',
+                [EnvironmentVariableTarget]::Process)
+            $mixedSafeCommandProbe = & $profileProbe `
+                'round5 mixed safe.directory' `
+                $null `
+                $null `
+                ("[core]`n    autocrlf = false`n") `
+                $false
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_KEY_0',
+                'CoRe.AuToCrLf',
+                [EnvironmentVariableTarget]::Process)
+            $mixedDangerousCommandProbe = & $profileProbe `
+                'round5 mixed dangerous command' `
+                $null `
+                $null `
+                ("[core]`n    autocrlf = false`n") `
+                $false
+            $round5CommandCaseClosure =
+                $mixedSafeCommandProbe.accepted -and
+                -not $mixedDangerousCommandProbe.accepted -and
+                $mixedDangerousCommandProbe.code -ceq
+                    'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_KEY_0',
+                'safe.directory',
+                [EnvironmentVariableTarget]::Process)
+
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_VALUE_0',
+                $null,
+                [EnvironmentVariableTarget]::Process)
+            $incompleteProbe = & $profileProbe `
+                'round4 incomplete command config' `
+                $null `
+                $null `
+                ("[core]`n    autocrlf = false`n") `
+                $false
+            $commandIncompleteRejected =
+                -not $incompleteProbe.accepted -and
+                $incompleteProbe.code -ceq
+                    'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_VALUE_0',
+                $repositoryRoot,
+                [EnvironmentVariableTarget]::Process)
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_COUNT',
+                '65',
+                [EnvironmentVariableTarget]::Process)
+            $boundProbe = & $profileProbe `
+                'round4 bounded command config' `
+                $null `
+                $null `
+                ("[core]`n    autocrlf = false`n") `
+                $false
+            $commandBoundRejected =
+                -not $boundProbe.accepted -and
+                $boundProbe.code -ceq
+                    'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_COUNT',
+                '1',
+                [EnvironmentVariableTarget]::Process)
+
+            $namedRoutingOverridesRejected = $true
+            foreach ($routingName in @(
+                'GIT_CONFIG_SYSTEM',
+                'GIT_CONFIG_GLOBAL',
+                'GIT_CONFIG_NOSYSTEM',
+                'GIT_CONFIG_PARAMETERS',
+                'GIT_ATTR_NOSYSTEM',
+                'GIT_DIR',
+                'GIT_WORK_TREE',
+                'GIT_COMMON_DIR',
+                'GIT_INDEX_FILE',
+                'GIT_OBJECT_DIRECTORY',
+                'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+                'GIT_QUARANTINE_PATH',
+                'GIT_NAMESPACE',
+                'GIT_SHALLOW_FILE',
+                'GIT_GRAFT_FILE',
+                'GIT_NO_REPLACE_OBJECTS',
+                'GIT_REPLACE_REF_BASE',
+                'GIT_CONFIG_UNKNOWN')) {
+                $routingOriginal =
+                    [Environment]::GetEnvironmentVariable(
+                        $routingName,
+                        [EnvironmentVariableTarget]::Process)
+                try {
+                    [Environment]::SetEnvironmentVariable(
+                        $routingName,
+                        'round4-routing-override',
+                        [EnvironmentVariableTarget]::Process)
+                    $routingProbe = & $profileProbe `
+                        ('round4 routing ' + $routingName) `
+                        $null `
+                        $null `
+                        ("[core]`n    autocrlf = false`n") `
+                        $false
+                    $namedRoutingOverridesRejected =
+                        $namedRoutingOverridesRejected -and
+                        -not $routingProbe.accepted -and
+                        $routingProbe.code -ceq
+                            'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+                }
+                finally {
+                    [Environment]::SetEnvironmentVariable(
+                        $routingName,
+                        $routingOriginal,
+                        [EnvironmentVariableTarget]::Process)
+                }
+            }
+
+            $noncanonicalEnvironmentRejected = $true
+            foreach ($canonicalName in @(
+                'ProgramFiles',
+                'USERPROFILE',
+                'HOME')) {
+                $canonicalOriginal =
+                    [Environment]::GetEnvironmentVariable(
+                        $canonicalName,
+                        [EnvironmentVariableTarget]::Process)
+                try {
+                    [Environment]::SetEnvironmentVariable(
+                        $canonicalName,
+                        (Join-Path $canonicalOriginal '.'),
+                        [EnvironmentVariableTarget]::Process)
+                    $noncanonicalProbe = & $profileProbe `
+                        ('round4 noncanonical ' + $canonicalName) `
+                        $null `
+                        $null `
+                        ("[core]`n    autocrlf = false`n") `
+                        $false
+                    $noncanonicalEnvironmentRejected =
+                        $noncanonicalEnvironmentRejected -and
+                        -not $noncanonicalProbe.accepted -and
+                        $noncanonicalProbe.code -ceq
+                            'FSL-RAB-V007-TOOLCHAIN-AUTHORITY'
+                }
+                finally {
+                    [Environment]::SetEnvironmentVariable(
+                        $canonicalName,
+                        $canonicalOriginal,
+                        [EnvironmentVariableTarget]::Process)
+                }
+            }
+            $programW6432Original =
+                [Environment]::GetEnvironmentVariable(
+                    'ProgramW6432',
+                    [EnvironmentVariableTarget]::Process)
+            try {
+                $round5ProgramW6432Closure = $true
+                foreach ($programW6432Vector in @(
+                    [pscustomobject]@{
+                        value = $null
+                        accepted = $true
+                    },
+                    [pscustomobject]@{
+                        value = [Environment]::GetEnvironmentVariable(
+                            'ProgramFiles',
+                            [EnvironmentVariableTarget]::Process)
+                        accepted = $true
+                    },
+                    [pscustomobject]@{
+                        value = '.'
+                        accepted = $false
+                    },
+                    [pscustomobject]@{
+                        value = (Join-Path $fixtureRoot 'missing-program-w6432')
+                        accepted = $false
+                    },
+                    [pscustomobject]@{
+                        value = $env:SystemRoot
+                        accepted = $false
+                    })) {
+                    [Environment]::SetEnvironmentVariable(
+                        'ProgramW6432',
+                        $programW6432Vector.value,
+                        [EnvironmentVariableTarget]::Process)
+                    $programW6432Probe = & $profileProbe `
+                        ('round5 ProgramW6432 ' +
+                            [Guid]::NewGuid().ToString('N')) `
+                        $null `
+                        $null `
+                        ("[core]`n    autocrlf = false`n") `
+                        $false
+                    $round5ProgramW6432Closure =
+                        $round5ProgramW6432Closure -and
+                        ($programW6432Probe.accepted -eq
+                            $programW6432Vector.accepted)
+                }
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable(
+                    'ProgramW6432',
+                    $programW6432Original,
+                    [EnvironmentVariableTarget]::Process)
+            }
+            [IO.File]::WriteAllBytes(
+                $profileLocalPath,
+                $profileLocalBytes)
+        }
+        finally {
+            [IO.File]::WriteAllBytes($crlfTrackedPath, $crlfOriginalBytes)
+            foreach ($name in $profileEnvironmentNames) {
+                [Environment]::SetEnvironmentVariable(
+                    $name,
+                    $profileEnvironment[$name],
+                    [EnvironmentVariableTarget]::Process)
+            }
+            $harmlessRoot = Join-Path $fixtureRoot 'round4 harmless profile'
+            if (Test-Path -LiteralPath $harmlessRoot) {
+                Remove-Item -LiteralPath $harmlessRoot -Recurse -Force
+            }
+            [void](Invoke-Git $repositoryRoot @(
+                'config', 'core.autocrlf', 'false'))
+        }
+    }
+    catch {
+        $crlfFailureCode = [string]$_.Exception.Data[
+            'FslRecoveryAuthorityBundleCode']
+    }
+    finally {
+        [IO.File]::WriteAllBytes($crlfTrackedPath, $crlfOriginalBytes)
+        if ($null -ne $profileLocalBytes -and
+            -not [string]::IsNullOrEmpty($profileLocalPath)) {
+            [IO.File]::WriteAllBytes(
+                $profileLocalPath,
+                $profileLocalBytes)
+        }
+        if (Test-Path -LiteralPath $rootAttributesPath) {
+            [IO.File]::Delete($rootAttributesPath)
+        }
+        foreach ($temporaryPath in @(
+            $nestedAttributesPath,
+            $worktreeConfigPath)) {
+            if (Test-Path -LiteralPath $temporaryPath) {
+                [IO.File]::Delete($temporaryPath)
+            }
+        }
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_NOSYSTEM',
+            $unsafeEnvironmentOriginal,
+            [EnvironmentVariableTarget]::Process)
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            [void](& git.exe -C $repositoryRoot config --unset-all (
+                'filter.reviewer.clean') 2>&1)
+            [void](& git.exe -C $repositoryRoot config --unset-all (
+                'core.attributesfile') 2>&1)
+        }
+        finally {
+            $ErrorActionPreference = $savedPreference
+        }
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'false'))
+    }
+    Assert-Case (
+        $crlfCleanAccepted -and
+        $rootAttributesOracleDirty -and
+        $rootAttributesRejected -and
+        $rawConversionSourceRejected -and
+        $unsafeEnvironmentRejected -and
+        $worktreeConfigRejected -and
+        $nestedAttributesRejected -and
+        $customGlobalAttributesRejected -and
+        $dangerousRoundtripRejected -and
+        $dangerousBigFileRejected -and
+        $harmlessProfileAccepted -and
+        $homeOverridesXdgAccepted -and
+        $localOverridesHomeAccepted -and
+        $xdgOverridesSystemExact -and
+        $lfsQuartetAccepted -and
+        $partialLfsRejected -and
+        $commandAutocrlfRejected -and
+        $commandRoutingRejected -and
+        $commandIncompleteRejected -and
+        $commandBoundRejected -and
+        $namedRoutingOverridesRejected -and
+        $noncanonicalEnvironmentRejected -and
+        $round6LfsDuplicateGrammarClosure -and
+        $round5GrammarClosure -and
+        $round5CommandCaseClosure -and
+        $round5ProgramW6432Closure) (
+        'A semantically clean core.autocrlf=true CRLF worktree was rejected: ' +
+        "code=$crlfFailureCode status=$crlfStatus " +
+        "generated=$crlfGeneratedCount valid=$crlfValidationValid " +
+        "errors=$crlfValidationErrors oracleDirty=$rootAttributesOracleDirty " +
+        "rootAttributesRejected=$rootAttributesRejected " +
+        "rawSourceRejected=$rawConversionSourceRejected " +
+        "environmentRejected=$unsafeEnvironmentRejected " +
+        "worktreeConfigRejected=$worktreeConfigRejected " +
+        "nestedAttributesRejected=$nestedAttributesRejected " +
+        "customGlobalRejected=$customGlobalAttributesRejected " +
+        "roundtripRejected=$dangerousRoundtripRejected " +
+        "bigFileRejected=$dangerousBigFileRejected " +
+        "harmlessProfileAccepted=$harmlessProfileAccepted " +
+        "homePrecedence=$homeOverridesXdgAccepted " +
+        "localPrecedence=$localOverridesHomeAccepted " +
+        "xdgPrecedence=$xdgOverridesSystemExact " +
+        "lfsQuartet=$lfsQuartetAccepted partialLfs=$partialLfsRejected " +
+        "commandAutocrlf=$commandAutocrlfRejected " +
+        "commandRouting=$commandRoutingRejected " +
+        "commandIncomplete=$commandIncompleteRejected " +
+        "commandBound=$commandBoundRejected " +
+        "namedRouting=$namedRoutingOverridesRejected " +
+        "canonicalEnvironment=$noncanonicalEnvironmentRejected " +
+        "round6LfsDuplicates=$round6LfsDuplicateGrammarClosure " +
+        "round6Exact=$($round6LfsExactDuplicateProbe.accepted) " +
+        "round6Case=$($round6LfsCaseDuplicateProbe.accepted) " +
+        "round6WrongAccepted=$($round6LfsWrongDuplicateProbe.accepted) " +
+        "round6WrongCode=$($round6LfsWrongDuplicateProbe.code) " +
+        "round5Grammar=$round5GrammarClosure " +
+        "round5Command=$round5CommandCaseClosure " +
+        "round5ProgramW6432=$round5ProgramW6432Closure")
+
+    $customEolRejected = $false
+    try {
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'true'))
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.eol', 'lf'))
+        [IO.File]::WriteAllText(
+            $crlfTrackedPath,
+            ([Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($crlfOriginalBytes).Replace(
+                    "`r`n",
+                    "`n").Replace(
+                        "`n",
+                        "`r`n")),
+            [Text.UTF8Encoding]::new($false, $true))
+        $customEolModel =
+            New-Model $fixtureId 'custom eol recovery source'
+        $customEolRejected = Assert-ThrowsCode {
+            New-FslStage4RecoveryAuthorityBundle -Model $customEolModel |
+                Out-Null
+        } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' 'custom eol'
+    }
+    finally {
+        [IO.File]::WriteAllBytes($crlfTrackedPath, $crlfOriginalBytes)
+        [void](Invoke-Git $repositoryRoot @(
+            'config', '--unset-all', 'core.eol'))
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'false'))
+    }
+    Assert-Case $customEolRejected (
+        'A custom core.eol profile was accepted for CRLF canonicalization.')
+
+    $customAttributesPath = Join-Path $gitDirectory 'info\attributes'
+    $customAttributesRejected = $false
+    try {
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'true'))
+        Write-Utf8 $customAttributesPath "* text eol=lf`n"
+        [IO.File]::WriteAllText(
+            $crlfTrackedPath,
+            ([Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($crlfOriginalBytes).Replace(
+                    "`r`n",
+                    "`n").Replace(
+                        "`n",
+                        "`r`n")),
+            [Text.UTF8Encoding]::new($false, $true))
+        $customAttributesModel =
+            New-Model $fixtureId 'custom attributes recovery source'
+        $customAttributesRejected = Assert-ThrowsCode {
+            New-FslStage4RecoveryAuthorityBundle `
+                -Model $customAttributesModel |
+                Out-Null
+        } 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' 'custom attributes'
+    }
+    finally {
+        [IO.File]::WriteAllBytes($crlfTrackedPath, $crlfOriginalBytes)
+        if (Test-Path -LiteralPath $customAttributesPath) {
+            [IO.File]::Delete($customAttributesPath)
+        }
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'false'))
+    }
+    Assert-Case $customAttributesRejected (
+        'A custom repository attributes profile was accepted.')
+
+    $systemProfileAccepted = $false
+    $systemProfileFailureCode = $null
+    try {
+        [void](Invoke-Git $repositoryRoot @(
+            'config', '--unset-all', 'core.autocrlf'))
+        [IO.File]::WriteAllText(
+            $crlfTrackedPath,
+            ([Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($crlfOriginalBytes).Replace(
+                    "`r`n",
+                    "`n").Replace(
+                        "`n",
+                        "`r`n")),
+            [Text.UTF8Encoding]::new($false, $true))
+        $systemProfileModel =
+            New-Model $fixtureId 'system profile recovery source'
+        $systemProfileGenerated =
+            New-FslStage4RecoveryAuthorityBundle -Model $systemProfileModel
+        $systemProfileValidation =
+            Test-FslStage4RecoveryAuthorityBundle -Model $systemProfileModel
+        $systemProfileAccepted =
+            $systemProfileGenerated.observedFiles.Count -eq 2 -and
+            $systemProfileValidation.isValid -and
+            $systemProfileValidation.errors.Count -eq 0
+    }
+    catch {
+        $systemProfileFailureCode = [string]$_.Exception.Data[
+            'FslRecoveryAuthorityBundleCode']
+    }
+    finally {
+        [IO.File]::WriteAllBytes($crlfTrackedPath, $crlfOriginalBytes)
+        [void](Invoke-Git $repositoryRoot @(
+            'config', 'core.autocrlf', 'false'))
+    }
+    Assert-Case $systemProfileAccepted (
+        'The safe standard system autocrlf profile was rejected: ' +
+        $systemProfileFailureCode)
+
     # Group 3: generation and canonical schema, 32 cases / 44 assertions.
     $generated = New-FslStage4RecoveryAuthorityBundle -Model $model
     $sourceRoot = Join-Path $fixtureRoot $sourceLeaf
@@ -1057,7 +2037,7 @@ try {
             $validation.isValid)
     }
 
-    if ($script:Cases -ne 218 -or $script:Assertions -ne 305) {
+    if ($script:Cases -ne 222 -or $script:Assertions -ne 309) {
         throw "Counter drift: Cases=$script:Cases Assertions=$script:Assertions."
     }
     Write-Output (

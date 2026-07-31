@@ -1031,6 +1031,816 @@ function Test-FslRabAncestor {
     return $false
 }
 
+function Get-FslRabConversionSourceRecord {
+    param([string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full)) {
+        return [pscustomobject][ordered]@{
+            path = $full
+            exists = $false
+            length = $null
+            creationTicks = $null
+            writeTicks = $null
+            attributes = $null
+            sha256 = $null
+            text = $null
+        }
+    }
+    try {
+        $before = Get-Item -LiteralPath $full -Force
+        if ($before.PSIsContainer -or
+            ($before.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $before.Length -gt 1MB) {
+            return $null
+        }
+        $bytes = [IO.File]::ReadAllBytes($full)
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        $after = Get-Item -LiteralPath $full -Force
+        $hash = Get-FslRabSha256Bytes $bytes
+        if (-not [string]::Equals(
+                $before.FullName,
+                $after.FullName,
+                [StringComparison]::Ordinal) -or
+            $before.Length -ne $after.Length -or
+            $before.CreationTimeUtc.Ticks -ne
+                $after.CreationTimeUtc.Ticks -or
+            $before.LastWriteTimeUtc.Ticks -ne
+                $after.LastWriteTimeUtc.Ticks -or
+            [int]$before.Attributes -ne [int]$after.Attributes -or
+            $bytes.Length -ne $after.Length) {
+            return $null
+        }
+        return [pscustomobject][ordered]@{
+            path = $full
+            exists = $true
+            length = [long]$after.Length
+            creationTicks = [long]$after.CreationTimeUtc.Ticks
+            writeTicks = [long]$after.LastWriteTimeUtc.Ticks
+            attributes = [int]$after.Attributes
+            sha256 = $hash
+            text = $text
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function ConvertFrom-FslRabConfigValue {
+    param(
+        [AllowEmptyString()][string]$Text,
+        [ref]$Value)
+    $builder = [Text.StringBuilder]::new()
+    $pendingWhitespace = [Text.StringBuilder]::new()
+    $quoted = $false
+    $seenData = $false
+    for ($index = 0; $index -lt $Text.Length; $index++) {
+        $character = $Text[$index]
+        if (-not $quoted -and $character -in @([char]'#', [char]';')) {
+            break
+        }
+        if ($character -eq [char]'"') {
+            $quoted = -not $quoted
+            $seenData = $true
+            if ($pendingWhitespace.Length -gt 0) {
+                [void]$builder.Append($pendingWhitespace)
+                [void]$pendingWhitespace.Clear()
+            }
+            continue
+        }
+        if ($character -eq [char]'\') {
+            if ($index + 1 -ge $Text.Length) { return $false }
+            $index++
+            $escaped = $Text[$index]
+            $decoded = switch ($escaped) {
+                '"' { [char]'"'; break }
+                '\' { [char]'\'; break }
+                'n' { [char]"`n"; break }
+                't' { [char]"`t"; break }
+                'b' { [char]"`b"; break }
+                default { return $false }
+            }
+            if ($pendingWhitespace.Length -gt 0) {
+                [void]$builder.Append($pendingWhitespace)
+                [void]$pendingWhitespace.Clear()
+            }
+            [void]$builder.Append($decoded)
+            $seenData = $true
+        }
+        elseif (-not $quoted -and
+            $character -in @([char]' ', [char]"`t")) {
+            if ($seenData) { [void]$pendingWhitespace.Append($character) }
+        }
+        else {
+            if ($pendingWhitespace.Length -gt 0) {
+                [void]$builder.Append($pendingWhitespace)
+                [void]$pendingWhitespace.Clear()
+            }
+            [void]$builder.Append($character)
+            $seenData = $true
+        }
+        if ($builder.Length + $pendingWhitespace.Length -gt 32768) {
+            return $false
+        }
+    }
+    if ($quoted) { return $false }
+    $Value.Value = $builder.ToString()
+    return $true
+}
+
+function Test-FslRabConversionConfig {
+    param(
+        $Record,
+        [ref]$HasAutoCrlf,
+        [ref]$AutoCrlf)
+    if (-not [bool]$Record.exists) { return $true }
+    $text = [string]$Record.text
+    if ($text.Contains([char]0) -or
+        [regex]::IsMatch($text, "`r(?!`n)")) {
+        return $false
+    }
+    if ([Text.Encoding]::UTF8.GetByteCount($text) -gt 1MB) { return $false }
+    $physical = $text.Replace("`r`n", "`n").Split("`n")
+    if ($physical.Count -gt 65536) { return $false }
+    $logical = [Collections.Generic.List[string]]::new()
+    for ($physicalIndex = 0; $physicalIndex -lt $physical.Count;
+        $physicalIndex++) {
+        $builder = [Text.StringBuilder]::new([string]$physical[$physicalIndex])
+        $continuations = 0
+        while ($builder.Length -gt 0 -and
+            $builder[$builder.Length - 1] -eq [char]'\') {
+            $slashCount = 0
+            for ($slashIndex = $builder.Length - 1;
+                $slashIndex -ge 0 -and
+                $builder[$slashIndex] -eq [char]'\';
+                $slashIndex--) {
+                $slashCount++
+            }
+            if (($slashCount % 2) -eq 0) { break }
+            if ($physicalIndex + 1 -ge $physical.Count -or
+                ++$continuations -gt 64) {
+                return $false
+            }
+            $builder.Length--
+            $physicalIndex++
+            [void]$builder.Append(
+                ([string]$physical[$physicalIndex]).TrimStart(' ', "`t"))
+            if ($builder.Length -gt 32768) { return $false }
+        }
+        $logical.Add($builder.ToString())
+    }
+    $section = ''
+    $subsection = ''
+    $lfs = @{}
+    $assignmentCount = 0
+    foreach ($sourceLine in $logical) {
+        $line = $sourceLine.Trim()
+        if ($line.Length -eq 0 -or
+            $line[0] -in @([char]'#', [char]';')) {
+            continue
+        }
+        if ($line -match (
+                '^\[(?<section>[A-Za-z][A-Za-z0-9-]*)' +
+                '(?:[ \t]+"(?<subsection>(?:[^"\\]|\\.)*)")?\]' +
+                '[ \t]*(?:[#;].*)?$')) {
+            $section = $Matches.section.ToLowerInvariant()
+            if ($section.Length -gt 32768) { return $false }
+            $subsection = if ($Matches.ContainsKey('subsection')) {
+                $decodedSubsection = $null
+                if (-not (ConvertFrom-FslRabConfigValue `
+                        ('"' + [string]$Matches.subsection + '"') `
+                        ([ref]$decodedSubsection)) -or
+                    $decodedSubsection.Length -gt 32768) {
+                    return $false
+                }
+                $decodedSubsection
+            }
+            else { '' }
+            if ($section -in @('include', 'includeif')) {
+                return $false
+            }
+            continue
+        }
+        if ($line -cnotmatch (
+                '^(?<key>[A-Za-z][A-Za-z0-9-]*)' +
+                '(?<tail>(?:[ \t]*=[ \t]*.*|' +
+                '[ \t]*(?:[#;].*)?))$')) {
+            return $false
+        }
+        if ($section.Length -eq 0) { return $false }
+        if (++$assignmentCount -gt 4096) { return $false }
+        $key = $Matches.key.ToLowerInvariant()
+        $tail = [string]$Matches.tail
+        $value = 'true'
+        if ($tail -match '^[ \t]*=') {
+            $equals = $tail.IndexOf('=')
+            $decodedValue = $null
+            if (-not (ConvertFrom-FslRabConfigValue `
+                    $tail.Substring($equals + 1) `
+                    ([ref]$decodedValue))) {
+                return $false
+            }
+            $value = $decodedValue
+        }
+        if ($section -ceq 'core' -and $key -ceq 'autocrlf') {
+            if ($value -inotmatch '^(?:true|false)$') {
+                return $false
+            }
+            $HasAutoCrlf.Value = $true
+            $AutoCrlf.Value =
+                [string]::Equals($value, 'true',
+                    [StringComparison]::OrdinalIgnoreCase)
+        }
+        elseif ($section -ceq 'core' -and
+            $key -in @(
+                'eol',
+                'attributesfile',
+                'worktree',
+                'safecrlf',
+                'checkroundtripencoding',
+                'bigfilethreshold')) {
+            return $false
+        }
+        elseif ($section -ceq 'extensions' -and
+            $key -ceq 'worktreeconfig') {
+            return $false
+        }
+        elseif ($section -ceq 'filter') {
+            if (-not [string]::Equals(
+                    $subsection, 'lfs', [StringComparison]::Ordinal)) {
+                return $false
+            }
+            $expected = @{
+                clean = 'git-lfs clean -- %f'
+                smudge = 'git-lfs smudge -- %f'
+                process = 'git-lfs filter-process'
+                required = 'true'
+            }
+            if (-not $expected.ContainsKey($key) -or
+                $value -cne $expected[$key]) {
+                return $false
+            }
+            $lfs[$key] = $value
+        }
+    }
+    return $lfs.Count -in @(0, 4)
+}
+
+function Get-FslRabEnvironmentSnapshot {
+    $snapshot = [Collections.Generic.Dictionary[string,string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    try {
+        $variables = [Environment]::GetEnvironmentVariables(
+            [EnvironmentVariableTarget]::Process)
+        foreach ($entry in $variables.GetEnumerator()) {
+            if ($entry.Key -isnot [string] -or
+                $entry.Value -isnot [string] -or
+                [string]::IsNullOrEmpty([string]$entry.Key) -or
+                $snapshot.ContainsKey([string]$entry.Key)) {
+                return $null
+            }
+            $snapshot.Add([string]$entry.Key, [string]$entry.Value)
+        }
+    }
+    catch {
+        return $null
+    }
+    return $snapshot
+}
+
+function Get-FslRabCanonicalEnvironmentPath {
+    param(
+        [Collections.Generic.Dictionary[string,string]]$Snapshot,
+        [string]$Name,
+        [bool]$Required)
+    if (-not $Snapshot.ContainsKey($Name)) {
+        if ($Required) { return $null }
+        return ''
+    }
+    $raw = [string]$Snapshot[$Name]
+    if ([string]::IsNullOrWhiteSpace($raw) -or
+        $raw.Contains([char]0)) {
+        return $null
+    }
+    try {
+        $canonical = [IO.Path]::GetFullPath($raw)
+        if (-not [IO.Path]::IsPathRooted($raw) -or
+            -not [string]::Equals(
+                $raw,
+                $canonical,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            return $null
+        }
+        return $canonical
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-FslRabCommandConfigEnvironment {
+    param(
+        [Collections.Generic.Dictionary[string,string]]$Snapshot)
+    foreach ($name in @($Snapshot.Keys | Where-Object {
+        $_ -imatch '^GIT_CONFIG_'
+    })) {
+        if ($name -ine 'GIT_CONFIG_COUNT' -and
+            $name -inotmatch '^GIT_CONFIG_(?:KEY|VALUE)_[0-9]+$') {
+            return $false
+        }
+    }
+    $countPresent = $Snapshot.ContainsKey('GIT_CONFIG_COUNT')
+    $numbered = @($Snapshot.Keys | Where-Object {
+        $_ -imatch '^GIT_CONFIG_(?:KEY|VALUE)_[0-9]+$'
+    })
+    if (-not $countPresent) {
+        return $numbered.Count -eq 0
+    }
+    $rawCount = [string]$Snapshot['GIT_CONFIG_COUNT']
+    if ($rawCount -cnotmatch '^(?:0|[1-9][0-9]?)$') {
+        return $false
+    }
+    $count = [int]$rawCount
+    if ($count -gt 64 -or $numbered.Count -ne (2 * $count)) {
+        return $false
+    }
+    for ($index = 0; $index -lt $count; $index++) {
+        $keyName = 'GIT_CONFIG_KEY_' + $index
+        $valueName = 'GIT_CONFIG_VALUE_' + $index
+        if (-not $Snapshot.ContainsKey($keyName) -or
+            -not $Snapshot.ContainsKey($valueName)) {
+            return $false
+        }
+        $key = [string]$Snapshot[$keyName]
+        $value = [string]$Snapshot[$valueName]
+        if (-not [string]::Equals(
+                $key, 'safe.directory',
+                [StringComparison]::OrdinalIgnoreCase) -or
+            $value.Length -gt 32768 -or
+            $value.Contains([char]0) -or
+            $value.Contains("`r") -or
+            $value.Contains("`n")) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-FslRabSystemAttributes {
+    param($Record)
+    if (-not [bool]$Record.exists) { return $true }
+    $text = [string]$Record.text
+    if ($text.Contains([char]0) -or
+        [regex]::IsMatch($text, "`r(?!`n)")) {
+        return $false
+    }
+    foreach ($sourceLine in $text.Replace("`r`n", "`n").Split("`n")) {
+        $line = $sourceLine.Trim()
+        if ($line.Length -eq 0 -or $line[0] -eq '#') { continue }
+        if ($line -cnotmatch
+            '^\*\.[A-Za-z0-9]+[ \t]+diff=astextplain$') {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-FslRabUInt32LeBytes {
+    param([uint32]$Value)
+    $bytes = [BitConverter]::GetBytes($Value)
+    if (-not [BitConverter]::IsLittleEndian) { [Array]::Reverse($bytes) }
+    return ,$bytes
+}
+
+function Get-FslRabInt64LeBytes {
+    param([long]$Value)
+    $bytes = [BitConverter]::GetBytes($Value)
+    if (-not [BitConverter]::IsLittleEndian) { [Array]::Reverse($bytes) }
+    return ,$bytes
+}
+
+function Get-FslRabHexBytes {
+    param([string]$Hex)
+    if ($Hex.Length % 2 -ne 0) { throw 'Invalid hexadecimal length.' }
+    $bytes = [byte[]]::new($Hex.Length / 2)
+    for ($index = 0; $index -lt $bytes.Length; $index++) {
+        $bytes[$index] = [Convert]::ToByte(
+            $Hex.Substring(2 * $index, 2), 16)
+    }
+    return ,$bytes
+}
+
+function Write-FslRabProfileFrame {
+    param(
+        [IO.MemoryStream]$Stream,
+        [byte]$Type,
+        [byte]$State,
+        [string]$Name,
+        [byte[]]$Payload)
+    $nameBytes = Get-FslRabBytes $Name
+    if ($null -eq $Payload) { $Payload = [byte[]]@() }
+    $Stream.WriteByte($Type)
+    $Stream.WriteByte($State)
+    $length = Get-FslRabUInt32LeBytes ([uint32]$nameBytes.Length)
+    $Stream.Write($length, 0, $length.Length)
+    $Stream.Write($nameBytes, 0, $nameBytes.Length)
+    $length = Get-FslRabUInt32LeBytes ([uint32]$Payload.Length)
+    $Stream.Write($length, 0, $length.Length)
+    $Stream.Write($Payload, 0, $Payload.Length)
+}
+
+function Test-FslRabProfileEncoderGolden {
+    $stream = [IO.MemoryStream]::new()
+    try {
+        Write-FslRabProfileFrame $stream 1 2 'schema' (
+            Get-FslRabBytes 'FSL.Stage4.ConversionProfile')
+        Write-FslRabProfileFrame $stream 3 2 'version' (
+            Get-FslRabUInt32LeBytes 1)
+        Write-FslRabProfileFrame $stream 1 2 'newline' (
+            Get-FslRabBytes "a`nb")
+        Write-FslRabProfileFrame $stream 1 2 'pipe' (
+            Get-FslRabBytes 'a|b')
+        Write-FslRabProfileFrame $stream 1 2 'empty' ([byte[]]@())
+        Write-FslRabProfileFrame $stream 1 1 'null' ([byte[]]@())
+        Write-FslRabProfileFrame $stream 1 0 'absent' ([byte[]]@())
+        Write-FslRabProfileFrame $stream 2 2 'false' ([byte[]]@(0))
+        Write-FslRabProfileFrame $stream 3 2 'zero' (
+            Get-FslRabUInt32LeBytes 0)
+        return (Get-FslRabSha256Bytes $stream.ToArray()) -ceq
+            '0D2589A97EEC51DD09F1F23B7DE4171E6EC9A1AB1356AD1FBD1AC2011A594E26'
+    }
+    finally { $stream.Dispose() }
+}
+
+function Get-FslRabProfileFingerprintBytes {
+    param(
+        [Collections.Generic.Dictionary[string,string]]$Environment,
+        [string]$ProgramFiles,
+        [string]$UserProfile,
+        [string]$Home,
+        [string]$Xdg,
+        [bool]$ProgramW6432Present,
+        [AllowNull()][string]$ProgramW6432,
+        [bool]$HasAutoCrlf,
+        [bool]$AutoCrlf,
+        [hashtable]$Records)
+    $stream = [IO.MemoryStream]::new()
+    try {
+        Write-FslRabProfileFrame $stream 1 2 'schema' (
+            Get-FslRabBytes 'FSL.Stage4.ConversionProfile')
+        Write-FslRabProfileFrame $stream 3 2 'version' (
+            Get-FslRabUInt32LeBytes 1)
+        foreach ($resolved in @(
+            @('resolved.ProgramFiles', $ProgramFiles),
+            @('resolved.USERPROFILE', $UserProfile),
+            @('resolved.HOME', $Home),
+            @('resolved.XDG_CONFIG_HOME', $Xdg))) {
+            Write-FslRabProfileFrame $stream 1 2 $resolved[0] (
+                Get-FslRabBytes ([string]$resolved[1]))
+        }
+        Write-FslRabProfileFrame $stream 1 $(
+            if ($ProgramW6432Present) { 2 } else { 0 }
+        ) 'raw.ProgramW6432' $(
+            if ($ProgramW6432Present) {
+                Get-FslRabBytes ([string]$Environment['ProgramW6432'])
+            }
+            else { [byte[]]@() })
+        Write-FslRabProfileFrame $stream 1 $(
+            if ($ProgramW6432Present) { 2 } else { 0 }
+        ) 'resolved.ProgramW6432' $(
+            if ($ProgramW6432Present) {
+                Get-FslRabBytes ([string]$ProgramW6432)
+            }
+            else { [byte[]]@() })
+        Write-FslRabProfileFrame $stream 2 2 'hasAutoCrlf' (
+            [byte[]]@($(if ($HasAutoCrlf) { 1 } else { 0 })))
+        Write-FslRabProfileFrame $stream 2 $(
+            if ($HasAutoCrlf) { 2 } else { 0 }
+        ) 'autoCrlf' $(
+            if ($HasAutoCrlf) {
+                [byte[]]@($(if ($AutoCrlf) { 1 } else { 0 }))
+            }
+            else { [byte[]]@() })
+        foreach ($name in @(
+            'ProgramFiles',
+            'USERPROFILE',
+            'HOME',
+            'XDG_CONFIG_HOME')) {
+            Write-FslRabProfileFrame $stream 1 $(
+                if ($Environment.ContainsKey($name)) { 2 } else { 0 }
+            ) ('raw.' + $name) $(
+                if ($Environment.ContainsKey($name)) {
+                    Get-FslRabBytes ([string]$Environment[$name])
+                }
+                else { [byte[]]@() })
+        }
+        $gitNames = @($Environment.Keys | Where-Object {
+            $_ -imatch '^GIT_'
+        } | ForEach-Object { $_.ToUpperInvariant() })
+        [Array]::Sort($gitNames, [StringComparer]::Ordinal)
+        $gitPayload = [IO.MemoryStream]::new()
+        try {
+            $countBytes = Get-FslRabUInt32LeBytes ([uint32]$gitNames.Count)
+            $gitPayload.Write($countBytes, 0, $countBytes.Length)
+            foreach ($name in $gitNames) {
+                Write-FslRabProfileFrame $gitPayload 1 2 $name (
+                    Get-FslRabBytes ([string]$Environment[$name]))
+            }
+            Write-FslRabProfileFrame $stream 5 2 'gitEnvironment' (
+                $gitPayload.ToArray())
+        }
+        finally { $gitPayload.Dispose() }
+        $paths = [string[]]@($Records.Keys)
+        $pathComparer =
+            [Collections.Generic.Comparer[string]]::Create(
+                [Comparison[string]]{
+                    param($left, $right)
+                    $result = [string]::Compare(
+                        $left, $right,
+                        [StringComparison]::OrdinalIgnoreCase)
+                    if ($result -ne 0) { return $result }
+                    return [string]::CompareOrdinal($left, $right)
+                })
+        [Array]::Sort($paths, $pathComparer)
+        $sourcesPayload = [IO.MemoryStream]::new()
+        try {
+            $countBytes = Get-FslRabUInt32LeBytes ([uint32]$paths.Count)
+            $sourcesPayload.Write($countBytes, 0, $countBytes.Length)
+            foreach ($path in $paths) {
+                $record = $Records[$path]
+                $recordPayload = [IO.MemoryStream]::new()
+                try {
+                    Write-FslRabProfileFrame $recordPayload 1 2 'path' (
+                        Get-FslRabBytes ([string]$record.path))
+                    Write-FslRabProfileFrame $recordPayload 2 2 'exists' (
+                        [byte[]]@($(if ([bool]$record.exists) { 1 } else { 0 })))
+                    foreach ($integerField in @(
+                        @('length', 4),
+                        @('creationTicks', 4),
+                        @('writeTicks', 4),
+                        @('attributes', 3))) {
+                        $present = [bool]$record.exists
+                        $payload = if (-not $present) { [byte[]]@() }
+                        elseif ($integerField[0] -ceq 'attributes') {
+                            Get-FslRabUInt32LeBytes (
+                                [uint32][int]$record.attributes)
+                        }
+                        else {
+                            Get-FslRabInt64LeBytes (
+                                [long]$record.($integerField[0]))
+                        }
+                        Write-FslRabProfileFrame $recordPayload `
+                            ([byte]$integerField[1]) `
+                            ($(if ($present) { 2 } else { 0 })) `
+                            $integerField[0] `
+                            $payload
+                    }
+                    Write-FslRabProfileFrame $recordPayload 7 $(
+                        if ([bool]$record.exists) { 2 } else { 0 }
+                    ) 'sha256' $(
+                        if ([bool]$record.exists) {
+                            Get-FslRabHexBytes ([string]$record.sha256)
+                        }
+                        else { [byte[]]@() })
+                    Write-FslRabProfileFrame $recordPayload 1 0 `
+                        'nativeFileIdentity' ([byte[]]@())
+                    Write-FslRabProfileFrame $sourcesPayload 6 2 'source' (
+                        $recordPayload.ToArray())
+                }
+                finally { $recordPayload.Dispose() }
+            }
+            Write-FslRabProfileFrame $stream 5 2 'sources' (
+                $sourcesPayload.ToArray())
+        }
+        finally { $sourcesPayload.Dispose() }
+        return ,$stream.ToArray()
+    }
+    finally { $stream.Dispose() }
+}
+
+function Get-FslRabConversionProfile {
+    param(
+        [string]$GitRoot,
+        [string]$GitDirectory,
+        [object[]]$Entries)
+    $environment = Get-FslRabEnvironmentSnapshot
+    if ($null -eq $environment -or
+        -not (Test-FslRabProfileEncoderGolden)) {
+        return $null
+    }
+    $programFiles = Get-FslRabCanonicalEnvironmentPath `
+        $environment 'ProgramFiles' $true
+    $userProfile = Get-FslRabCanonicalEnvironmentPath `
+        $environment 'USERPROFILE' $true
+    $programW6432Present = $environment.ContainsKey('ProgramW6432')
+    $programW6432 = if ($programW6432Present) {
+        Get-FslRabCanonicalEnvironmentPath `
+            $environment 'ProgramW6432' $true
+    }
+    else { $null }
+    if ($null -eq $programFiles -or $null -eq $userProfile -or
+        ($programW6432Present -and $null -eq $programW6432) -or
+        -not [IO.Directory]::Exists($programFiles) -or
+        -not [IO.Directory]::Exists($userProfile) -or
+        ($programW6432Present -and
+            -not [IO.Directory]::Exists($programW6432))) {
+        return $null
+    }
+    try {
+        $knownProgramFiles = [IO.Path]::GetFullPath(
+            [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::ProgramFiles))
+        $knownUserProfile = [IO.Path]::GetFullPath(
+            [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::UserProfile))
+        if (-not [string]::Equals(
+                $programFiles,
+                $knownProgramFiles,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals(
+                $userProfile,
+                $knownUserProfile,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            ($programW6432Present -and (
+                -not [string]::Equals(
+                    $programW6432,
+                    $programFiles,
+                    [StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals(
+                    $programW6432,
+                    $knownProgramFiles,
+                    [StringComparison]::OrdinalIgnoreCase)))) {
+            return $null
+        }
+    }
+    catch {
+        return $null
+    }
+    foreach ($forbiddenEnvironment in @(
+        'GIT_CONFIG_SYSTEM',
+        'GIT_CONFIG_GLOBAL',
+        'GIT_CONFIG_NOSYSTEM',
+        'GIT_CONFIG_PARAMETERS',
+        'GIT_ATTR_NOSYSTEM',
+        'GIT_DIR',
+        'GIT_WORK_TREE',
+        'GIT_COMMON_DIR',
+        'GIT_INDEX_FILE',
+        'GIT_OBJECT_DIRECTORY',
+        'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+        'GIT_QUARANTINE_PATH',
+        'GIT_NAMESPACE',
+        'GIT_SHALLOW_FILE',
+        'GIT_GRAFT_FILE',
+        'GIT_NO_REPLACE_OBJECTS',
+        'GIT_REPLACE_REF_BASE')) {
+        if ($environment.ContainsKey($forbiddenEnvironment)) {
+            return $null
+        }
+    }
+    if (-not (Test-FslRabCommandConfigEnvironment $environment)) {
+        return $null
+    }
+    $home = if ($environment.ContainsKey('HOME')) {
+        Get-FslRabCanonicalEnvironmentPath $environment 'HOME' $true
+    }
+    else { $userProfile }
+    if ($null -eq $home) { return $null }
+    $xdg = if ($environment.ContainsKey('XDG_CONFIG_HOME')) {
+        Get-FslRabCanonicalEnvironmentPath `
+            $environment 'XDG_CONFIG_HOME' $true
+    }
+    else { Join-Path $home '.config' }
+    if ($null -eq $xdg) { return $null }
+    $systemConfig = Join-Path $programFiles 'Git\etc\gitconfig'
+    $systemAttributes =
+        Join-Path $programFiles 'Git\etc\gitattributes'
+    $xdgConfig = Join-Path $xdg 'git\config'
+    $userConfig = Join-Path $home '.gitconfig'
+    $userAttributes = Join-Path $xdg 'git\attributes'
+    $legacyUserAttributes = Join-Path $home '.gitattributes'
+    $localConfig = Join-Path $GitDirectory 'config'
+    $worktreeConfig = Join-Path $GitDirectory 'config.worktree'
+    $infoAttributes = Join-Path $GitDirectory 'info\attributes'
+    $governing = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    [void]$governing.Add((Join-Path $GitRoot '.gitattributes'))
+    foreach ($entry in $Entries) {
+        $parts = ([string]$entry.path).Split('/')
+        $directory = $GitRoot
+        for ($index = 0; $index -lt $parts.Length - 1; $index++) {
+            $directory = Join-Path $directory $parts[$index]
+            [void]$governing.Add((Join-Path $directory '.gitattributes'))
+        }
+    }
+    $paths = @(
+        $systemConfig,
+        $systemAttributes,
+        $userConfig,
+        $xdgConfig,
+        $userAttributes,
+        $legacyUserAttributes,
+        $localConfig,
+        $worktreeConfig,
+        $infoAttributes) + @($governing)
+    $records = @{}
+    foreach ($path in @($paths | Sort-Object -Unique)) {
+        $record = Get-FslRabConversionSourceRecord $path
+        if ($null -eq $record) { return $null }
+        $records[[IO.Path]::GetFullPath($path)] = $record
+    }
+    foreach ($forbidden in @(
+        $userAttributes,
+        $legacyUserAttributes,
+        $worktreeConfig,
+        $infoAttributes) + @($governing)) {
+        if ([bool]$records[[IO.Path]::GetFullPath($forbidden)].exists) {
+            return $null
+        }
+    }
+    $hasAutoCrlf = $false
+    $autoCrlf = $false
+    if (-not (Test-FslRabConversionConfig `
+            $records[[IO.Path]::GetFullPath($systemConfig)] `
+            ([ref]$hasAutoCrlf) `
+            ([ref]$autoCrlf)) -or
+        -not (Test-FslRabConversionConfig `
+            $records[[IO.Path]::GetFullPath($xdgConfig)] `
+            ([ref]$hasAutoCrlf) `
+            ([ref]$autoCrlf)) -or
+        -not (Test-FslRabConversionConfig `
+            $records[[IO.Path]::GetFullPath($userConfig)] `
+            ([ref]$hasAutoCrlf) `
+            ([ref]$autoCrlf)) -or
+        -not (Test-FslRabConversionConfig `
+            $records[[IO.Path]::GetFullPath($localConfig)] `
+            ([ref]$hasAutoCrlf) `
+            ([ref]$autoCrlf)) -or
+        -not (Test-FslRabSystemAttributes `
+            $records[[IO.Path]::GetFullPath($systemAttributes)])) {
+        return $null
+    }
+    return [pscustomobject][ordered]@{
+        autoCrlf = $hasAutoCrlf -and $autoCrlf
+        fingerprint = Get-FslRabSha256Bytes (
+            Get-FslRabProfileFingerprintBytes `
+                $environment `
+                $programFiles `
+                $userProfile `
+                $home `
+                $xdg `
+                $programW6432Present `
+                $programW6432 `
+                $hasAutoCrlf `
+                $autoCrlf `
+                $records)
+    }
+}
+
+function Get-FslRabSafeAutoCrlfBytes {
+    param([byte[]]$Bytes)
+    $output = [IO.MemoryStream]::new()
+    $converted = $false
+    try {
+        for ($index = 0; $index -lt $Bytes.Length; $index++) {
+            $value = $Bytes[$index]
+            if ($value -eq 0) { return $null }
+            if ($value -eq 0x0D) {
+                if ($index + 1 -ge $Bytes.Length -or
+                    $Bytes[$index + 1] -ne 0x0A) {
+                    return $null
+                }
+                $output.WriteByte(0x0A)
+                $index++
+                $converted = $true
+                continue
+            }
+            if ($value -eq 0x0A) { return $null }
+            $output.WriteByte($value)
+        }
+        if (-not $converted) { return $null }
+        return ,$output.ToArray()
+    }
+    finally {
+        $output.Dispose()
+    }
+}
+
+function Test-FslRabWorktreeBlob {
+    param(
+        [string]$Path,
+        [string]$ExpectedObjectId,
+        [bool]$AutoCrlf)
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ((Get-FslRabGitObjectId 'blob' $bytes) -ceq $ExpectedObjectId) {
+        return $true
+    }
+    if (-not $AutoCrlf) { return $false }
+    $canonical = Get-FslRabSafeAutoCrlfBytes $bytes
+    return $null -ne $canonical -and
+        (Get-FslRabGitObjectId 'blob' $canonical) -ceq $ExpectedObjectId
+}
+
 function Get-FslRabRepository {
     param([string]$Root, [bool]$RequireCompletelyClean)
     $projectRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -1054,6 +1864,12 @@ function Get-FslRabRepository {
     $head = Get-FslRabHead $gitDirectory
     $commit = Get-FslRabCommit $gitDirectory $head.commit
     $entries = @(Get-FslRabIndexEntries $gitRoot $gitDirectory)
+    $conversionProfile =
+        Get-FslRabConversionProfile $gitRoot $gitDirectory $entries
+    if ($null -eq $conversionProfile) {
+        Stop-FslRab 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' (
+            'The Git conversion source profile is not closed and safe.') $null
+    }
     $byPath = @{}
     $trackedClean = $true
     foreach ($entry in $entries) {
@@ -1065,9 +1881,10 @@ function Get-FslRabRepository {
         if ($null -eq $treeEntry -or
             [string]$treeEntry.objectId -cne [string]$entry.objectId -or
             -not (Test-Path -LiteralPath $worktreePath -PathType Leaf) -or
-            (Get-FslRabGitObjectId 'blob' (
-                [IO.File]::ReadAllBytes($worktreePath))) -cne
-                [string]$entry.objectId) {
+            -not (Test-FslRabWorktreeBlob `
+                $worktreePath `
+                ([string]$entry.objectId) `
+                ([bool]$conversionProfile.autoCrlf))) {
             $trackedClean = $false
             break
         }
@@ -1095,6 +1912,15 @@ function Get-FslRabRepository {
                 break
             }
         }
+    }
+    $recapturedProfile =
+        Get-FslRabConversionProfile $gitRoot $gitDirectory $entries
+    if ($null -eq $recapturedProfile -or
+        [bool]$recapturedProfile.autoCrlf -ne
+            [bool]$conversionProfile.autoCrlf -or
+        [string]$recapturedProfile.fingerprint -cne
+            [string]$conversionProfile.fingerprint) {
+        $trackedClean = $false
     }
     if (-not $trackedClean) {
         Stop-FslRab 'FSL-RAB-V007-TOOLCHAIN-AUTHORITY' (

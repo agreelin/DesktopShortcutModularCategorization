@@ -114,7 +114,7 @@ public sealed class Stage4ToolingContractTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains(
-            "STAGE4_RECOVERY_AUTHORITY_BUNDLE_PASS Cases=218 Assertions=305",
+            "STAGE4_RECOVERY_AUTHORITY_BUNDLE_PASS Cases=222 Assertions=309",
             result.Output,
             StringComparison.Ordinal);
     }

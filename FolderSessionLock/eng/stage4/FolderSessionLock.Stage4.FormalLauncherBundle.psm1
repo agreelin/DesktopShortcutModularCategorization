@@ -871,6 +871,939 @@ namespace FolderSessionLock.Stage4
             }
         }
 
+        private sealed class ConversionSource
+        {
+            internal string Path;
+            internal bool Exists;
+            internal string Text;
+            internal long Length;
+            internal long CreationTicks;
+            internal long WriteTicks;
+            internal int Attributes;
+            internal byte[] Sha256;
+            internal string NativeFileIdentity;
+        }
+
+        private sealed class ConversionProfile
+        {
+            internal bool AutoCrlf;
+            internal string Fingerprint;
+        }
+
+        private static ConversionSource CaptureConversionSource(string path)
+        {
+            string full = System.IO.Path.GetFullPath(path);
+            if (!System.IO.File.Exists(full))
+            {
+                if (System.IO.Directory.Exists(full)) return null;
+                return new ConversionSource
+                {
+                    Path = full,
+                    Exists = false,
+                    Text = null
+                };
+            }
+            FormalLauncherNative before = Read(full, false);
+            if (before.Reparse || before.LinkCount != 1 ||
+                !String.Equals(
+                    before.FinalPath, full, StringComparison.OrdinalIgnoreCase))
+                return null;
+            var beforeInfo = new System.IO.FileInfo(full);
+            long beforeLength = beforeInfo.Length;
+            long beforeCreation = beforeInfo.CreationTimeUtc.Ticks;
+            long beforeWrite = beforeInfo.LastWriteTimeUtc.Ticks;
+            int beforeAttributes = (int)beforeInfo.Attributes;
+            if (beforeLength > 1024 * 1024) return null;
+            byte[] bytes = System.IO.File.ReadAllBytes(full);
+            string text;
+            try { text = new UTF8Encoding(false, true).GetString(bytes); }
+            catch { return null; }
+            FormalLauncherNative after = Read(full, false);
+            var afterInfo = new System.IO.FileInfo(full);
+            if (after.Reparse || after.LinkCount != 1 ||
+                before.Identity != after.Identity ||
+                !String.Equals(
+                    after.FinalPath, full, StringComparison.OrdinalIgnoreCase) ||
+                beforeLength != bytes.Length ||
+                afterInfo.Length != beforeLength ||
+                afterInfo.CreationTimeUtc.Ticks != beforeCreation ||
+                afterInfo.LastWriteTimeUtc.Ticks != beforeWrite ||
+                (int)afterInfo.Attributes != beforeAttributes)
+                return null;
+            byte[] digest;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                digest = sha.ComputeHash(bytes);
+            return new ConversionSource
+            {
+                Path = full,
+                Exists = true,
+                Text = text,
+                Length = bytes.Length,
+                CreationTicks = beforeCreation,
+                WriteTicks = beforeWrite,
+                Attributes = beforeAttributes,
+                Sha256 = digest,
+                NativeFileIdentity = after.Identity
+            };
+        }
+
+        private static bool IsConfigName(string value)
+        {
+            if (String.IsNullOrEmpty(value) ||
+                !((value[0] >= 'A' && value[0] <= 'Z') ||
+                  (value[0] >= 'a' && value[0] <= 'z')))
+                return false;
+            for (int index = 1; index < value.Length; index++)
+            {
+                char c = value[index];
+                if (!((c >= 'A' && c <= 'Z') ||
+                      (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '-'))
+                    return false;
+            }
+            return value.Length <= 32768;
+        }
+
+        private static bool DecodeConfigValue(string text, out string value)
+        {
+            value = null;
+            var output = new StringBuilder();
+            var whitespace = new StringBuilder();
+            bool quoted = false;
+            bool seen = false;
+            for (int index = 0; index < text.Length; index++)
+            {
+                char c = text[index];
+                if (!quoted && (c == '#' || c == ';')) break;
+                if (c == '"')
+                {
+                    quoted = !quoted;
+                    seen = true;
+                    output.Append(whitespace);
+                    whitespace.Length = 0;
+                    continue;
+                }
+                if (c == '\\')
+                {
+                    if (++index >= text.Length) return false;
+                    char escaped = text[index];
+                    char decoded;
+                    if (escaped == '"') decoded = '"';
+                    else if (escaped == '\\') decoded = '\\';
+                    else if (escaped == 'n') decoded = '\n';
+                    else if (escaped == 't') decoded = '\t';
+                    else if (escaped == 'b') decoded = '\b';
+                    else return false;
+                    output.Append(whitespace);
+                    whitespace.Length = 0;
+                    output.Append(decoded);
+                    seen = true;
+                }
+                else if (!quoted && (c == ' ' || c == '\t'))
+                {
+                    if (seen) whitespace.Append(c);
+                }
+                else
+                {
+                    output.Append(whitespace);
+                    whitespace.Length = 0;
+                    output.Append(c);
+                    seen = true;
+                }
+                if (output.Length + whitespace.Length > 32768)
+                    return false;
+            }
+            if (quoted) return false;
+            value = output.ToString();
+            return true;
+        }
+
+        private static bool ParseConversionConfig(
+            ConversionSource source,
+            ref bool hasAutoCrlf,
+            ref bool autoCrlf)
+        {
+            if (!source.Exists) return true;
+            string text = source.Text;
+            if (text.IndexOf('\0') >= 0 ||
+                new UTF8Encoding(false, true).GetByteCount(text) > 1024 * 1024)
+                return false;
+            for (int index = 0; index < text.Length; index++)
+                if (text[index] == '\r' &&
+                    (index + 1 >= text.Length || text[index + 1] != '\n'))
+                    return false;
+            string[] physical = text.Replace("\r\n", "\n").Split('\n');
+            if (physical.Length > 65536) return false;
+            var logical = new System.Collections.Generic.List<string>();
+            for (int physicalIndex = 0;
+                physicalIndex < physical.Length;
+                physicalIndex++)
+            {
+                var lineBuilder = new StringBuilder(physical[physicalIndex]);
+                int continuations = 0;
+                while (lineBuilder.Length > 0 &&
+                    lineBuilder[lineBuilder.Length - 1] == '\\')
+                {
+                    int slashCount = 0;
+                    for (int slashIndex = lineBuilder.Length - 1;
+                        slashIndex >= 0 && lineBuilder[slashIndex] == '\\';
+                        slashIndex--)
+                        slashCount++;
+                    if ((slashCount & 1) == 0) break;
+                    if (++physicalIndex >= physical.Length ||
+                        ++continuations > 64)
+                        return false;
+                    lineBuilder.Length--;
+                    lineBuilder.Append(
+                        physical[physicalIndex].TrimStart(' ', '\t'));
+                    if (lineBuilder.Length > 32768) return false;
+                }
+                logical.Add(lineBuilder.ToString());
+            }
+            string section = "";
+            string subsection = "";
+            int assignments = 0;
+            var lfs = new System.Collections.Generic.Dictionary<
+                string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string sourceLine in logical)
+            {
+                string line = sourceLine.Trim();
+                if (line.Length == 0 || line[0] == '#' || line[0] == ';')
+                    continue;
+                if (line[0] == '[')
+                {
+                    bool headerQuoted = false;
+                    bool headerEscaped = false;
+                    int headerEnd = -1;
+                    for (int headerIndex = 1;
+                        headerIndex < line.Length;
+                        headerIndex++)
+                    {
+                        char headerCharacter = line[headerIndex];
+                        if (headerEscaped)
+                        {
+                            headerEscaped = false;
+                            continue;
+                        }
+                        if (headerCharacter == '\\' && headerQuoted)
+                        {
+                            headerEscaped = true;
+                            continue;
+                        }
+                        if (headerCharacter == '"')
+                            headerQuoted = !headerQuoted;
+                        else if (headerCharacter == ']' && !headerQuoted)
+                        {
+                            headerEnd = headerIndex;
+                            break;
+                        }
+                    }
+                    if (headerEnd < 0) return false;
+                    string headerRemainder =
+                        line.Substring(headerEnd + 1).TrimStart(' ', '\t');
+                    if (headerRemainder.Length > 0 &&
+                        headerRemainder[0] != '#' &&
+                        headerRemainder[0] != ';')
+                        return false;
+                    string header = line.Substring(1, headerEnd - 1);
+                    int separator = header.IndexOfAny(
+                        new char[] { ' ', '\t' });
+                    string rawSection = separator < 0
+                        ? header
+                        : header.Substring(0, separator);
+                    if (!IsConfigName(rawSection)) return false;
+                    section = rawSection.ToLowerInvariant();
+                    subsection = "";
+                    if (separator >= 0)
+                    {
+                        string tail = header.Substring(separator).Trim();
+                        if (tail.Length < 2 || tail[0] != '"' ||
+                            tail[tail.Length - 1] != '"')
+                            return false;
+                        if (!DecodeConfigValue(tail, out subsection) ||
+                            subsection.Length > 32768)
+                            return false;
+                    }
+                    if (section == "include" || section == "includeif")
+                        return false;
+                    continue;
+                }
+                int nameEnd = 0;
+                while (nameEnd < line.Length &&
+                    line[nameEnd] != ' ' && line[nameEnd] != '\t' &&
+                    line[nameEnd] != '=')
+                    nameEnd++;
+                string rawKey = line.Substring(0, nameEnd);
+                if (!IsConfigName(rawKey) || section.Length == 0 ||
+                    ++assignments > 4096)
+                    return false;
+                int cursor = nameEnd;
+                while (cursor < line.Length &&
+                    (line[cursor] == ' ' || line[cursor] == '\t'))
+                    cursor++;
+                string value = "true";
+                if (cursor < line.Length)
+                {
+                    if (line[cursor] == '#' || line[cursor] == ';')
+                        value = "true";
+                    else
+                    {
+                        if (line[cursor] != '=') return false;
+                        if (!DecodeConfigValue(
+                                line.Substring(cursor + 1), out value))
+                            return false;
+                    }
+                }
+                string key = rawKey.ToLowerInvariant();
+                if (section == "core" && key == "autocrlf")
+                {
+                    if (!String.Equals(
+                            value, "true", StringComparison.OrdinalIgnoreCase) &&
+                        !String.Equals(
+                            value, "false", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    hasAutoCrlf = true;
+                    autoCrlf = String.Equals(
+                        value, "true", StringComparison.OrdinalIgnoreCase);
+                }
+                else if (section == "core" &&
+                    (key == "eol" || key == "attributesfile" ||
+                     key == "worktree" || key == "safecrlf" ||
+                     key == "checkroundtripencoding" ||
+                     key == "bigfilethreshold"))
+                    return false;
+                else if (section == "extensions" &&
+                    key == "worktreeconfig")
+                    return false;
+                else if (section == "filter")
+                {
+                    if (!String.Equals(
+                            subsection, "lfs", StringComparison.Ordinal))
+                        return false;
+                    string expected;
+                    if (key == "clean")
+                        expected = "git-lfs clean -- %f";
+                    else if (key == "smudge")
+                        expected = "git-lfs smudge -- %f";
+                    else if (key == "process")
+                        expected = "git-lfs filter-process";
+                    else if (key == "required")
+                        expected = "true";
+                    else return false;
+                    if (!String.Equals(
+                            value, expected, StringComparison.Ordinal))
+                        return false;
+                    lfs[key] = value;
+                }
+            }
+            return lfs.Count == 0 || lfs.Count == 4;
+        }
+
+        private static System.Collections.Generic.Dictionary<string, string>
+            CaptureEnvironment()
+        {
+            var snapshot = new System.Collections.Generic.Dictionary<
+                string, string>(StringComparer.OrdinalIgnoreCase);
+            System.Collections.IDictionary values =
+                Environment.GetEnvironmentVariables(
+                    EnvironmentVariableTarget.Process);
+            foreach (System.Collections.DictionaryEntry entry in values)
+            {
+                string name = entry.Key as string;
+                string value = entry.Value as string;
+                if (String.IsNullOrEmpty(name) || value == null ||
+                    snapshot.ContainsKey(name))
+                    return null;
+                snapshot.Add(name, value);
+            }
+            return snapshot;
+        }
+
+        private static bool TryCanonicalEnvironmentPath(
+            System.Collections.Generic.Dictionary<string, string> environment,
+            string name,
+            bool required,
+            out string value)
+        {
+            value = null;
+            string raw;
+            if (!environment.TryGetValue(name, out raw))
+            {
+                if (required) return false;
+                value = "";
+                return true;
+            }
+            if (String.IsNullOrWhiteSpace(raw) || raw.IndexOf('\0') >= 0)
+                return false;
+            try
+            {
+                string canonical = System.IO.Path.GetFullPath(raw);
+                if (!System.IO.Path.IsPathRooted(raw) ||
+                    !String.Equals(
+                        raw, canonical, StringComparison.OrdinalIgnoreCase))
+                    return false;
+                value = canonical;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static bool ParseCommandConfigEnvironment(
+            System.Collections.Generic.Dictionary<string, string> environment)
+        {
+            var numberedPattern = new System.Text.RegularExpressions.Regex(
+                "^GIT_CONFIG_(KEY|VALUE)_(0|[1-9][0-9]*)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            foreach (string name in environment.Keys)
+                if (name.StartsWith(
+                        "GIT_CONFIG_", StringComparison.OrdinalIgnoreCase) &&
+                    !String.Equals(
+                        name,
+                        "GIT_CONFIG_COUNT",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    !numberedPattern.IsMatch(name))
+                    return false;
+            bool hasCount = environment.ContainsKey("GIT_CONFIG_COUNT");
+            int numbered = 0;
+            foreach (string name in environment.Keys)
+                if (numberedPattern.IsMatch(name))
+                    numbered++;
+            if (!hasCount) return numbered == 0;
+            string rawCount = environment["GIT_CONFIG_COUNT"];
+            if (rawCount.Length == 0 ||
+                (rawCount.Length > 1 && rawCount[0] == '0') ||
+                rawCount.Length > 2)
+                return false;
+            for (int index = 0; index < rawCount.Length; index++)
+                if (rawCount[index] < '0' || rawCount[index] > '9')
+                    return false;
+            int count;
+            if (!Int32.TryParse(
+                    rawCount,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out count) ||
+                count > 64 || numbered != checked(2 * count))
+                return false;
+            for (int index = 0; index < count; index++)
+            {
+                string key;
+                string value;
+                if (!environment.TryGetValue(
+                        "GIT_CONFIG_KEY_" +
+                            index.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture),
+                        out key) ||
+                    !environment.TryGetValue(
+                        "GIT_CONFIG_VALUE_" +
+                            index.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture),
+                        out value) ||
+                    !String.Equals(
+                        key,
+                        "safe.directory",
+                        StringComparison.OrdinalIgnoreCase) ||
+                    value.Length > 32768 ||
+                    value.IndexOfAny(new char[] { '\0', '\r', '\n' }) >= 0)
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool ParseSystemAttributes(ConversionSource source)
+        {
+            if (!source.Exists) return true;
+            string text = source.Text;
+            if (text.IndexOf('\0') >= 0) return false;
+            for (int index = 0; index < text.Length; index++)
+                if (text[index] == '\r' &&
+                    (index + 1 >= text.Length || text[index + 1] != '\n'))
+                    return false;
+            foreach (string sourceLine in
+                text.Replace("\r\n", "\n").Split('\n'))
+            {
+                string line = sourceLine.Trim();
+                if (line.Length == 0 || line[0] == '#') continue;
+                string[] fields = line.Split(
+                    new char[] { ' ', '\t' },
+                    StringSplitOptions.RemoveEmptyEntries);
+                if (fields.Length != 2 ||
+                    !fields[0].StartsWith("*.", StringComparison.Ordinal) ||
+                    fields[0].Length <= 2 ||
+                    fields[0].Substring(2).IndexOfAny(
+                        new char[] { '/', '\\', '*', '?', '[', ']' }) >= 0 ||
+                    fields[1] != "diff=astextplain")
+                    return false;
+            }
+            return true;
+        }
+
+        private static byte[] UInt32Le(uint value)
+        {
+            return new byte[]
+            {
+                (byte)value,
+                (byte)(value >> 8),
+                (byte)(value >> 16),
+                (byte)(value >> 24)
+            };
+        }
+
+        private static byte[] Int64Le(long value)
+        {
+            ulong raw = unchecked((ulong)value);
+            return new byte[]
+            {
+                (byte)raw,
+                (byte)(raw >> 8),
+                (byte)(raw >> 16),
+                (byte)(raw >> 24),
+                (byte)(raw >> 32),
+                (byte)(raw >> 40),
+                (byte)(raw >> 48),
+                (byte)(raw >> 56)
+            };
+        }
+
+        private static void WriteProfileFrame(
+            System.IO.MemoryStream stream,
+            byte type,
+            byte state,
+            string name,
+            byte[] payload)
+        {
+            byte[] nameBytes = new UTF8Encoding(false, true).GetBytes(name);
+            if (payload == null) payload = new byte[0];
+            stream.WriteByte(type);
+            stream.WriteByte(state);
+            byte[] length = UInt32Le((uint)nameBytes.Length);
+            stream.Write(length, 0, length.Length);
+            stream.Write(nameBytes, 0, nameBytes.Length);
+            length = UInt32Le((uint)payload.Length);
+            stream.Write(length, 0, length.Length);
+            stream.Write(payload, 0, payload.Length);
+        }
+
+        private static bool ProfileEncoderGoldenMatches()
+        {
+            var utf8 = new UTF8Encoding(false, true);
+            using (var stream = new System.IO.MemoryStream())
+            {
+                WriteProfileFrame(stream, 1, 2, "schema",
+                    utf8.GetBytes("FSL.Stage4.ConversionProfile"));
+                WriteProfileFrame(stream, 3, 2, "version", UInt32Le(1));
+                WriteProfileFrame(stream, 1, 2, "newline",
+                    utf8.GetBytes("a\nb"));
+                WriteProfileFrame(stream, 1, 2, "pipe",
+                    utf8.GetBytes("a|b"));
+                WriteProfileFrame(
+                    stream, 1, 2, "empty", new byte[0]);
+                WriteProfileFrame(
+                    stream, 1, 1, "null", new byte[0]);
+                WriteProfileFrame(
+                    stream, 1, 0, "absent", new byte[0]);
+                WriteProfileFrame(
+                    stream, 2, 2, "false", new byte[] { 0 });
+                WriteProfileFrame(
+                    stream, 3, 2, "zero", UInt32Le(0));
+                byte[] digest;
+                using (var sha =
+                    System.Security.Cryptography.SHA256.Create())
+                    digest = sha.ComputeHash(stream.ToArray());
+                return String.Equals(
+                    ToHex(digest),
+                    "0d2589a97eec51dd09f1f23b7de4171e6ec9a1ab1356ad1fbd1ac2011a594e26",
+                    StringComparison.Ordinal);
+            }
+        }
+
+        private static byte[] ConversionProfileBytes(
+            System.Collections.Generic.Dictionary<string, string> environment,
+            string programFiles,
+            string userProfile,
+            string home,
+            string xdg,
+            bool hasProgramW6432,
+            string programW6432,
+            bool hasAutoCrlf,
+            bool autoCrlf,
+            System.Collections.Generic.Dictionary<
+                string, ConversionSource> records)
+        {
+            var utf8 = new UTF8Encoding(false, true);
+            using (var stream = new System.IO.MemoryStream())
+            {
+                WriteProfileFrame(stream, 1, 2, "schema",
+                    utf8.GetBytes("FSL.Stage4.ConversionProfile"));
+                WriteProfileFrame(stream, 3, 2, "version", UInt32Le(1));
+                WriteProfileFrame(stream, 1, 2, "resolved.ProgramFiles",
+                    utf8.GetBytes(programFiles));
+                WriteProfileFrame(stream, 1, 2, "resolved.USERPROFILE",
+                    utf8.GetBytes(userProfile));
+                WriteProfileFrame(stream, 1, 2, "resolved.HOME",
+                    utf8.GetBytes(home));
+                WriteProfileFrame(stream, 1, 2, "resolved.XDG_CONFIG_HOME",
+                    utf8.GetBytes(xdg));
+                WriteProfileFrame(
+                    stream, 1, hasProgramW6432 ? (byte)2 : (byte)0,
+                    "raw.ProgramW6432",
+                    hasProgramW6432
+                        ? utf8.GetBytes(environment["ProgramW6432"])
+                        : new byte[0]);
+                WriteProfileFrame(
+                    stream, 1, hasProgramW6432 ? (byte)2 : (byte)0,
+                    "resolved.ProgramW6432",
+                    hasProgramW6432
+                        ? utf8.GetBytes(programW6432)
+                        : new byte[0]);
+                WriteProfileFrame(stream, 2, 2, "hasAutoCrlf",
+                    new byte[] { hasAutoCrlf ? (byte)1 : (byte)0 });
+                WriteProfileFrame(
+                    stream, 2, hasAutoCrlf ? (byte)2 : (byte)0,
+                    "autoCrlf",
+                    hasAutoCrlf
+                        ? new byte[] { autoCrlf ? (byte)1 : (byte)0 }
+                        : new byte[0]);
+                foreach (string name in new string[]
+                {
+                    "ProgramFiles", "USERPROFILE", "HOME", "XDG_CONFIG_HOME"
+                })
+                {
+                    string raw;
+                    bool present = environment.TryGetValue(name, out raw);
+                    WriteProfileFrame(
+                        stream, 1, present ? (byte)2 : (byte)0,
+                        "raw." + name,
+                        present ? utf8.GetBytes(raw) : new byte[0]);
+                }
+                var gitNames =
+                    new System.Collections.Generic.List<string>();
+                foreach (string name in environment.Keys)
+                    if (name.StartsWith(
+                            "GIT_", StringComparison.OrdinalIgnoreCase))
+                        gitNames.Add(name.ToUpperInvariant());
+                gitNames.Sort(StringComparer.Ordinal);
+                using (var payload = new System.IO.MemoryStream())
+                {
+                    byte[] count = UInt32Le((uint)gitNames.Count);
+                    payload.Write(count, 0, count.Length);
+                    foreach (string name in gitNames)
+                        WriteProfileFrame(
+                            payload, 1, 2, name,
+                            utf8.GetBytes(environment[name]));
+                    WriteProfileFrame(
+                        stream, 5, 2, "gitEnvironment", payload.ToArray());
+                }
+                var paths = new System.Collections.Generic.List<string>(
+                    records.Keys);
+                paths.Sort(delegate(string left, string right)
+                {
+                    int result = String.Compare(
+                        left, right, StringComparison.OrdinalIgnoreCase);
+                    return result != 0
+                        ? result
+                        : String.CompareOrdinal(left, right);
+                });
+                using (var sources = new System.IO.MemoryStream())
+                {
+                    byte[] count = UInt32Le((uint)paths.Count);
+                    sources.Write(count, 0, count.Length);
+                    foreach (string path in paths)
+                    {
+                        ConversionSource source = records[path];
+                        using (var record = new System.IO.MemoryStream())
+                        {
+                            WriteProfileFrame(
+                                record, 1, 2, "path",
+                                utf8.GetBytes(source.Path));
+                            WriteProfileFrame(
+                                record, 2, 2, "exists",
+                                new byte[] {
+                                    source.Exists ? (byte)1 : (byte)0 });
+                            WriteProfileFrame(
+                                record, 4,
+                                source.Exists ? (byte)2 : (byte)0,
+                                "length",
+                                source.Exists
+                                    ? Int64Le(source.Length)
+                                    : new byte[0]);
+                            WriteProfileFrame(
+                                record, 4,
+                                source.Exists ? (byte)2 : (byte)0,
+                                "creationTicks",
+                                source.Exists
+                                    ? Int64Le(source.CreationTicks)
+                                    : new byte[0]);
+                            WriteProfileFrame(
+                                record, 4,
+                                source.Exists ? (byte)2 : (byte)0,
+                                "writeTicks",
+                                source.Exists
+                                    ? Int64Le(source.WriteTicks)
+                                    : new byte[0]);
+                            WriteProfileFrame(
+                                record, 3,
+                                source.Exists ? (byte)2 : (byte)0,
+                                "attributes",
+                                source.Exists
+                                    ? UInt32Le(unchecked((uint)source.Attributes))
+                                    : new byte[0]);
+                            WriteProfileFrame(
+                                record, 7,
+                                source.Exists ? (byte)2 : (byte)0,
+                                "sha256",
+                                source.Exists
+                                    ? source.Sha256
+                                    : new byte[0]);
+                            WriteProfileFrame(
+                                record, 1,
+                                source.Exists ? (byte)2 : (byte)0,
+                                "nativeFileIdentity",
+                                source.Exists
+                                    ? utf8.GetBytes(source.NativeFileIdentity)
+                                    : new byte[0]);
+                            WriteProfileFrame(
+                                sources, 6, 2, "source", record.ToArray());
+                        }
+                    }
+                    WriteProfileFrame(
+                        stream, 5, 2, "sources", sources.ToArray());
+                }
+                return stream.ToArray();
+            }
+        }
+
+        private static bool CaptureConversionProfile(
+            string gitRoot,
+            string gitDirectory,
+            System.Collections.Generic.List<GitEntry> entries,
+            out ConversionProfile profile)
+        {
+            profile = null;
+            System.Collections.Generic.Dictionary<string, string> environment =
+                CaptureEnvironment();
+            if (environment == null || !ProfileEncoderGoldenMatches())
+                return false;
+            string programFiles;
+            string userProfile;
+            string programW6432 = null;
+            bool hasProgramW6432 = environment.ContainsKey("ProgramW6432");
+            if (!TryCanonicalEnvironmentPath(
+                    environment,
+                    "ProgramFiles",
+                    true,
+                    out programFiles) ||
+                !TryCanonicalEnvironmentPath(
+                    environment,
+                    "USERPROFILE",
+                    true,
+                    out userProfile) ||
+                (hasProgramW6432 && !TryCanonicalEnvironmentPath(
+                    environment,
+                    "ProgramW6432",
+                    true,
+                    out programW6432)) ||
+                !System.IO.Directory.Exists(programFiles) ||
+                !System.IO.Directory.Exists(userProfile) ||
+                (hasProgramW6432 &&
+                    !System.IO.Directory.Exists(programW6432)))
+                return false;
+            try
+            {
+                string knownProgramFiles = System.IO.Path.GetFullPath(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.ProgramFiles));
+                string knownUserProfile = System.IO.Path.GetFullPath(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.UserProfile));
+                if (!String.Equals(
+                        programFiles,
+                        knownProgramFiles,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !String.Equals(
+                        userProfile,
+                        knownUserProfile,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    (hasProgramW6432 &&
+                        (!String.Equals(
+                            programW6432,
+                            programFiles,
+                            StringComparison.OrdinalIgnoreCase) ||
+                         !String.Equals(
+                            programW6432,
+                            knownProgramFiles,
+                            StringComparison.OrdinalIgnoreCase))))
+                    return false;
+            }
+            catch { return false; }
+            foreach (string forbidden in new string[]
+            {
+                "GIT_CONFIG_SYSTEM",
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_NOSYSTEM",
+                "GIT_CONFIG_PARAMETERS",
+                "GIT_ATTR_NOSYSTEM",
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+                "GIT_INDEX_FILE",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_QUARANTINE_PATH",
+                "GIT_NAMESPACE",
+                "GIT_SHALLOW_FILE",
+                "GIT_GRAFT_FILE",
+                "GIT_NO_REPLACE_OBJECTS",
+                "GIT_REPLACE_REF_BASE"
+            })
+                if (environment.ContainsKey(forbidden)) return false;
+            if (!ParseCommandConfigEnvironment(environment)) return false;
+            string home;
+            if (environment.ContainsKey("HOME"))
+            {
+                if (!TryCanonicalEnvironmentPath(
+                        environment, "HOME", true, out home))
+                    return false;
+            }
+            else home = userProfile;
+            string xdg;
+            if (environment.ContainsKey("XDG_CONFIG_HOME"))
+            {
+                if (!TryCanonicalEnvironmentPath(
+                        environment, "XDG_CONFIG_HOME", true, out xdg))
+                    return false;
+            }
+            else xdg = System.IO.Path.Combine(home, ".config");
+            string systemConfig = System.IO.Path.Combine(
+                programFiles, "Git", "etc", "gitconfig");
+            string systemAttributes = System.IO.Path.Combine(
+                programFiles, "Git", "etc", "gitattributes");
+            string xdgConfig = System.IO.Path.Combine(
+                xdg, "git", "config");
+            string userConfig =
+                System.IO.Path.Combine(home, ".gitconfig");
+            string userAttributes = System.IO.Path.Combine(
+                xdg, "git", "attributes");
+            string legacyUserAttributes =
+                System.IO.Path.Combine(home, ".gitattributes");
+            string localConfig =
+                System.IO.Path.Combine(gitDirectory, "config");
+            string worktreeConfig =
+                System.IO.Path.Combine(gitDirectory, "config.worktree");
+            string infoAttributes = System.IO.Path.Combine(
+                gitDirectory, "info", "attributes");
+            var governing = new System.Collections.Generic.HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+            governing.Add(System.IO.Path.Combine(
+                gitRoot, ".gitattributes"));
+            foreach (GitEntry entry in entries)
+            {
+                string directory = gitRoot;
+                string[] parts = entry.Path.Split('/');
+                for (int index = 0; index < parts.Length - 1; index++)
+                {
+                    directory =
+                        System.IO.Path.Combine(directory, parts[index]);
+                    governing.Add(System.IO.Path.Combine(
+                        directory, ".gitattributes"));
+                }
+            }
+            var paths = new System.Collections.Generic.HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (string path in new string[]
+            {
+                systemConfig, systemAttributes, userConfig, xdgConfig,
+                userAttributes, legacyUserAttributes, localConfig,
+                worktreeConfig, infoAttributes
+            }) paths.Add(System.IO.Path.GetFullPath(path));
+            foreach (string path in governing)
+                paths.Add(System.IO.Path.GetFullPath(path));
+            var records = new System.Collections.Generic.Dictionary<
+                string, ConversionSource>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in paths)
+            {
+                ConversionSource record = CaptureConversionSource(path);
+                if (record == null) return false;
+                records.Add(path, record);
+            }
+            foreach (string forbidden in new string[]
+            {
+                userAttributes, worktreeConfig, legacyUserAttributes,
+                infoAttributes
+            })
+                if (records[
+                    System.IO.Path.GetFullPath(forbidden)].Exists)
+                    return false;
+            foreach (string forbidden in governing)
+                if (records[
+                    System.IO.Path.GetFullPath(forbidden)].Exists)
+                    return false;
+            bool hasAutoCrlf = false;
+            bool autoCrlf = false;
+            if (!ParseConversionConfig(
+                    records[System.IO.Path.GetFullPath(systemConfig)],
+                    ref hasAutoCrlf, ref autoCrlf) ||
+                !ParseConversionConfig(
+                    records[System.IO.Path.GetFullPath(xdgConfig)],
+                    ref hasAutoCrlf, ref autoCrlf) ||
+                !ParseConversionConfig(
+                    records[System.IO.Path.GetFullPath(userConfig)],
+                    ref hasAutoCrlf, ref autoCrlf) ||
+                !ParseConversionConfig(
+                    records[System.IO.Path.GetFullPath(localConfig)],
+                    ref hasAutoCrlf, ref autoCrlf) ||
+                !ParseSystemAttributes(
+                    records[System.IO.Path.GetFullPath(systemAttributes)]))
+                return false;
+            byte[] fingerprintBytes;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                fingerprintBytes = sha.ComputeHash(
+                    ConversionProfileBytes(
+                        environment,
+                        programFiles,
+                        userProfile,
+                        home,
+                        xdg,
+                        hasProgramW6432,
+                        programW6432,
+                        hasAutoCrlf,
+                        autoCrlf,
+                        records));
+            profile = new ConversionProfile
+            {
+                AutoCrlf = hasAutoCrlf && autoCrlf,
+                Fingerprint = ToHex(fingerprintBytes)
+            };
+            return true;
+        }
+
+        private static byte[] SafeAutoCrlfBytes(byte[] bytes)
+        {
+            using (var output = new System.IO.MemoryStream())
+            {
+                bool converted = false;
+                for (int index = 0; index < bytes.Length; index++)
+                {
+                    byte value = bytes[index];
+                    if (value == 0) return null;
+                    if (value == 0x0D)
+                    {
+                        if (index + 1 >= bytes.Length ||
+                            bytes[index + 1] != 0x0A)
+                            return null;
+                        output.WriteByte(0x0A);
+                        index++;
+                        converted = true;
+                        continue;
+                    }
+                    if (value == 0x0A) return null;
+                    output.WriteByte(value);
+                }
+                return converted ? output.ToArray() : null;
+            }
+        }
+
         public static bool VerifyGitIndexAndTree(
             string gitRoot, string gitDirectory, string expectedTree)
         {
@@ -938,21 +1871,6 @@ namespace FolderSessionLock.Stage4
                     }
                     catch { return false; }
                     if (!IsCanonicalGitPath(relative)) return false;
-                    string full = System.IO.Path.GetFullPath(
-                        System.IO.Path.Combine(
-                            normalizedRoot, relative.Replace('/', '\\')));
-                    if (!full.StartsWith(
-                        rootPrefix, StringComparison.OrdinalIgnoreCase))
-                        return false;
-                    if (!System.IO.File.Exists(full)) return false;
-                    FormalLauncherNative identity = Read(full, false);
-                    if (identity.Reparse || identity.LinkCount != 1 ||
-                        !identity.FinalPath.StartsWith(
-                            rootPrefix, StringComparison.OrdinalIgnoreCase))
-                        return false;
-                    byte[] content = System.IO.File.ReadAllBytes(full);
-                    byte[] blobOid = GitObjectId("blob", content);
-                    if (!EqualBytes(blobOid, oid)) return false;
                     entries.Add(new GitEntry
                     {
                         Path = relative,
@@ -986,6 +1904,41 @@ namespace FolderSessionLock.Stage4
                     offset += size;
                 }
                 if (offset != checksumOffset) return false;
+                ConversionProfile conversionProfile;
+                if (!CaptureConversionProfile(
+                        normalizedRoot,
+                        gitDirectory,
+                        entries,
+                        out conversionProfile))
+                    return false;
+                foreach (GitEntry entry in entries)
+                {
+                    string full = System.IO.Path.GetFullPath(
+                        System.IO.Path.Combine(
+                            normalizedRoot,
+                            entry.Path.Replace('/', '\\')));
+                    if (!full.StartsWith(
+                            rootPrefix, StringComparison.OrdinalIgnoreCase) ||
+                        !System.IO.File.Exists(full))
+                        return false;
+                    FormalLauncherNative identity = Read(full, false);
+                    if (identity.Reparse || identity.LinkCount != 1 ||
+                        !identity.FinalPath.StartsWith(
+                            rootPrefix, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    byte[] content = System.IO.File.ReadAllBytes(full);
+                    if (!EqualBytes(
+                            GitObjectId("blob", content), entry.ObjectId))
+                    {
+                        if (!conversionProfile.AutoCrlf) return false;
+                        byte[] canonical = SafeAutoCrlfBytes(content);
+                        if (canonical == null ||
+                            !EqualBytes(
+                                GitObjectId("blob", canonical),
+                                entry.ObjectId))
+                            return false;
+                    }
+                }
                 GitNode root = new GitNode();
                 foreach (GitEntry entry in entries)
                     if (!InsertEntry(root, entry)) return false;
@@ -994,8 +1947,20 @@ namespace FolderSessionLock.Stage4
                     !EqualBytes(cacheTree, BuildCacheTree(root)))
                     return false;
                 string actualTree = ToHex(actualTreeBytes);
+                ConversionProfile recapturedProfile;
                 return String.Equals(
-                    actualTree, expectedTree, StringComparison.Ordinal);
+                        actualTree, expectedTree, StringComparison.Ordinal) &&
+                    CaptureConversionProfile(
+                        normalizedRoot,
+                        gitDirectory,
+                        entries,
+                        out recapturedProfile) &&
+                    conversionProfile.AutoCrlf ==
+                        recapturedProfile.AutoCrlf &&
+                    String.Equals(
+                        conversionProfile.Fingerprint,
+                        recapturedProfile.Fingerprint,
+                        StringComparison.Ordinal);
             }
             catch { return false; }
         }
@@ -3154,6 +4119,545 @@ public sealed class FslFormalObserverIdentity {
         Enabled=(attributes&0x4)!=0,DenyOnly=(attributes&0x10)!=0};
     }finally{Marshal.FreeHGlobal(b);Marshal.FreeHGlobal(adminSid);}
   }
+  sealed class ObserverConversionSource {
+    internal string Path,Text,NativeFileIdentity;internal bool Exists;
+    internal long Length,CreationTicks,WriteTicks;
+    internal int Attributes;internal byte[] Sha256;
+  }
+  sealed class ObserverConversionProfile {
+    internal bool AutoCrlf;internal string Fingerprint;
+  }
+  static ObserverConversionSource CaptureConversionSource(string path) {
+    string full=System.IO.Path.GetFullPath(path);
+    if(!System.IO.File.Exists(full)) {
+      if(System.IO.Directory.Exists(full))return null;
+      return new ObserverConversionSource {
+        Path=full,Exists=false,Text=null};}
+    FslFormalObserverIdentity before=Read(full,false);
+    if(before.Reparse||before.Links!=1||!String.Equals(
+      before.FinalPath,full,StringComparison.OrdinalIgnoreCase))return null;
+    var beforeInfo=new System.IO.FileInfo(full);
+    long beforeLength=beforeInfo.Length;
+    long beforeCreation=beforeInfo.CreationTimeUtc.Ticks;
+    long beforeWrite=beforeInfo.LastWriteTimeUtc.Ticks;
+    int beforeAttributes=(int)beforeInfo.Attributes;
+    if(beforeLength>1024*1024)return null;
+    byte[] bytes=System.IO.File.ReadAllBytes(full);string text;
+    try{text=new UTF8Encoding(false,true).GetString(bytes);}
+    catch{return null;}
+    FslFormalObserverIdentity after=Read(full,false);
+    var afterInfo=new System.IO.FileInfo(full);
+    if(after.Reparse||after.Links!=1||before.FileId!=after.FileId||
+       !String.Equals(after.FinalPath,full,StringComparison.OrdinalIgnoreCase)||
+       beforeLength!=bytes.Length||afterInfo.Length!=beforeLength||
+       afterInfo.CreationTimeUtc.Ticks!=beforeCreation||
+       afterInfo.LastWriteTimeUtc.Ticks!=beforeWrite||
+       (int)afterInfo.Attributes!=beforeAttributes)return null;
+    byte[] digest;using(var sha=System.Security.Cryptography.SHA256.Create())
+      digest=sha.ComputeHash(bytes);
+    return new ObserverConversionSource {
+      Path=full,Exists=true,Text=text,Length=bytes.Length,
+      CreationTicks=beforeCreation,WriteTicks=beforeWrite,
+      Attributes=beforeAttributes,Sha256=digest,
+      NativeFileIdentity=after.FileId};
+  }
+  static bool IsConfigName(string value) {
+    if(String.IsNullOrEmpty(value)||
+       !((value[0]>='A'&&value[0]<='Z')||
+         (value[0]>='a'&&value[0]<='z')))return false;
+    for(int i=1;i<value.Length;i++) {
+      char c=value[i];
+      if(!((c>='A'&&c<='Z')||(c>='a'&&c<='z')||
+           (c>='0'&&c<='9')||c=='-'))return false;
+    }
+    return value.Length<=32768;
+  }
+  static bool DecodeConfigValue(string text,out string value) {
+    value=null;var output=new StringBuilder();
+    var whitespace=new StringBuilder();bool quoted=false,seen=false;
+    for(int i=0;i<text.Length;i++) {
+      char c=text[i];
+      if(!quoted&&(c=='#'||c==';'))break;
+      if(c=='"') {
+        quoted=!quoted;seen=true;output.Append(whitespace);
+        whitespace.Length=0;continue;
+      }
+      if(c=='\\') {
+        if(++i>=text.Length)return false;
+        char escaped=text[i],decoded;
+        if(escaped=='"')decoded='"';
+        else if(escaped=='\\')decoded='\\';
+        else if(escaped=='n')decoded='\n';
+        else if(escaped=='t')decoded='\t';
+        else if(escaped=='b')decoded='\b';
+        else return false;
+        output.Append(whitespace);whitespace.Length=0;
+        output.Append(decoded);seen=true;
+      } else if(!quoted&&(c==' '||c=='\t')) {
+        if(seen)whitespace.Append(c);
+      } else {
+        output.Append(whitespace);whitespace.Length=0;
+        output.Append(c);seen=true;
+      }
+      if(output.Length+whitespace.Length>32768)return false;
+    }
+    if(quoted)return false;value=output.ToString();return true;
+  }
+  static bool ParseConversionConfig(
+    ObserverConversionSource source,
+    ref bool hasAutoCrlf,ref bool autoCrlf) {
+    if(!source.Exists)return true;string text=source.Text;
+    if(text.IndexOf('\0')>=0||
+       new UTF8Encoding(false,true).GetByteCount(text)>1024*1024)return false;
+    for(int i=0;i<text.Length;i++)
+      if(text[i]=='\r'&&(i+1>=text.Length||text[i+1]!='\n'))return false;
+    string[] physical=text.Replace("\r\n","\n").Split('\n');
+    if(physical.Length>65536)return false;
+    var logical=new System.Collections.Generic.List<string>();
+    for(int physicalIndex=0;physicalIndex<physical.Length;physicalIndex++) {
+      var lineBuilder=new StringBuilder(physical[physicalIndex]);
+      int continuations=0;
+      while(lineBuilder.Length>0&&
+            lineBuilder[lineBuilder.Length-1]=='\\') {
+        int slashCount=0;
+        for(int slashIndex=lineBuilder.Length-1;
+            slashIndex>=0&&lineBuilder[slashIndex]=='\\';slashIndex--)
+          slashCount++;
+        if((slashCount&1)==0)break;
+        if(++physicalIndex>=physical.Length||++continuations>64)return false;
+        lineBuilder.Length--;
+        lineBuilder.Append(physical[physicalIndex].TrimStart(' ','\t'));
+        if(lineBuilder.Length>32768)return false;
+      }
+      logical.Add(lineBuilder.ToString());
+    }
+    string section="",subsection="";int assignments=0;
+    var lfs=new System.Collections.Generic.Dictionary<string,string>(
+      StringComparer.OrdinalIgnoreCase);
+    foreach(string sourceLine in logical) {
+      string line=sourceLine.Trim();
+      if(line.Length==0||line[0]=='#'||line[0]==';')continue;
+      if(line[0]=='[') {
+        bool headerQuoted=false,headerEscaped=false;int headerEnd=-1;
+        for(int headerIndex=1;headerIndex<line.Length;headerIndex++) {
+          char headerCharacter=line[headerIndex];
+          if(headerEscaped){headerEscaped=false;continue;}
+          if(headerCharacter=='\\'&&headerQuoted) {
+            headerEscaped=true;continue;}
+          if(headerCharacter=='"')headerQuoted=!headerQuoted;
+          else if(headerCharacter==']'&&!headerQuoted) {
+            headerEnd=headerIndex;break;}
+        }
+        if(headerEnd<0)return false;
+        string headerRemainder=line.Substring(headerEnd+1).TrimStart(' ','\t');
+        if(headerRemainder.Length>0&&headerRemainder[0]!='#'&&
+           headerRemainder[0]!=';')return false;
+        string header=line.Substring(1,headerEnd-1);
+        int separator=header.IndexOfAny(new char[]{' ','\t'});
+        string rawSection=separator<0?header:header.Substring(0,separator);
+        if(!IsConfigName(rawSection))return false;
+        section=rawSection.ToLowerInvariant();subsection="";
+        if(separator>=0) {
+          string tail=header.Substring(separator).Trim();
+          if(tail.Length<2||tail[0]!='"'||tail[tail.Length-1]!='"'||
+             !DecodeConfigValue(tail,out subsection)||
+             subsection.Length>32768)return false;
+        }
+        if(section=="include"||section=="includeif")return false;
+        continue;
+      }
+      int nameEnd=0;
+      while(nameEnd<line.Length&&line[nameEnd]!=' '&&
+            line[nameEnd]!='\t'&&line[nameEnd]!='=')nameEnd++;
+      string rawKey=line.Substring(0,nameEnd);
+      if(!IsConfigName(rawKey)||section.Length==0||++assignments>4096)
+        return false;
+      int cursor=nameEnd;
+      while(cursor<line.Length&&(line[cursor]==' '||line[cursor]=='\t'))
+        cursor++;
+      string value="true";
+      if(cursor<line.Length) {
+        if(line[cursor]=='#'||line[cursor]==';')value="true";
+        else {
+          if(line[cursor]!='='||
+             !DecodeConfigValue(line.Substring(cursor+1),out value))
+            return false;
+        }
+      }
+      string key=rawKey.ToLowerInvariant();
+      if(section=="core"&&key=="autocrlf") {
+        if(!String.Equals(value,"true",StringComparison.OrdinalIgnoreCase)&&
+           !String.Equals(value,"false",StringComparison.OrdinalIgnoreCase))
+          return false;
+        hasAutoCrlf=true;autoCrlf=String.Equals(
+          value,"true",StringComparison.OrdinalIgnoreCase);
+      } else if(section=="core"&&(key=="eol"||key=="attributesfile"||
+        key=="worktree"||key=="safecrlf"||
+        key=="checkroundtripencoding"||key=="bigfilethreshold"))return false;
+      else if(section=="extensions"&&key=="worktreeconfig")return false;
+      else if(section=="filter") {
+        if(!String.Equals(subsection,"lfs",StringComparison.Ordinal))return false;
+        string expected;
+        if(key=="clean")expected="git-lfs clean -- %f";
+        else if(key=="smudge")expected="git-lfs smudge -- %f";
+        else if(key=="process")expected="git-lfs filter-process";
+        else if(key=="required")expected="true";
+        else return false;
+        if(!String.Equals(value,expected,StringComparison.Ordinal))return false;
+        lfs[key]=value;
+      }
+    }
+    return lfs.Count==0||lfs.Count==4;
+  }
+  static System.Collections.Generic.Dictionary<string,string>
+    CaptureEnvironment() {
+    var snapshot=new System.Collections.Generic.Dictionary<string,string>(
+      StringComparer.OrdinalIgnoreCase);
+    System.Collections.IDictionary values=Environment.GetEnvironmentVariables(
+      EnvironmentVariableTarget.Process);
+    foreach(System.Collections.DictionaryEntry entry in values) {
+      string name=entry.Key as string,value=entry.Value as string;
+      if(String.IsNullOrEmpty(name)||value==null||
+         snapshot.ContainsKey(name))return null;
+      snapshot.Add(name,value);
+    }
+    return snapshot;
+  }
+  static bool TryCanonicalEnvironmentPath(
+    System.Collections.Generic.Dictionary<string,string> environment,
+    string name,bool required,out string value) {
+    value=null;string raw;
+    if(!environment.TryGetValue(name,out raw)) {
+      if(required)return false;value="";return true;}
+    if(String.IsNullOrWhiteSpace(raw)||raw.IndexOf('\0')>=0)return false;
+    try {
+      string canonical=System.IO.Path.GetFullPath(raw);
+      if(!System.IO.Path.IsPathRooted(raw)||!String.Equals(
+        raw,canonical,StringComparison.OrdinalIgnoreCase))return false;
+      value=canonical;return true;
+    } catch{return false;}
+  }
+  static bool ParseCommandConfigEnvironment(
+    System.Collections.Generic.Dictionary<string,string> environment) {
+    var numberedPattern=new System.Text.RegularExpressions.Regex(
+      "^GIT_CONFIG_(KEY|VALUE)_(0|[1-9][0-9]*)$",
+      System.Text.RegularExpressions.RegexOptions.IgnoreCase|
+      System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    foreach(string name in environment.Keys)
+      if(name.StartsWith("GIT_CONFIG_",
+           StringComparison.OrdinalIgnoreCase)&&
+         !String.Equals(name,"GIT_CONFIG_COUNT",
+           StringComparison.OrdinalIgnoreCase)&&
+         !numberedPattern.IsMatch(name))return false;
+    bool hasCount=environment.ContainsKey("GIT_CONFIG_COUNT");int numbered=0;
+    foreach(string name in environment.Keys)
+      if(numberedPattern.IsMatch(name))numbered++;
+    if(!hasCount)return numbered==0;
+    string rawCount=environment["GIT_CONFIG_COUNT"];
+    if(rawCount.Length==0||(rawCount.Length>1&&rawCount[0]=='0')||
+       rawCount.Length>2)return false;
+    for(int i=0;i<rawCount.Length;i++)
+      if(rawCount[i]<'0'||rawCount[i]>'9')return false;
+    int count;
+    if(!Int32.TryParse(rawCount,
+         System.Globalization.NumberStyles.None,
+         System.Globalization.CultureInfo.InvariantCulture,out count)||
+       count>64||numbered!=checked(2*count))return false;
+    for(int i=0;i<count;i++) {
+      string key,value;
+      if(!environment.TryGetValue("GIT_CONFIG_KEY_"+i.ToString(
+           System.Globalization.CultureInfo.InvariantCulture),out key)||
+         !environment.TryGetValue("GIT_CONFIG_VALUE_"+i.ToString(
+           System.Globalization.CultureInfo.InvariantCulture),out value)||
+         !String.Equals(key,"safe.directory",
+           StringComparison.OrdinalIgnoreCase)||value.Length>32768||
+         value.IndexOfAny(new char[]{'\0','\r','\n'})>=0)return false;
+    }
+    return true;
+  }
+  static bool ParseSystemAttributes(ObserverConversionSource source) {
+    if(!source.Exists)return true;string text=source.Text;
+    if(text.IndexOf('\0')>=0)return false;
+    for(int i=0;i<text.Length;i++)
+      if(text[i]=='\r'&&(i+1>=text.Length||text[i+1]!='\n'))return false;
+    foreach(string sourceLine in text.Replace("\r\n","\n").Split('\n')) {
+      string line=sourceLine.Trim();
+      if(line.Length==0||line[0]=='#')continue;
+      string[] fields=line.Split(new char[]{' ','\t'},
+        StringSplitOptions.RemoveEmptyEntries);
+      if(fields.Length!=2||
+         !fields[0].StartsWith("*.",StringComparison.Ordinal)||
+         fields[0].Length<=2||fields[0].Substring(2).IndexOfAny(
+           new char[]{'/','\\','*','?','[',']'})>=0||
+         fields[1]!="diff=astextplain")return false;
+    }
+    return true;
+  }
+  static byte[] UInt32Le(uint value) {
+    return new byte[]{(byte)value,(byte)(value>>8),(byte)(value>>16),
+      (byte)(value>>24)};
+  }
+  static byte[] Int64Le(long value) {
+    ulong raw=unchecked((ulong)value);
+    return new byte[]{(byte)raw,(byte)(raw>>8),(byte)(raw>>16),
+      (byte)(raw>>24),(byte)(raw>>32),(byte)(raw>>40),(byte)(raw>>48),
+      (byte)(raw>>56)};
+  }
+  static void WriteProfileFrame(System.IO.MemoryStream stream,byte type,
+    byte state,string name,byte[] payload) {
+    byte[] nameBytes=new UTF8Encoding(false,true).GetBytes(name);
+    if(payload==null)payload=new byte[0];
+    stream.WriteByte(type);stream.WriteByte(state);
+    byte[] length=UInt32Le((uint)nameBytes.Length);
+    stream.Write(length,0,length.Length);
+    stream.Write(nameBytes,0,nameBytes.Length);
+    length=UInt32Le((uint)payload.Length);
+    stream.Write(length,0,length.Length);
+    stream.Write(payload,0,payload.Length);
+  }
+  static bool ProfileEncoderGoldenMatches() {
+    var utf8=new UTF8Encoding(false,true);
+    using(var stream=new System.IO.MemoryStream()) {
+      WriteProfileFrame(stream,1,2,"schema",
+        utf8.GetBytes("FSL.Stage4.ConversionProfile"));
+      WriteProfileFrame(stream,3,2,"version",UInt32Le(1));
+      WriteProfileFrame(stream,1,2,"newline",utf8.GetBytes("a\nb"));
+      WriteProfileFrame(stream,1,2,"pipe",utf8.GetBytes("a|b"));
+      WriteProfileFrame(stream,1,2,"empty",new byte[0]);
+      WriteProfileFrame(stream,1,1,"null",new byte[0]);
+      WriteProfileFrame(stream,1,0,"absent",new byte[0]);
+      WriteProfileFrame(stream,2,2,"false",new byte[]{0});
+      WriteProfileFrame(stream,3,2,"zero",UInt32Le(0));
+      byte[] digest;
+      using(var sha=System.Security.Cryptography.SHA256.Create())
+        digest=sha.ComputeHash(stream.ToArray());
+      return String.Equals(Hex(digest),
+        "0d2589a97eec51dd09f1f23b7de4171e6ec9a1ab1356ad1fbd1ac2011a594e26",
+        StringComparison.Ordinal);
+    }
+  }
+  static byte[] ConversionProfileBytes(
+    System.Collections.Generic.Dictionary<string,string> environment,
+    string programFiles,string userProfile,string home,string xdg,
+    bool hasProgramW6432,string programW6432,bool hasAutoCrlf,
+    bool autoCrlf,
+    System.Collections.Generic.Dictionary<
+      string,ObserverConversionSource> records) {
+    var utf8=new UTF8Encoding(false,true);
+    using(var stream=new System.IO.MemoryStream()) {
+      WriteProfileFrame(stream,1,2,"schema",
+        utf8.GetBytes("FSL.Stage4.ConversionProfile"));
+      WriteProfileFrame(stream,3,2,"version",UInt32Le(1));
+      WriteProfileFrame(stream,1,2,"resolved.ProgramFiles",
+        utf8.GetBytes(programFiles));
+      WriteProfileFrame(stream,1,2,"resolved.USERPROFILE",
+        utf8.GetBytes(userProfile));
+      WriteProfileFrame(stream,1,2,"resolved.HOME",utf8.GetBytes(home));
+      WriteProfileFrame(stream,1,2,"resolved.XDG_CONFIG_HOME",
+        utf8.GetBytes(xdg));
+      WriteProfileFrame(stream,1,hasProgramW6432?(byte)2:(byte)0,
+        "raw.ProgramW6432",hasProgramW6432?
+          utf8.GetBytes(environment["ProgramW6432"]):new byte[0]);
+      WriteProfileFrame(stream,1,hasProgramW6432?(byte)2:(byte)0,
+        "resolved.ProgramW6432",hasProgramW6432?
+          utf8.GetBytes(programW6432):new byte[0]);
+      WriteProfileFrame(stream,2,2,"hasAutoCrlf",
+        new byte[]{hasAutoCrlf?(byte)1:(byte)0});
+      WriteProfileFrame(stream,2,hasAutoCrlf?(byte)2:(byte)0,"autoCrlf",
+        hasAutoCrlf?new byte[]{autoCrlf?(byte)1:(byte)0}:new byte[0]);
+      foreach(string name in new string[]{"ProgramFiles","USERPROFILE",
+        "HOME","XDG_CONFIG_HOME"}) {
+        string raw;bool present=environment.TryGetValue(name,out raw);
+        WriteProfileFrame(stream,1,present?(byte)2:(byte)0,"raw."+name,
+          present?utf8.GetBytes(raw):new byte[0]);
+      }
+      var gitNames=new System.Collections.Generic.List<string>();
+      foreach(string name in environment.Keys)
+        if(name.StartsWith("GIT_",StringComparison.OrdinalIgnoreCase))
+          gitNames.Add(name.ToUpperInvariant());
+      gitNames.Sort(StringComparer.Ordinal);
+      using(var payload=new System.IO.MemoryStream()) {
+        byte[] count=UInt32Le((uint)gitNames.Count);
+        payload.Write(count,0,count.Length);
+        foreach(string name in gitNames)
+          WriteProfileFrame(payload,1,2,name,
+            utf8.GetBytes(environment[name]));
+        WriteProfileFrame(stream,5,2,"gitEnvironment",payload.ToArray());
+      }
+      var paths=new System.Collections.Generic.List<string>(records.Keys);
+      paths.Sort(delegate(string left,string right) {
+        int result=String.Compare(
+          left,right,StringComparison.OrdinalIgnoreCase);
+        return result!=0?result:String.CompareOrdinal(left,right);
+      });
+      using(var sources=new System.IO.MemoryStream()) {
+        byte[] count=UInt32Le((uint)paths.Count);
+        sources.Write(count,0,count.Length);
+        foreach(string path in paths) {
+          ObserverConversionSource source=records[path];
+          using(var record=new System.IO.MemoryStream()) {
+            WriteProfileFrame(record,1,2,"path",utf8.GetBytes(source.Path));
+            WriteProfileFrame(record,2,2,"exists",
+              new byte[]{source.Exists?(byte)1:(byte)0});
+            WriteProfileFrame(record,4,source.Exists?(byte)2:(byte)0,
+              "length",source.Exists?Int64Le(source.Length):new byte[0]);
+            WriteProfileFrame(record,4,source.Exists?(byte)2:(byte)0,
+              "creationTicks",source.Exists?
+                Int64Le(source.CreationTicks):new byte[0]);
+            WriteProfileFrame(record,4,source.Exists?(byte)2:(byte)0,
+              "writeTicks",source.Exists?
+                Int64Le(source.WriteTicks):new byte[0]);
+            WriteProfileFrame(record,3,source.Exists?(byte)2:(byte)0,
+              "attributes",source.Exists?
+                UInt32Le(unchecked((uint)source.Attributes)):new byte[0]);
+            WriteProfileFrame(record,7,source.Exists?(byte)2:(byte)0,
+              "sha256",source.Exists?source.Sha256:new byte[0]);
+            WriteProfileFrame(record,1,source.Exists?(byte)2:(byte)0,
+              "nativeFileIdentity",source.Exists?
+                utf8.GetBytes(source.NativeFileIdentity):new byte[0]);
+            WriteProfileFrame(sources,6,2,"source",record.ToArray());
+          }
+        }
+        WriteProfileFrame(stream,5,2,"sources",sources.ToArray());
+      }
+      return stream.ToArray();
+    }
+  }
+  static bool CaptureConversionProfile(
+    string gitRoot,string gitDirectory,
+    System.Collections.Generic.List<ObserverGitEntry> entries,
+    out ObserverConversionProfile profile) {
+    profile=null;
+    System.Collections.Generic.Dictionary<string,string> environment=
+      CaptureEnvironment();
+    if(environment==null||!ProfileEncoderGoldenMatches())return false;
+    string programFiles,userProfile,programW6432=null;
+    bool hasProgramW6432=environment.ContainsKey("ProgramW6432");
+    if(!TryCanonicalEnvironmentPath(
+         environment,"ProgramFiles",true,out programFiles)||
+       !TryCanonicalEnvironmentPath(
+         environment,"USERPROFILE",true,out userProfile)||
+       (hasProgramW6432&&!TryCanonicalEnvironmentPath(
+         environment,"ProgramW6432",true,out programW6432))||
+       !System.IO.Directory.Exists(programFiles)||
+       !System.IO.Directory.Exists(userProfile)||
+       (hasProgramW6432&&!System.IO.Directory.Exists(programW6432)))
+      return false;
+    try {
+      string knownProgramFiles=System.IO.Path.GetFullPath(
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
+      string knownUserProfile=System.IO.Path.GetFullPath(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+      if(!String.Equals(programFiles,knownProgramFiles,
+           StringComparison.OrdinalIgnoreCase)||
+       !String.Equals(userProfile,knownUserProfile,
+           StringComparison.OrdinalIgnoreCase)||
+       (hasProgramW6432&&(!String.Equals(programW6432,programFiles,
+          StringComparison.OrdinalIgnoreCase)||
+        !String.Equals(programW6432,knownProgramFiles,
+          StringComparison.OrdinalIgnoreCase))))return false;
+    } catch{return false;}
+    foreach(string forbidden in new string[]{"GIT_CONFIG_SYSTEM",
+      "GIT_CONFIG_GLOBAL","GIT_CONFIG_NOSYSTEM","GIT_CONFIG_PARAMETERS",
+      "GIT_ATTR_NOSYSTEM","GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR",
+      "GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES","GIT_QUARANTINE_PATH",
+      "GIT_NAMESPACE","GIT_SHALLOW_FILE","GIT_GRAFT_FILE",
+      "GIT_NO_REPLACE_OBJECTS","GIT_REPLACE_REF_BASE"})
+      if(environment.ContainsKey(forbidden))return false;
+    if(!ParseCommandConfigEnvironment(environment))return false;
+    string home;
+    if(environment.ContainsKey("HOME")) {
+      if(!TryCanonicalEnvironmentPath(
+           environment,"HOME",true,out home))return false;
+    } else home=userProfile;
+    string xdg;
+    if(environment.ContainsKey("XDG_CONFIG_HOME")) {
+      if(!TryCanonicalEnvironmentPath(
+           environment,"XDG_CONFIG_HOME",true,out xdg))return false;
+    } else xdg=System.IO.Path.Combine(home,".config");
+    string systemConfig=System.IO.Path.Combine(
+      programFiles,"Git","etc","gitconfig");
+    string systemAttributes=System.IO.Path.Combine(
+      programFiles,"Git","etc","gitattributes");
+    string xdgConfig=System.IO.Path.Combine(xdg,"git","config");
+    string userConfig=System.IO.Path.Combine(home,".gitconfig");
+    string userAttributes=System.IO.Path.Combine(
+      xdg,"git","attributes");
+    string legacyUserAttributes=System.IO.Path.Combine(
+      home,".gitattributes");
+    string localConfig=System.IO.Path.Combine(gitDirectory,"config");
+    string worktreeConfig=System.IO.Path.Combine(
+      gitDirectory,"config.worktree");
+    string infoAttributes=System.IO.Path.Combine(
+      gitDirectory,"info","attributes");
+    var governing=new System.Collections.Generic.HashSet<string>(
+      StringComparer.OrdinalIgnoreCase);
+    governing.Add(System.IO.Path.Combine(gitRoot,".gitattributes"));
+    foreach(ObserverGitEntry entry in entries) {
+      string directory=gitRoot;string[] parts=entry.Path.Split('/');
+      for(int i=0;i<parts.Length-1;i++) {
+        directory=System.IO.Path.Combine(directory,parts[i]);
+        governing.Add(System.IO.Path.Combine(directory,".gitattributes"));}
+    }
+    var paths=new System.Collections.Generic.HashSet<string>(
+      StringComparer.OrdinalIgnoreCase);
+    foreach(string path in new string[]{systemConfig,systemAttributes,
+      userConfig,xdgConfig,userAttributes,legacyUserAttributes,localConfig,
+      worktreeConfig,infoAttributes})
+      paths.Add(System.IO.Path.GetFullPath(path));
+    foreach(string path in governing)
+      paths.Add(System.IO.Path.GetFullPath(path));
+    var records=new System.Collections.Generic.Dictionary<
+      string,ObserverConversionSource>(StringComparer.OrdinalIgnoreCase);
+    foreach(string path in paths) {
+      ObserverConversionSource record=CaptureConversionSource(path);
+      if(record==null)return false;records.Add(path,record);
+    }
+    foreach(string forbidden in new string[]{userAttributes,
+      legacyUserAttributes,worktreeConfig,infoAttributes})
+      if(records[System.IO.Path.GetFullPath(forbidden)].Exists)return false;
+    foreach(string forbidden in governing)
+      if(records[System.IO.Path.GetFullPath(forbidden)].Exists)return false;
+    bool hasAutoCrlf=false,autoCrlf=false;
+    if(!ParseConversionConfig(
+         records[System.IO.Path.GetFullPath(systemConfig)],
+         ref hasAutoCrlf,ref autoCrlf)||
+       !ParseConversionConfig(
+         records[System.IO.Path.GetFullPath(xdgConfig)],
+         ref hasAutoCrlf,ref autoCrlf)||
+       !ParseConversionConfig(
+         records[System.IO.Path.GetFullPath(userConfig)],
+         ref hasAutoCrlf,ref autoCrlf)||
+       !ParseConversionConfig(
+         records[System.IO.Path.GetFullPath(localConfig)],
+         ref hasAutoCrlf,ref autoCrlf)||
+       !ParseSystemAttributes(
+         records[System.IO.Path.GetFullPath(systemAttributes)]))return false;
+    byte[] fingerprintBytes;
+    using(var sha=System.Security.Cryptography.SHA256.Create())
+      fingerprintBytes=sha.ComputeHash(
+        ConversionProfileBytes(environment,programFiles,userProfile,home,xdg,
+          hasProgramW6432,programW6432,hasAutoCrlf,autoCrlf,records));
+    profile=new ObserverConversionProfile {
+      AutoCrlf=hasAutoCrlf&&autoCrlf,
+      Fingerprint=Hex(fingerprintBytes)};
+    return true;
+  }
+  static byte[] SafeAutoCrlfBytes(byte[] bytes) {
+    using(var output=new System.IO.MemoryStream()) {
+      bool converted=false;
+      for(int i=0;i<bytes.Length;i++) {
+        byte value=bytes[i];if(value==0)return null;
+        if(value==0x0D) {
+          if(i+1>=bytes.Length||bytes[i+1]!=0x0A)return null;
+          output.WriteByte(0x0A);i++;converted=true;continue;
+        }
+        if(value==0x0A)return null;output.WriteByte(value);
+      }
+      return converted?output.ToArray():null;
+    }
+  }
   public static bool VerifyGitIndexAndTree(
     string rootPath,string gitPath,string expectedTree) {
     try {
@@ -3190,16 +4694,6 @@ public sealed class FslFormalObserverIdentity {
         try{relative=new UTF8Encoding(false,true).GetString(pathBytes);}
         catch{return false;}
         if(!CanonicalPath(relative))return false;
-        string full=System.IO.Path.GetFullPath(System.IO.Path.Combine(
-          root,relative.Replace('/','\\')));
-        if(!full.StartsWith(prefix,StringComparison.OrdinalIgnoreCase)||
-           !System.IO.File.Exists(full))return false;
-        FslFormalObserverIdentity identity=Read(full,false);
-        if(identity.Reparse||identity.Links!=1||
-           !identity.FinalPath.StartsWith(
-             prefix,StringComparison.OrdinalIgnoreCase))return false;
-        byte[] content=System.IO.File.ReadAllBytes(full);
-        if(!Equal(GitOid("blob",content),oid))return false;
         entries.Add(new ObserverGitEntry {
           Path=relative,Mode=mode,ObjectId=oid});
         int length=(pathEnd-start)+1;
@@ -3223,14 +4717,39 @@ public sealed class FslFormalObserverIdentity {
         offset+=size;
       }
       if(offset!=checksum)return false;
+      ObserverConversionProfile conversionProfile;
+      if(!CaptureConversionProfile(
+        root,gitPath,entries,out conversionProfile))return false;
+      foreach(ObserverGitEntry entry in entries) {
+        string full=System.IO.Path.GetFullPath(System.IO.Path.Combine(
+          root,entry.Path.Replace('/','\\')));
+        if(!full.StartsWith(prefix,StringComparison.OrdinalIgnoreCase)||
+           !System.IO.File.Exists(full))return false;
+        FslFormalObserverIdentity identity=Read(full,false);
+        if(identity.Reparse||identity.Links!=1||
+           !identity.FinalPath.StartsWith(
+             prefix,StringComparison.OrdinalIgnoreCase))return false;
+        byte[] content=System.IO.File.ReadAllBytes(full);
+        if(!Equal(GitOid("blob",content),entry.ObjectId)) {
+          if(!conversionProfile.AutoCrlf)return false;
+          byte[] canonical=SafeAutoCrlfBytes(content);
+          if(canonical==null||
+             !Equal(GitOid("blob",canonical),entry.ObjectId))return false;
+        }
+      }
       var rootNode=new ObserverGitNode();
       foreach(ObserverGitEntry entry in entries)
         if(!Insert(rootNode,entry))return false;
       byte[] actualTree=BuildTree(rootNode);
       if(cacheTree!=null&&!Equal(cacheTree,BuildCacheTree(rootNode)))
         return false;
+      ObserverConversionProfile recapturedProfile;
       return String.Equals(Hex(actualTree),expectedTree,
-        StringComparison.Ordinal);
+          StringComparison.Ordinal)&&CaptureConversionProfile(
+          root,gitPath,entries,out recapturedProfile)&&
+        conversionProfile.AutoCrlf==recapturedProfile.AutoCrlf&&
+        String.Equals(conversionProfile.Fingerprint,
+          recapturedProfile.Fingerprint,StringComparison.Ordinal);
     }catch{return false;}
   }
   sealed class ObserverGitEntry {
@@ -3381,7 +4900,9 @@ public sealed class FslFormalObserverIdentity {
     return BitConverter.ToString(bytes).Replace("-","").ToLowerInvariant();
   }
   [StructLayout(LayoutKind.Sequential)]struct Info {
-    public uint FileAttributes;public long CreationTime,AccessTime,WriteTime;
+    public uint FileAttributes;
+    public System.Runtime.InteropServices.ComTypes.FILETIME
+      CreationTime,AccessTime,WriteTime;
     public uint VolumeSerialNumber,FileSizeHigh,FileSizeLow,NumberOfLinks;
     public uint FileIndexHigh,FileIndexLow;
   }

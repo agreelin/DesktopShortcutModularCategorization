@@ -498,6 +498,29 @@ try {
         'The valid synthetic Git index/tree/HEAD authority failed.')
     Assert-Equal $syntheticState.tree $rootTreeHex (
         'The synthetic HEAD tree binding drifted.')
+    $syntheticConfigPath = Join-Path $syntheticGit 'config'
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = true`n")
+    [IO.File]::WriteAllText(
+        $alphaPath,
+        ([Text.UTF8Encoding]::new(
+            $false,
+            $true).GetString($alphaContent).Replace(
+                "`r`n",
+                "`n").Replace(
+                    "`n",
+                    "`r`n")),
+        [Text.UTF8Encoding]::new($false, $true))
+    $syntheticCrlfClean = & $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex
+    Restore-Bytes $alphaPath $alphaContent
+    [IO.File]::Delete($syntheticConfigPath)
+    $script:Cases++
+    Assert-True $syntheticCrlfClean (
+        'The main native verifier rejected safe autocrlf=true CRLF bytes.')
 
     $assertGitFalse = {
         param([byte[]]$IndexBytes, [string]$Message)
@@ -1466,6 +1489,952 @@ try {
     }
     Assert-True ($null -ne ('FslFormalObserverIdentity' -as [type])) (
         'The generated observer native verifier did not compile.')
+    $observerLfClean =
+        [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+            $syntheticRoot,
+            $syntheticGit,
+            $rootTreeHex)
+    $mainLfClean = & $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex
+    $crlfAlphaBytes = [Text.UTF8Encoding]::new(
+        $false,
+        $true).GetBytes(
+            [Text.UTF8Encoding]::new(
+                $false,
+                $true).GetString($alphaContent).Replace(
+                    "`r`n",
+                    "`n").Replace(
+                        "`n",
+                        "`r`n"))
+    $syntheticRootAttributesPath =
+        Join-Path $syntheticRoot '.gitattributes'
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = true`n")
+    Write-Utf8 $syntheticRootAttributesPath "* -text`n"
+    [IO.File]::WriteAllBytes($alphaPath, $crlfAlphaBytes)
+    $observerOracleAlphaOid =
+        Write-TestLooseObject $syntheticGit 'blob' $alphaContent
+    $observerOracleBetaOid =
+        Write-TestLooseObject $syntheticGit 'blob' $betaContent
+    if ($observerOracleAlphaOid -cne (Convert-BytesHex $alphaOid) -or
+        $observerOracleBetaOid -cne (Convert-BytesHex $betaOid)) {
+        throw 'The external Git conversion oracle object setup drifted.'
+    }
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $observerOracleOutput = @(
+            & git.exe -C $syntheticRoot diff --quiet -- 'alpha.txt' 2>&1)
+        $observerOracleExitCode = $LASTEXITCODE
+        $observerRootAttributesOracleDirty = $LASTEXITCODE -eq 1
+        if ($LASTEXITCODE -notin @(0, 1)) {
+            throw (
+                "The external Git conversion oracle failed: exit=" +
+                "$observerOracleExitCode output=" +
+                ($observerOracleOutput -join "`n"))
+        }
+    }
+    finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    $mainRootAttributesRejected = -not (& $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex)
+    $observerRootAttributesRejected = -not (
+        [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+            $syntheticRoot,
+            $syntheticGit,
+            $rootTreeHex))
+
+    Restore-Bytes $alphaPath $alphaContent
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = false`n" +
+        "[filter `"reviewer`"]`n" +
+        "    clean = reviewer-filter`n")
+    Write-Utf8 $syntheticRootAttributesPath (
+        '*.txt filter=reviewer working-tree-encoding=UTF-8' + "`n")
+    $mainRawConversionSourceRejected = -not (& $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex)
+    $observerRawConversionSourceRejected = -not (
+        [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+            $syntheticRoot,
+            $syntheticGit,
+            $rootTreeHex))
+    [IO.File]::Delete($syntheticRootAttributesPath)
+    [IO.File]::Delete($syntheticConfigPath)
+
+    $unsafeEnvironmentOriginal =
+        [Environment]::GetEnvironmentVariable(
+            'GIT_CONFIG_NOSYSTEM',
+            [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable(
+        'GIT_CONFIG_NOSYSTEM',
+        '1',
+        [EnvironmentVariableTarget]::Process)
+    try {
+        $mainUnsafeEnvironmentRejected = -not (& $module {
+            param($Root, $Git, $Tree)
+            Test-FslFlbIndexClean $Root $Git $Tree
+        } $syntheticRoot $syntheticGit $rootTreeHex)
+        $observerUnsafeEnvironmentRejected = -not (
+            [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+                $syntheticRoot,
+                $syntheticGit,
+                $rootTreeHex))
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_NOSYSTEM',
+            $unsafeEnvironmentOriginal,
+            [EnvironmentVariableTarget]::Process)
+    }
+
+    $syntheticWorktreeConfigPath =
+        Join-Path $syntheticGit 'config.worktree'
+    Write-Utf8 $syntheticWorktreeConfigPath (
+        "[core]`n" +
+        "    autocrlf = false`n")
+    $mainWorktreeConfigRejected = -not (& $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex)
+    $observerWorktreeConfigRejected = -not (
+        [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+            $syntheticRoot,
+            $syntheticGit,
+            $rootTreeHex))
+    [IO.File]::Delete($syntheticWorktreeConfigPath)
+
+    $syntheticNestedAttributesPath =
+        Join-Path $nestedRoot '.gitattributes'
+    Write-Utf8 $syntheticNestedAttributesPath "* -text`n"
+    $mainNestedAttributesRejected = -not (& $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex)
+    $observerNestedAttributesRejected = -not (
+        [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+            $syntheticRoot,
+            $syntheticGit,
+            $rootTreeHex))
+    [IO.File]::Delete($syntheticNestedAttributesPath)
+
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = false`n" +
+        "    attributesfile = C:/synthetic-global-attributes`n")
+    $mainCustomGlobalAttributesRejected = -not (& $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex)
+    $observerCustomGlobalAttributesRejected = -not (
+        [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+            $syntheticRoot,
+            $syntheticGit,
+            $rootTreeHex))
+    [IO.File]::Delete($syntheticConfigPath)
+
+    $mainDangerousRoundtripRejected = $false
+    $observerDangerousRoundtripRejected = $false
+    $mainDangerousBigFileRejected = $false
+    $observerDangerousBigFileRejected = $false
+    foreach ($dangerousKey in @(
+        'checkRoundtripEncoding',
+        'bigFileThreshold')) {
+        Write-Utf8 $syntheticConfigPath (
+            "[core]`n" +
+            "    autocrlf = false`n" +
+            "    $dangerousKey = synthetic-danger`n")
+        $mainRejected = -not (& $module {
+            param($Root, $Git, $Tree)
+            Test-FslFlbIndexClean $Root $Git $Tree
+        } $syntheticRoot $syntheticGit $rootTreeHex)
+        $observerRejected = -not (
+            [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+                $syntheticRoot,
+                $syntheticGit,
+                $rootTreeHex))
+        if ($dangerousKey -ceq 'checkRoundtripEncoding') {
+            $mainDangerousRoundtripRejected = $mainRejected
+            $observerDangerousRoundtripRejected = $observerRejected
+        }
+        else {
+            $mainDangerousBigFileRejected = $mainRejected
+            $observerDangerousBigFileRejected = $observerRejected
+        }
+    }
+    [IO.File]::Delete($syntheticConfigPath)
+
+    $profileHome = Join-Path $fixtureRoot 'round4-home'
+    $profileXdg = Join-Path $fixtureRoot 'round4-xdg'
+    [IO.Directory]::CreateDirectory($profileHome) | Out-Null
+    [IO.Directory]::CreateDirectory(
+        (Join-Path $profileXdg 'git')) | Out-Null
+    Write-Utf8 (Join-Path $profileXdg 'git\config') (
+        "[core]`n" +
+        "    autocrlf = false`n" +
+        "[user]`n" +
+        "    name = harmless xdg fixture`n")
+    Write-Utf8 (Join-Path $profileHome '.gitconfig') (
+        "[core]`n" +
+        "    autocrlf = true`n" +
+        "[diff `"harmless`"]`n" +
+        "    command = inert fixture`n")
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = true`n")
+    [IO.File]::WriteAllBytes($alphaPath, $crlfAlphaBytes)
+    $profileEnvironmentNames = @(
+        'HOME',
+        'XDG_CONFIG_HOME',
+        'GIT_FSL_HARMLESS',
+        'GIT_CONFIG_COUNT',
+        'GIT_CONFIG_KEY_0',
+        'GIT_CONFIG_VALUE_0')
+    $profileEnvironment = @{}
+    foreach ($name in $profileEnvironmentNames) {
+        $profileEnvironment[$name] =
+            [Environment]::GetEnvironmentVariable(
+                $name,
+                [EnvironmentVariableTarget]::Process)
+    }
+    try {
+        [Environment]::SetEnvironmentVariable(
+            'HOME',
+            $profileHome,
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'XDG_CONFIG_HOME',
+            $profileXdg,
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_FSL_HARMLESS',
+            'round4-fixture',
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_COUNT',
+            '1',
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_KEY_0',
+            'safe.directory',
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_VALUE_0',
+            $syntheticRoot,
+            [EnvironmentVariableTarget]::Process)
+        $mainHarmlessProfileAccepted = & $module {
+            param($Root, $Git, $Tree)
+            Test-FslFlbIndexClean $Root $Git $Tree
+        } $syntheticRoot $syntheticGit $rootTreeHex
+        $observerHarmlessProfileAccepted =
+            [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+                $syntheticRoot,
+                $syntheticGit,
+                $rootTreeHex)
+    }
+    finally {
+        foreach ($name in $profileEnvironmentNames) {
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                $profileEnvironment[$name],
+                [EnvironmentVariableTarget]::Process)
+        }
+        Restore-Bytes $alphaPath $alphaContent
+        [IO.File]::Delete($syntheticConfigPath)
+    }
+
+    $profileMatrixEnvironmentNames = @(
+        'HOME',
+        'XDG_CONFIG_HOME',
+        'GIT_FSL_HARMLESS',
+        'GIT_CONFIG_COUNT',
+        'GIT_CONFIG_KEY_0',
+        'GIT_CONFIG_VALUE_0',
+        'ProgramFiles',
+        'USERPROFILE')
+    $profileMatrixEnvironment = @{}
+    foreach ($name in $profileMatrixEnvironmentNames) {
+        $profileMatrixEnvironment[$name] =
+            [Environment]::GetEnvironmentVariable(
+                $name,
+                [EnvironmentVariableTarget]::Process)
+    }
+    $profileParityProbe = {
+        param(
+            [AllowNull()][string]$XdgText,
+            [AllowNull()][string]$HomeText,
+            [string]$LocalText,
+            [bool]$Crlf)
+        $xdgPath = Join-Path $profileXdg 'git\config'
+        $homePath = Join-Path $profileHome '.gitconfig'
+        if ($null -eq $XdgText) {
+            if (Test-Path -LiteralPath $xdgPath) {
+                [IO.File]::Delete($xdgPath)
+            }
+        }
+        else { Write-Utf8 $xdgPath $XdgText }
+        if ($null -eq $HomeText) {
+            if (Test-Path -LiteralPath $homePath) {
+                [IO.File]::Delete($homePath)
+            }
+        }
+        else { Write-Utf8 $homePath $HomeText }
+        Write-Utf8 $syntheticConfigPath $LocalText
+        if ($Crlf) {
+            [IO.File]::WriteAllBytes($alphaPath, $crlfAlphaBytes)
+        }
+        else { Restore-Bytes $alphaPath $alphaContent }
+        $main = & $module {
+            param($Root, $Git, $Tree)
+            Test-FslFlbIndexClean $Root $Git $Tree
+        } $syntheticRoot $syntheticGit $rootTreeHex
+        $observer =
+            [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+                $syntheticRoot,
+                $syntheticGit,
+                $rootTreeHex)
+        return [pscustomobject]@{
+            main = $main
+            observer = $observer
+        }
+    }
+    $homeOverridesXdgParity = $false
+    $localOverridesHomeParity = $false
+    $xdgOverridesSystemParity = $false
+    $lfsAnySourceParity = $false
+    $partialLfsParity = $false
+    $commandAutocrlfParity = $false
+    $commandRoutingParity = $false
+    $commandIncompleteParity = $false
+    $commandBoundParity = $false
+    $namedRoutingParity = $false
+    $canonicalEnvironmentParity = $false
+    try {
+        [Environment]::SetEnvironmentVariable(
+            'HOME',
+            $profileHome,
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'XDG_CONFIG_HOME',
+            $profileXdg,
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_FSL_HARMLESS',
+            'round4-fixture',
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_COUNT',
+            '1',
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_KEY_0',
+            'safe.directory',
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_VALUE_0',
+            $syntheticRoot,
+            [EnvironmentVariableTarget]::Process)
+
+        $homePrecedence = & $profileParityProbe `
+            ("[core]`n    autocrlf = false`n") `
+            ("[core]`n    autocrlf = true`n" +
+                "[credential]`n    helper = harmless`n") `
+            ("[user]`n    email = harmless@example.invalid`n") `
+            $true
+        $homeOverridesXdgParity =
+            $homePrecedence.main -and $homePrecedence.observer
+
+        $localPrecedence = & $profileParityProbe `
+            ("[core]`n    autocrlf = true`n") `
+            ("[core]`n    autocrlf = false`n") `
+            ("[core]`n    autocrlf = true`n" +
+                "[diff `"harmless`"]`n    command = inert`n") `
+            $true
+        $localOverridesHomeParity =
+            $localPrecedence.main -and $localPrecedence.observer
+
+        $xdgLf = & $profileParityProbe `
+            ("[core]`n    autocrlf = false`n") `
+            ("[user]`n    name = harmless`n") `
+            ("[credential]`n    helper = harmless`n") `
+            $false
+        $xdgCrlf = & $profileParityProbe `
+            ("[core]`n    autocrlf = false`n") `
+            ("[user]`n    name = harmless`n") `
+            ("[credential]`n    helper = harmless`n") `
+            $true
+        $xdgOverridesSystemParity =
+            $xdgLf.main -and $xdgLf.observer -and
+            -not $xdgCrlf.main -and -not $xdgCrlf.observer
+
+        $lfsText =
+            "[filter `"lfs`"]`n" +
+            "    clean = git-lfs clean -- %f`n" +
+            "    smudge = git-lfs smudge -- %f`n" +
+            "    process = git-lfs filter-process`n" +
+            "    required = true`n"
+        $lfsXdg = & $profileParityProbe `
+            ($lfsText + "[core]`n    autocrlf = true`n") `
+            ("[user]`n    name = harmless`n") `
+            ("[credential]`n    helper = harmless`n") `
+            $true
+        $lfsHome = & $profileParityProbe `
+            ("[user]`n    name = harmless`n") `
+            ($lfsText + "[core]`n    autocrlf = true`n") `
+            ("[credential]`n    helper = harmless`n") `
+            $true
+        $lfsLocal = & $profileParityProbe `
+            ("[user]`n    name = harmless`n") `
+            ("[credential]`n    helper = harmless`n") `
+            ($lfsText + "[core]`n    autocrlf = true`n") `
+            $true
+        $lfsAnySourceParity =
+            $lfsXdg.main -and $lfsXdg.observer -and
+            $lfsHome.main -and $lfsHome.observer -and
+            $lfsLocal.main -and $lfsLocal.observer
+        $round6LfsExactDuplicate = & $profileParityProbe `
+            $null `
+            $null `
+            ("[filter `"lfs`"]`n" +
+                "    clean = git-lfs clean -- %f`n" +
+                "    smudge = git-lfs smudge -- %f`n" +
+                "    process = git-lfs filter-process`n" +
+                "    required = true`n" +
+                "    clean = git-lfs clean -- %f`n" +
+                "[core]`n    autocrlf = true`n") `
+            $true
+        $round6LfsCaseDuplicate = & $profileParityProbe `
+            $null `
+            $null `
+            ("[filter `"lfs`"]`n" +
+                "    clean = git-lfs clean -- %f`n" +
+                "    smudge = git-lfs smudge -- %f`n" +
+                "    process = git-lfs filter-process`n" +
+                "    required = true`n" +
+                "    ClEaN = git-lfs clean -- %f`n" +
+                "[core]`n    autocrlf = true`n") `
+            $true
+        $round6LfsWrongDuplicate = & $profileParityProbe `
+            $null `
+            $null `
+            ("[filter `"lfs`"]`n" +
+                "    clean = git-lfs clean -- %f`n" +
+                "    smudge = git-lfs smudge -- %f`n" +
+                "    process = git-lfs filter-process`n" +
+                "    required = true`n" +
+                "    clean = git-lfs clean -- %x`n" +
+                "[core]`n    autocrlf = true`n") `
+            $true
+        $round6LfsDuplicateGrammarParity =
+            $round6LfsExactDuplicate.main -and
+            $round6LfsExactDuplicate.observer -and
+            $round6LfsCaseDuplicate.main -and
+            $round6LfsCaseDuplicate.observer -and
+            -not $round6LfsWrongDuplicate.main -and
+            -not $round6LfsWrongDuplicate.observer
+        $round5DuplicateImplicit = & $profileParityProbe `
+            ("[user]`n    name = harmless`n") `
+            ("[credential]`n    helper = harmless`n") `
+            ("[core]`n    autocrlf = false`n" +
+                "    autocrlf`n") `
+            $true
+        $round5DuplicateOrders = $true
+        foreach ($duplicateVector in @(
+            [pscustomobject]@{
+                text = "[core]`n    autocrlf = true`n" +
+                    "    autocrlf = false`n"
+                crlf = $false
+            },
+            [pscustomobject]@{
+                text = "[core]`n    autocrlf = true`n" +
+                    "    autocrlf = true`n"
+                crlf = $true
+            },
+            [pscustomobject]@{
+                text = "[core]`n    autocrlf = false`n" +
+                    "    autocrlf = false`n"
+                crlf = $false
+            })) {
+            $duplicateProbe = & $profileParityProbe `
+                $null `
+                $null `
+                $duplicateVector.text `
+                $duplicateVector.crlf
+            $round5DuplicateOrders =
+                $round5DuplicateOrders -and
+                $duplicateProbe.main -and $duplicateProbe.observer
+        }
+        $round5QuotedGrammar = & $profileParityProbe `
+            ("[user `"quoted`"]`n" +
+                "    name = `"line\nvalue`" # comment`n") `
+            ("[diff `"harmless`"]`n" +
+                "    command = first\`n        second`n") `
+            ("[core]`n    autocrlf = `"true`" ; comment`n") `
+            $true
+        $round5InvalidOccurrence = & $profileParityProbe `
+            $null `
+            $null `
+            ("[core]`n    autocrlf = maybe`n" +
+                "    autocrlf = true`n") `
+            $true
+        $round5MalformedParity = $true
+        foreach ($malformedText in @(
+            "[core`n    autocrlf = true`n",
+            "[core]`n    autocrlf = `"true`n",
+            "[diff]`n    command = true\q`n",
+            "[core]`n    autocrlf = true\\",
+            "autocrlf = true`n")) {
+            $malformedProbe = & $profileParityProbe `
+                $null `
+                $null `
+                $malformedText `
+                $false
+            $round5MalformedParity =
+                $round5MalformedParity -and
+                -not $malformedProbe.main -and
+                -not $malformedProbe.observer
+        }
+        $round5GrammarParity =
+            $round5DuplicateImplicit.main -and
+            $round5DuplicateImplicit.observer -and
+            $round5DuplicateOrders -and
+            $round5QuotedGrammar.main -and
+            $round5QuotedGrammar.observer -and
+            -not $round5InvalidOccurrence.main -and
+            -not $round5InvalidOccurrence.observer -and
+            $round5MalformedParity
+        $partialLfs = & $profileParityProbe `
+            ("[filter `"lfs`"]`n" +
+                "    clean = git-lfs clean -- %f`n") `
+            $null `
+            ("[core]`n    autocrlf = false`n") `
+            $false
+        $partialLfsParity =
+            -not $partialLfs.main -and -not $partialLfs.observer
+
+        foreach ($commandKey in @(
+            'core.autocrlf',
+            'core.attributesfile')) {
+            [Environment]::SetEnvironmentVariable(
+                'GIT_CONFIG_KEY_0',
+                $commandKey,
+                [EnvironmentVariableTarget]::Process)
+            $commandProbe = & $profileParityProbe `
+                $null `
+                $null `
+                ("[core]`n    autocrlf = false`n") `
+                $false
+            $commandRejected =
+                -not $commandProbe.main -and -not $commandProbe.observer
+            if ($commandKey -ceq 'core.autocrlf') {
+                $commandAutocrlfParity = $commandRejected
+            }
+            else { $commandRoutingParity = $commandRejected }
+        }
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_KEY_0',
+            'SaFe.DiReCtOrY',
+            [EnvironmentVariableTarget]::Process)
+        $mixedSafeCommand = & $profileParityProbe `
+            $null `
+            $null `
+            ("[core]`n    autocrlf = false`n") `
+            $false
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_KEY_0',
+            'CoRe.AuToCrLf',
+            [EnvironmentVariableTarget]::Process)
+        $mixedDangerousCommand = & $profileParityProbe `
+            $null `
+            $null `
+            ("[core]`n    autocrlf = false`n") `
+            $false
+        $round5CommandCaseParity =
+            $mixedSafeCommand.main -and $mixedSafeCommand.observer -and
+            -not $mixedDangerousCommand.main -and
+            -not $mixedDangerousCommand.observer
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_KEY_0',
+            'safe.directory',
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_VALUE_0',
+            $null,
+            [EnvironmentVariableTarget]::Process)
+        $incompleteCommand = & $profileParityProbe `
+            $null `
+            $null `
+            ("[core]`n    autocrlf = false`n") `
+            $false
+        $commandIncompleteParity =
+            -not $incompleteCommand.main -and
+            -not $incompleteCommand.observer
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_VALUE_0',
+            $syntheticRoot,
+            [EnvironmentVariableTarget]::Process)
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_COUNT',
+            '65',
+            [EnvironmentVariableTarget]::Process)
+        $boundedCommand = & $profileParityProbe `
+            $null `
+            $null `
+            ("[core]`n    autocrlf = false`n") `
+            $false
+        $commandBoundParity =
+            -not $boundedCommand.main -and -not $boundedCommand.observer
+        [Environment]::SetEnvironmentVariable(
+            'GIT_CONFIG_COUNT',
+            '1',
+            [EnvironmentVariableTarget]::Process)
+
+        $namedRoutingParity = $true
+        foreach ($routingName in @(
+            'GIT_CONFIG_SYSTEM',
+            'GIT_CONFIG_GLOBAL',
+            'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_PARAMETERS',
+            'GIT_ATTR_NOSYSTEM',
+            'GIT_DIR',
+            'GIT_WORK_TREE',
+            'GIT_COMMON_DIR',
+            'GIT_INDEX_FILE',
+            'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+            'GIT_QUARANTINE_PATH',
+            'GIT_NAMESPACE',
+            'GIT_SHALLOW_FILE',
+            'GIT_GRAFT_FILE',
+            'GIT_NO_REPLACE_OBJECTS',
+            'GIT_REPLACE_REF_BASE',
+            'GIT_CONFIG_UNKNOWN')) {
+            $routingOriginal =
+                [Environment]::GetEnvironmentVariable(
+                    $routingName,
+                    [EnvironmentVariableTarget]::Process)
+            try {
+                [Environment]::SetEnvironmentVariable(
+                    $routingName,
+                    'round4-routing-override',
+                    [EnvironmentVariableTarget]::Process)
+                $routingProbe = & $profileParityProbe `
+                    $null `
+                    $null `
+                    ("[core]`n    autocrlf = false`n") `
+                    $false
+                $namedRoutingParity =
+                    $namedRoutingParity -and
+                    -not $routingProbe.main -and
+                    -not $routingProbe.observer
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable(
+                    $routingName,
+                    $routingOriginal,
+                    [EnvironmentVariableTarget]::Process)
+            }
+        }
+
+        $canonicalEnvironmentParity = $true
+        foreach ($canonicalName in @('ProgramFiles', 'USERPROFILE')) {
+            $canonicalOriginal =
+                [Environment]::GetEnvironmentVariable(
+                    $canonicalName,
+                    [EnvironmentVariableTarget]::Process)
+            try {
+                [Environment]::SetEnvironmentVariable(
+                    $canonicalName,
+                    (Join-Path $canonicalOriginal '.'),
+                    [EnvironmentVariableTarget]::Process)
+                $canonicalProbe = & $profileParityProbe `
+                    $null `
+                    $null `
+                    ("[core]`n    autocrlf = false`n") `
+                    $false
+                $canonicalEnvironmentParity =
+                    $canonicalEnvironmentParity -and
+                    -not $canonicalProbe.main -and
+                    -not $canonicalProbe.observer
+            }
+            finally {
+                [Environment]::SetEnvironmentVariable(
+                    $canonicalName,
+                    $canonicalOriginal,
+                    [EnvironmentVariableTarget]::Process)
+                }
+            }
+        $programW6432Original =
+            [Environment]::GetEnvironmentVariable(
+                'ProgramW6432',
+                [EnvironmentVariableTarget]::Process)
+        try {
+            $round5ProgramW6432Parity = $true
+            foreach ($programW6432Vector in @(
+                [pscustomobject]@{
+                    value = $null
+                    accepted = $true
+                },
+                [pscustomobject]@{
+                    value = [Environment]::GetEnvironmentVariable(
+                        'ProgramFiles',
+                        [EnvironmentVariableTarget]::Process)
+                    accepted = $true
+                },
+                [pscustomobject]@{
+                    value = '.'
+                    accepted = $false
+                },
+                [pscustomobject]@{
+                    value = (Join-Path $syntheticRoot 'missing-program-w6432')
+                    accepted = $false
+                },
+                [pscustomobject]@{
+                    value = $env:SystemRoot
+                    accepted = $false
+                })) {
+                [Environment]::SetEnvironmentVariable(
+                    'ProgramW6432',
+                    $programW6432Vector.value,
+                    [EnvironmentVariableTarget]::Process)
+                $programW6432Probe = & $profileParityProbe `
+                    $null `
+                    $null `
+                    ("[core]`n    autocrlf = false`n") `
+                    $false
+                $round5ProgramW6432Parity =
+                    $round5ProgramW6432Parity -and
+                    ($programW6432Probe.main -eq
+                        $programW6432Vector.accepted) -and
+                    ($programW6432Probe.observer -eq
+                        $programW6432Vector.accepted)
+            }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable(
+                'ProgramW6432',
+                $programW6432Original,
+                [EnvironmentVariableTarget]::Process)
+        }
+    }
+    finally {
+        foreach ($name in $profileMatrixEnvironmentNames) {
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                $profileMatrixEnvironment[$name],
+                [EnvironmentVariableTarget]::Process)
+        }
+        Restore-Bytes $alphaPath $alphaContent
+        if (Test-Path -LiteralPath $syntheticConfigPath) {
+            [IO.File]::Delete($syntheticConfigPath)
+        }
+    }
+    $script:Cases++
+    Assert-True (
+        $mainLfClean -and
+        $observerLfClean -and
+        $observerRootAttributesOracleDirty -and
+        $mainRootAttributesRejected -and
+        $observerRootAttributesRejected -and
+        $mainRawConversionSourceRejected -and
+        $observerRawConversionSourceRejected -and
+        $mainUnsafeEnvironmentRejected -and
+        $observerUnsafeEnvironmentRejected -and
+        $mainWorktreeConfigRejected -and
+        $observerWorktreeConfigRejected -and
+        $mainNestedAttributesRejected -and
+        $observerNestedAttributesRejected -and
+        $mainCustomGlobalAttributesRejected -and
+        $observerCustomGlobalAttributesRejected -and
+        $mainDangerousRoundtripRejected -and
+        $observerDangerousRoundtripRejected -and
+        $mainDangerousBigFileRejected -and
+        $observerDangerousBigFileRejected -and
+        $mainHarmlessProfileAccepted -and
+        $observerHarmlessProfileAccepted -and
+        $homeOverridesXdgParity -and
+        $localOverridesHomeParity -and
+        $xdgOverridesSystemParity -and
+        $lfsAnySourceParity -and
+        $partialLfsParity -and
+        $commandAutocrlfParity -and
+        $commandRoutingParity -and
+        $commandIncompleteParity -and
+        $commandBoundParity -and
+        $namedRoutingParity -and
+        $canonicalEnvironmentParity -and
+        $round6LfsDuplicateGrammarParity -and
+        $round5GrammarParity -and
+        $round5CommandCaseParity -and
+        $round5ProgramW6432Parity) (
+        'The emitted observer verifier rejected an LF-clean repository ' +
+        "accepted by the main verifier: main=$mainLfClean " +
+        "observer=$observerLfClean " +
+        "oracleDirty=$observerRootAttributesOracleDirty " +
+        "rootAttributesMain=$mainRootAttributesRejected " +
+        "rootAttributesObserver=$observerRootAttributesRejected " +
+        "rawSourceMain=$mainRawConversionSourceRejected " +
+        "rawSourceObserver=$observerRawConversionSourceRejected " +
+        "environmentMain=$mainUnsafeEnvironmentRejected " +
+        "environmentObserver=$observerUnsafeEnvironmentRejected " +
+        "worktreeConfigMain=$mainWorktreeConfigRejected " +
+        "worktreeConfigObserver=$observerWorktreeConfigRejected " +
+        "nestedAttributesMain=$mainNestedAttributesRejected " +
+        "nestedAttributesObserver=$observerNestedAttributesRejected " +
+        "customGlobalMain=$mainCustomGlobalAttributesRejected " +
+        "customGlobalObserver=$observerCustomGlobalAttributesRejected " +
+        "roundtripMain=$mainDangerousRoundtripRejected " +
+        "roundtripObserver=$observerDangerousRoundtripRejected " +
+        "bigFileMain=$mainDangerousBigFileRejected " +
+        "bigFileObserver=$observerDangerousBigFileRejected " +
+        "harmlessMain=$mainHarmlessProfileAccepted " +
+        "harmlessObserver=$observerHarmlessProfileAccepted " +
+        "homePrecedence=$homeOverridesXdgParity " +
+        "localPrecedence=$localOverridesHomeParity " +
+        "xdgPrecedence=$xdgOverridesSystemParity " +
+        "lfsAnySource=$lfsAnySourceParity " +
+        "partialLfs=$partialLfsParity " +
+        "commandAutocrlf=$commandAutocrlfParity " +
+        "commandRouting=$commandRoutingParity " +
+        "commandIncomplete=$commandIncompleteParity " +
+        "commandBound=$commandBoundParity " +
+        "namedRouting=$namedRoutingParity " +
+        "canonicalEnvironment=$canonicalEnvironmentParity " +
+        "round6LfsDuplicates=$round6LfsDuplicateGrammarParity " +
+        "round6ExactMain=$($round6LfsExactDuplicate.main) " +
+        "round6ExactObserver=$($round6LfsExactDuplicate.observer) " +
+        "round6CaseMain=$($round6LfsCaseDuplicate.main) " +
+        "round6CaseObserver=$($round6LfsCaseDuplicate.observer) " +
+        "round6WrongMain=$($round6LfsWrongDuplicate.main) " +
+        "round6WrongObserver=$($round6LfsWrongDuplicate.observer) " +
+        "round5Grammar=$round5GrammarParity " +
+        "round5Command=$round5CommandCaseParity " +
+        "round5ProgramW6432=$round5ProgramW6432Parity")
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = true`n")
+    [IO.File]::WriteAllBytes($alphaPath, $crlfAlphaBytes)
+    $observerCrlfClean =
+        [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+            $syntheticRoot,
+            $syntheticGit,
+            $rootTreeHex)
+    $mainCrlfCleanNow = & $module {
+        param($Root, $Git, $Tree)
+        Test-FslFlbIndexClean $Root $Git $Tree
+    } $syntheticRoot $syntheticGit $rootTreeHex
+    Restore-Bytes $alphaPath $alphaContent
+    [IO.File]::Delete($syntheticConfigPath)
+    $script:Cases++
+    Assert-True ($mainCrlfCleanNow -and $observerCrlfClean) (
+        'The main/emitted verifiers rejected safe autocrlf=true CRLF ' +
+        "bytes: main=$mainCrlfCleanNow observer=$observerCrlfClean")
+
+    $assertObserverParityFalse = {
+        param(
+            [string]$Message,
+            [string]$ExpectedTree = $rootTreeHex)
+        $mainClean = & $module {
+            param($Root, $Git, $Tree)
+            Test-FslFlbIndexClean $Root $Git $Tree
+        } $syntheticRoot $syntheticGit $ExpectedTree
+        $observerClean =
+            [FslFormalObserverIdentity]::VerifyGitIndexAndTree(
+                $syntheticRoot,
+                $syntheticGit,
+                $ExpectedTree)
+        $script:Cases++
+        Assert-True (-not $mainClean -and -not $observerClean) (
+            "$Message Main=$mainClean Observer=$observerClean")
+    }
+
+    Write-Utf8 $alphaPath "observer semantic drift`n"
+    & $assertObserverParityFalse (
+        'Main/emitted parity accepted a semantic worktree mutation.')
+    Restore-Bytes $alphaPath $alphaContent
+
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = true`n")
+    foreach ($unsafeBytes in @(
+        [byte[]]@(0x61, 0x00, 0x0A),
+        [byte[]]@(0x61, 0x0D, 0x62),
+        [byte[]]@(0x61, 0x0D, 0x0A, 0x62, 0x0A))) {
+        [IO.File]::WriteAllBytes($alphaPath, $unsafeBytes)
+        & $assertObserverParityFalse (
+            'Main/emitted parity accepted unsafe NUL/lone-CR/mixed EOL bytes.')
+    }
+    Restore-Bytes $alphaPath $alphaContent
+    [IO.File]::Delete($syntheticConfigPath)
+
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = false`n")
+    [IO.File]::WriteAllBytes($alphaPath, $crlfAlphaBytes)
+    & $assertObserverParityFalse (
+        'Main/emitted parity accepted CRLF with autocrlf=false.')
+    Restore-Bytes $alphaPath $alphaContent
+    [IO.File]::Delete($syntheticConfigPath)
+
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = true`n" +
+        "    eol = lf`n")
+    [IO.File]::WriteAllBytes($alphaPath, $crlfAlphaBytes)
+    & $assertObserverParityFalse (
+        'Main/emitted parity accepted a custom core.eol profile.')
+    Restore-Bytes $alphaPath $alphaContent
+    [IO.File]::Delete($syntheticConfigPath)
+
+    $syntheticInfoDirectory = Join-Path $syntheticGit 'info'
+    $syntheticInfoAttributes = Join-Path (
+        $syntheticInfoDirectory) 'attributes'
+    [IO.Directory]::CreateDirectory($syntheticInfoDirectory) | Out-Null
+    Write-Utf8 $syntheticConfigPath (
+        "[core]`n" +
+        "    autocrlf = true`n")
+    Write-Utf8 $syntheticInfoAttributes "* text=auto`n"
+    [IO.File]::WriteAllBytes($alphaPath, $crlfAlphaBytes)
+    & $assertObserverParityFalse (
+        'Main/emitted parity accepted custom info attributes.')
+    Restore-Bytes $alphaPath $alphaContent
+    [IO.File]::Delete($syntheticInfoAttributes)
+    [IO.Directory]::Delete($syntheticInfoDirectory)
+    [IO.File]::Delete($syntheticConfigPath)
+
+    $observerBadIndex = [byte[]]$validIndex.Clone()
+    $observerBadIndex[$observerBadIndex.Length - 1] =
+        $observerBadIndex[$observerBadIndex.Length - 1] -bxor 1
+    [IO.File]::WriteAllBytes($syntheticIndexPath, $observerBadIndex)
+    & $assertObserverParityFalse (
+        'Main/emitted parity accepted a malformed index checksum.')
+    [IO.File]::WriteAllBytes($syntheticIndexPath, $validIndex)
+
+    & $assertObserverParityFalse (
+        'Main/emitted parity accepted an incorrect expected tree.') (
+        '0000000000000000000000000000000000000000')
+
+    $observerCacheTreePayload = [byte[]]$cacheTreePayload.Clone()
+    $observerCacheTreePayload[5] =
+        $observerCacheTreePayload[5] -bxor 1
+    [IO.File]::WriteAllBytes(
+        $syntheticIndexPath,
+        (New-TestGitIndex $gitEntries @(
+            [pscustomobject]@{
+                signature = 'TREE'
+                payload = $observerCacheTreePayload
+            })))
+    & $assertObserverParityFalse (
+        'Main/emitted parity accepted a semantically drifted cache TREE.')
+    [IO.File]::WriteAllBytes($syntheticIndexPath, $validIndex)
     $observerTokenProof =
         [FslFormalObserverIdentity]::ReadTokenProof()
     $script:Cases++
